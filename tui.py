@@ -1287,15 +1287,16 @@ class AgentTUI(App):
     def update_ctx(self):
         if not self.tracker:
             return
-        used, _ = self.tracker.current(self.messages)
-        limit = self.tracker.limit or 1
-        pct = 100 * used / limit
-        remaining = max(0, limit - used)
-        txt = (f"[#d787ff]{self.provider}[/] · [cyan]{self.model}[/] · "
-               f"ctx [b]{used/1000:.1f}k[/]/{limit/1000:.0f}k used · "
-               f"[green]{remaining/1000:.1f}k left[/] ({pct:.0f}%)"
-               + ("  · [green]LOCAL[/]" if self.is_local else ""))
+        # never let the context estimate crash the turn / the app
         try:
+            used, _ = self.tracker.current(self.messages)
+            limit = self.tracker.limit or 1
+            pct = 100 * used / limit
+            remaining = max(0, limit - used)
+            txt = (f"[#d787ff]{self.provider}[/] · [cyan]{self.model}[/] · "
+                   f"ctx [b]{used/1000:.1f}k[/]/{limit/1000:.0f}k used · "
+                   f"[green]{remaining/1000:.1f}k left[/] ({pct:.0f}%)"
+                   + ("  · [green]LOCAL[/]" if self.is_local else ""))
             self._q("#statusbar", Static).update(Text.from_markup(txt))
         except Exception:
             pass

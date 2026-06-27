@@ -9,6 +9,13 @@ import tiktoken
 
 _ENCODER = tiktoken.get_encoding("cl100k_base")
 
+
+def _ntok(text: str) -> int:
+    """Token count of `text`. `disallowed_special=()` treats special-token strings
+    (e.g. a literal '<|endoftext|>' printed by a tool) as plain text instead of
+    raising — otherwise tiktoken errors and would crash the turn."""
+    return len(_ENCODER.encode(text or "", disallowed_special=()))
+
 # Indicative context windows. If the model is not listed, the default is used.
 # Adjust by hand if you know the real limits of your model.
 CONTEXT_WINDOWS = {
@@ -38,13 +45,13 @@ def estimate_messages(messages) -> int:
                 total += 1
                 continue
             if isinstance(v, str):
-                total += len(_ENCODER.encode(v))
+                total += _ntok(v)
             elif isinstance(v, list):
                 # tool_calls
                 for tc in v:
                     fn = tc.get("function", {})
-                    total += len(_ENCODER.encode(fn.get("name", "")))
-                    total += len(_ENCODER.encode(fn.get("arguments", "")))
+                    total += _ntok(fn.get("name", ""))
+                    total += _ntok(fn.get("arguments", ""))
     return total
 
 
