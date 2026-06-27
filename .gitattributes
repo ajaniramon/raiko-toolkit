@@ -1,0 +1,9 @@
+# Normalize line endings: store LF in the repo, let git convert on checkout
+# (per each machine's core.autocrlf). Stops phantom "modified" files on Windows.
+* text=auto
+
+# Binary assets — never touch line endings
+*.png binary
+*.jpg binary
+*.gguf binary
+*.ico binary
