@@ -1117,7 +1117,7 @@ class AgentTUI(App):
             args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
         except Exception:
             return self._with_timeout(name, lambda: call_tool(name, raw_args))
-        if name in ("run_python", "run_powershell"):
+        if name in ("run_python", "run_powershell", "run_bash"):
             code = args.get("code") or args.get("command") or ""
             if self.skip_permissions:
                 args["allow_unsafe"] = True

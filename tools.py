@@ -301,6 +301,31 @@ def run_powershell(command: str, allow_unsafe: bool = False) -> str:
     return out or "(no output)"
 
 
+def run_bash(command: str, allow_unsafe: bool = False) -> str:
+    """Run a bash/sh shell command on Linux/macOS (cwd = current dir), 25s timeout.
+    Stdout+stderr returned. Destructive ops are blocked unless allow_unsafe=True
+    (set by the UI after the user approves a permission prompt)."""
+    if not allow_unsafe:
+        blocked = _danger_check(command)
+        if blocked:
+            return blocked
+    import shutil
+    sh = shutil.which("bash") or shutil.which("zsh") or shutil.which("sh")
+    if not sh:
+        return "ERROR: no bash/sh shell found (this tool is for Linux/macOS)."
+    try:
+        proc = subprocess.run([sh, "-c", command],
+                              capture_output=True, text=True, timeout=25)
+    except subprocess.TimeoutExpired:
+        return "ERROR: bash execution timed out (25s)"
+    except Exception as e:
+        return f"ERROR: {type(e).__name__}: {e}"
+    out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    if len(out) > 4000:
+        out = out[:4000] + "\n... (truncated)"
+    return out or "(no output)"
+
+
 def vault_get_secret(path: str) -> str:
     """Read a secret from HashiCorp Vault over its HTTP API.
     Uses VAULT_ADDR / VAULT_TOKEN from the environment. For KV v2 the read path
@@ -559,6 +584,18 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "run_bash",
+            "description": "Execute a bash/sh shell command in the current directory and return its output. Use this for shell/system tasks on Linux or macOS (the equivalent of run_powershell on Windows). 25s timeout. Destructive operations are blocked.",
+            "parameters": {
+                "type": "object",
+                "properties": {"command": {"type": "string", "description": "bash/sh command to run."}},
+                "required": ["command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "vault_get_secret",
             "description": "Read a secret from HashiCorp Vault. For KV v2 the path looks like 'secret/data/<name>'. Returns the secret's fields as a JSON object (e.g. host, port, username, password).",
             "parameters": {
@@ -589,6 +626,7 @@ DISPATCH = {
     "edit_file": edit_file,
     "run_python": run_python,
     "run_powershell": run_powershell,
+    "run_bash": run_bash,
     "vault_get_secret": vault_get_secret,
 }
 
