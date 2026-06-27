@@ -1,13 +1,13 @@
-"""Runner del tier AVANZADO contra los 3 ganadores.
+"""Runner for the ADVANCED tier against the 3 winners.
 
-Para cada run (alias, modo): carga el modelo y corre la suite avanzada con el
-SET COMPLETO de tools (incluye write_file, edit_file, run_python, run_powershell).
-Cada tarea se ejecuta sobre un sandbox recién reconstruido (las escrituras mutan
-el árbol). Resumible (JSONL incremental con fsync) y con guardas anti-destructivas
-en las tools de ejecución.
+For each run (alias, mode): loads the model and runs the advanced suite with the
+FULL SET of tools (includes write_file, edit_file, run_python, run_powershell).
+Each task runs on a freshly-rebuilt sandbox (writes mutate the tree). Resumable
+(incremental JSONL with fsync) and with anti-destructive guards in the execution
+tools.
 
-Uso:
-  python run_adv.py                 # los 3 ganadores
+Usage:
+  python run_adv.py                 # the 3 winners
   python run_adv.py --runs qwythos:think
 """
 
@@ -35,11 +35,11 @@ ADV_LOGS = os.path.join(ADV_DIR, "logs")
 SCRATCH = (r"C:\Users\RAMN~1\AppData\Local\Temp\claude"
            r"\C--Users-Ram-n-Desktop-agent\9f784f53-c05e-4e87-a7ba-e6b921ad38b0\scratchpad")
 
-# los 3 ganadores del tier base (run = modelo + su modo ganador).
-# Orden: primero los rápidos (nothink), qwythos-think (lento) al final.
+# the 3 winners of the base tier (run = model + its winning mode).
+# Order: fast ones first (nothink), qwythos-think (slow) at the end.
 TARGET_RUNS = [("qwen35-9b", "nothink"), ("gemma4-12b", "nothink"), ("qwythos", "think")]
 
-FULL_TOOLS = TOOLS  # todas, incluidas las de escritura/ejecución
+FULL_TOOLS = TOOLS  # all, including the write/execute ones
 
 
 def _partial(label):
@@ -103,9 +103,9 @@ def run_suite(client, alias, label, tasks, enable_thinking):
                 results.append(done[task["id"]])
                 console.print(f"  [{label}] {i:>2}/{len(tasks)} {task['id']:<16} [dim]cached[/]")
                 continue
-            # sandbox FRESCO por tarea en un dir ÚNICO (evita el WinError 32 de
-            # borrar un dir que un subproceso recién terminado aún retiene en
-            # Windows). chdir a un dir estable antes de construir.
+            # FRESH sandbox per task in a UNIQUE dir (avoids the WinError 32 from
+            # deleting a dir that a just-finished subprocess still holds on
+            # Windows). chdir to a stable dir before building.
             os.chdir(SCRATCH)
             base = os.path.join(SCRATCH, "advtmp", f"{label}_{i}")
             root = fixtures.build_sandbox(base)["root"]
@@ -126,10 +126,10 @@ def run_suite(client, alias, label, tasks, enable_thinking):
 
 def write_report(all_runs, n_tasks):
     rows = sorted(all_runs, key=lambda x: x["agg"].get("final_score", 0), reverse=True)
-    lines = ["# Benchmark AVANZADO (write / edit / python / powershell)", "",
-             f"- **{n_tasks} tareas** por run · sandbox reconstruido por tarea · graders sobre filesystem.",
-             "- Tools nuevas: `write_file`, `edit_file`, `run_python`, `run_powershell` (con guardas).",
-             "- Solo los 3 ganadores del tier base.", "",
+    lines = ["# ADVANCED benchmark (write / edit / python / powershell)", "",
+             f"- **{n_tasks} tasks** per run · sandbox rebuilt per task · graders over the filesystem.",
+             "- New tools: `write_file`, `edit_file`, `run_python`, `run_powershell` (with guards).",
+             "- Only the 3 winners of the base tier.", "",
              "## Leaderboard", "",
              "| # | Run | Score | Correct% | Tool% | BadJSON | Errs | Lat(s) | OutTok |",
              "|---|---|---|---|---|---|---|---|---|"]
@@ -139,20 +139,20 @@ def write_report(all_runs, n_tasks):
                      f"{a['tool_accuracy_pct']} | {a['malformed_json']} | {a['errors_timeouts']} | "
                      f"{a['avg_latency_s']} | {a['total_completion_tokens']} |")
     cats = sorted({c for run in rows for c in run["agg"]["by_category"]})
-    lines += ["", "## Acierto por categoría (%)", "",
+    lines += ["", "## Accuracy by category (%)", "",
               "| Category | " + " | ".join(r["label"] for r in rows) + " |",
               "|---|" + "---|" * len(rows)]
     for c in cats:
         lines.append(f"| {c} | " + " | ".join(str(r["agg"]["by_category"].get(c, "—")) for r in rows) + " |")
-    lines += ["", f"Transcripts en `results/adv/logs/`.", ""]
+    lines += ["", f"Transcripts in `results/adv/logs/`.", ""]
     os.makedirs(ADV_DIR, exist_ok=True)
     open(os.path.join(ADV_DIR, "report_adv.md"), "w", encoding="utf-8").write("\n".join(lines))
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--runs", help="alias:modo,alias:modo (default: los 3 ganadores)")
-    ap.add_argument("--limit", type=int, default=0, help="usar solo las primeras N tareas (smoke)")
+    ap.add_argument("--runs", help="alias:mode,alias:mode (default: the 3 winners)")
+    ap.add_argument("--limit", type=int, default=0, help="use only the first N tasks (smoke)")
     args = ap.parse_args()
 
     os.makedirs(ADV_LOGS, exist_ok=True)
@@ -160,7 +160,7 @@ def main():
     if args.runs:
         target = [(x.split(":")[0], x.split(":")[1]) for x in args.runs.split(",")]
 
-    # limpia sandboxes temporales de corridas anteriores (cwd seguro primero)
+    # clean temporary sandboxes from previous runs (safe cwd first)
     os.chdir(HERE)
     shutil.rmtree(os.path.join(SCRATCH, "advtmp"), ignore_errors=True)
 
@@ -168,19 +168,19 @@ def main():
     if args.limit:
         tasks = tasks[:args.limit]
     total = len(tasks)
-    console.print(f"[bold]Tier avanzado:[/] {total} tareas · runs: {target}")
+    console.print(f"[bold]Advanced tier:[/] {total} tasks · runs: {target}")
     all_runs = []
 
     for alias, mode in target:
         label = f"{alias}-{mode}"
         if is_complete(label, total):
-            console.print(f"[dim]{label}: ya completo, salto[/]")
+            console.print(f"[dim]{label}: already complete, skipping[/]")
             agg = json.load(open(os.path.join(ADV_DIR, f"{label}.json"), encoding="utf-8"))["aggregate"]
             all_runs.append({"label": label, "agg": agg})
             continue
         model = next((m for m in registry.MODELS if m["alias"] == alias), None)
         if model is None:
-            console.print(f"[red]alias desconocido: {alias}[/]"); continue
+            console.print(f"[red]unknown alias: {alias}[/]"); continue
         console.rule(f"[bold magenta]{label}[/]")
         proc = None
         try:
@@ -190,7 +190,7 @@ def main():
             save_run(label, results, agg)
             all_runs.append({"label": label, "agg": agg})
         except Exception as e:
-            console.print(f"[red]fallo en {label}: {e}[/]")
+            console.print(f"[red]failure in {label}: {e}[/]")
         finally:
             serve.stop_server(proc, log=console.print)
 
@@ -203,7 +203,7 @@ def main():
             a = run["agg"]
             t.add_row(run["label"], str(a["final_score"]), str(a["correctness_pct"]), str(a["tool_accuracy_pct"]))
         console.print(t)
-    console.print(f"[green]Listo.[/] Informe: {os.path.join(ADV_DIR, 'report_adv.md')}")
+    console.print(f"[green]Done.[/] Report: {os.path.join(ADV_DIR, 'report_adv.md')}")
 
 
 if __name__ == "__main__":

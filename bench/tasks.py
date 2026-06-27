@@ -1,12 +1,12 @@
-"""Batería de ~100 tareas del benchmark + graders programáticos.
+"""Suite of ~100 benchmark tasks + programmatic graders.
 
-Categorías: lecturas, conteos, agregaciones (CSV), JSON anidado, navegación,
-grep/find, head/tail/rangos, stat, multipaso, comparaciones cross-file,
-razonamiento condicional, negativos/robustez y list_models.
+Categories: reads, counts, aggregations (CSV), nested JSON, navigation,
+grep/find, head/tail/ranges, stat, multistep, cross-file comparisons,
+conditional reasoning, negatives/robustness and list_models.
 
-Cada tarea: id, category, prompt, expect_tools, negative, check(answer)->bool.
-Graders tolerantes al formato (case-insensitive, buscan el dato clave) pero
-estrictos con el valor correcto.
+Each task: id, category, prompt, expect_tools, negative, check(answer)->bool.
+Graders are format-tolerant (case-insensitive, they look for the key datum) but
+strict about the correct value.
 """
 
 import re
@@ -59,7 +59,7 @@ def build_tasks(truth: dict) -> list:
     READ = ["read_file", "head", "read_lines", "grep"]
     LISTING = ["list_dir", "tree", "find_files"]
 
-    # ---- cwd / navegación ----
+    # ---- cwd / navigation ----
     add("cwd", "cwd", "What is the current working directory? Answer with the path.",
         ["get_current_directory"], lambda a: contains(a, T["root_name"]))
     add("top_count", "navigate",
@@ -79,7 +79,7 @@ def build_tasks(truth: dict) -> list:
         "How many files are inside the 'data' directory? Answer with a number.",
         LISTING + ["stat_path"], lambda a: has_number(a, T["data_children"]))
 
-    # ---- tamaños ----
+    # ---- sizes ----
     add("largest", "size", "Which single file in the whole project tree is the largest? Give its file name.",
         LISTING + ["stat_path"], lambda a: contains(a, T["largest_file"]))
     add("smallest", "size", "Which single file in the whole project tree is the smallest? Give its file name.",
@@ -107,7 +107,7 @@ def build_tasks(truth: dict) -> list:
     add("config_retries", "config", "What is the max_retries value in config.ini?",
         READ, lambda a: has_number(a, T["config_retries"]))
 
-    # ---- settings.json (anidado) ----
+    # ---- settings.json (nested) ----
     add("set_version", "json", "What is app.version in settings.json?",
         READ, lambda a: contains(a, T["settings_version"]))
     add("set_port", "json", "What is server.port in settings.json?",
@@ -123,7 +123,7 @@ def build_tasks(truth: dict) -> list:
     add("set_rate", "json", "What is limits.rate_per_sec in settings.json?",
         READ, lambda a: has_number(a, T["rate"]))
 
-    # ---- agregaciones users.csv ----
+    # ---- users.csv aggregations ----
     add("u_admins", "csv_users", "How many users in data/users.csv have the role 'admin'? Answer with a number.",
         READ + ["find_in_files"], lambda a: has_number(a, T["admin_count"]))
     add("u_users", "csv_users", "How many users in data/users.csv have the role 'user'? Answer with a number.",
@@ -145,7 +145,7 @@ def build_tasks(truth: dict) -> list:
     add("u_minscore", "csv_users", "What is the lowest score in data/users.csv? Answer with a number.",
         READ, lambda a: has_number(a, T["min_score"]))
 
-    # ---- agregaciones sales.csv / inventory.csv ----
+    # ---- sales.csv / inventory.csv aggregations ----
     add("s_total", "csv_agg", "What is the total of all 'amount' values in data/sales.csv? Answer with a number.",
         READ, lambda a: has_number(a, T["sales_total"]))
     add("s_rows", "csv_agg", "How many data rows (excluding header) does data/sales.csv have? Answer with a number.",
@@ -200,7 +200,7 @@ def build_tasks(truth: dict) -> list:
     add("g_filesdef", "grep", "Across the whole project, how many files contain the word 'def'? Answer with a number.",
         ["find_in_files", "grep"], lambda a: has_number(a, T["files_with_def"]))
 
-    # ---- find_in_files: localizar tokens únicos ----
+    # ---- find_in_files: locate unique tokens ----
     add("loc_qelor", "locate", "Which file contains the token QELOR_TOKEN? Give its file name.",
         ["find_in_files", "grep"], lambda a: contains(a, "queries.py"))
     add("loc_alpha", "locate", "Which file contains the token ALPHA_MARK? Give its file name.",
@@ -244,7 +244,7 @@ def build_tasks(truth: dict) -> list:
     add("head_guide", "head", "What is the first heading line of docs/guide.md?",
         ["head", "read_lines", "read_file"], lambda a: contains(a, "guide"))
 
-    # ---- multipaso encadenado ----
+    # ---- chained multistep ----
     add("ms_helper", "multistep",
         "Find which Python file contains a function called 'helper', then tell me what numeric value it multiplies its argument by.",
         ["grep", "find_in_files", "find_files", "read_file"], lambda a: has_number(a, 42))
@@ -263,7 +263,7 @@ def build_tasks(truth: dict) -> list:
         ["find_files", "stat_path", "count_lines", "list_dir"],
         lambda a: has_number(a, T["line_counts"]["data/users.csv"]))
 
-    # ---- comparaciones cross-file ----
+    # ---- cross-file comparisons ----
     add("cmp_ports", "compare",
         "Does the port in config.ini match server.port in settings.json? Answer yes or no.",
         READ, lambda a: no(a))
@@ -280,7 +280,7 @@ def build_tasks(truth: dict) -> list:
         ["count_lines", "read_file"],
         lambda a: contains(a, "main.py" if T["line_counts"]["src/main.py"] > T["line_counts"]["src/utils.py"] else "utils.py"))
 
-    # ---- razonamiento condicional ----
+    # ---- conditional reasoning ----
     add("cond_admins", "reason", "Are there more than 2 admin users in data/users.csv? Answer yes or no.",
         READ, lambda a: yes(a))
     add("cond_moreusers", "reason",
@@ -293,7 +293,7 @@ def build_tasks(truth: dict) -> list:
     add("cond_cache", "reason", "Is the 'cache' feature enabled in settings.json? Answer yes or no.",
         READ, lambda a: no(a))
 
-    # ---- negativos / robustez ----
+    # ---- negatives / robustness ----
     add("neg_file", "negative",
         "Read the file 'database.sqlite' in the current directory and tell me which tables it defines.",
         READ + ["find_files", "list_dir"], lambda a: says_not_found(a), negative=True)

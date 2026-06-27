@@ -1,11 +1,11 @@
-"""Runner del benchmark: ejecuta una tarea contra un modelo y la puntúa.
+"""Benchmark runner: executes a task against a model and scores it.
 
-- Tool set de SOLO LECTURA (se excluye write_file).
-- Peticiones no-streaming (más robustas para medir): usage exacto, timeout por
-  llamada, manejo de JSON malformado / sin tool / timeouts sin colgar la suite.
-- Captura TODO: razonamiento (reasoning_content y/o <think>) + completions +
-  tool calls + resultados, para loguearlo entero.
-- Modo thinking on/off vía chat_template_kwargs.enable_thinking.
+- READ-ONLY tool set (write_file is excluded).
+- Non-streaming requests (more robust for measuring): exact usage, per-call
+  timeout, handling of malformed JSON / no tool / timeouts without hanging the suite.
+- Captures EVERYTHING: reasoning (reasoning_content and/or <think>) + completions +
+  tool calls + results, to log it all.
+- Thinking on/off mode via chat_template_kwargs.enable_thinking.
 """
 
 import json
@@ -14,11 +14,11 @@ import re
 import sys
 import time
 
-# permitir importar tools.py del directorio padre
+# allow importing tools.py from the parent directory
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools import TOOLS, DISPATCH, call_tool  # noqa: E402
 
-# tools de solo lectura: todas menos write_file
+# read-only tools: all except write_file
 READONLY_TOOLS = [t for t in TOOLS if t["function"]["name"] != "write_file"]
 READONLY_NAMES = {t["function"]["name"] for t in READONLY_TOOLS}
 
@@ -34,12 +34,12 @@ SYSTEM_PROMPT = (
 THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
 MAX_ITERATIONS = 6
-PER_CALL_TIMEOUT = 150          # s por petición al modelo
-TOOL_RESULT_CAP = 6000          # chars de resultado de tool que devolvemos al modelo
+PER_CALL_TIMEOUT = 150          # s per request to the model
+TOOL_RESULT_CAP = 6000          # chars of tool result we return to the model
 
 
 def _split_think(content: str):
-    """Separa <think>..</think> inline del resto. Devuelve (clean, think_text)."""
+    """Separates inline <think>..</think> from the rest. Returns (clean, think_text)."""
     if not content:
         return content or "", ""
     thinks = THINK_RE.findall(content)
@@ -56,19 +56,19 @@ def _extract_reasoning(msg) -> str:
 
 def run_task(client, model_name, task, root, enable_thinking, tools=None,
              grader_root=False, system_prompt=None, max_iterations=None):
-    """Ejecuta una tarea. Devuelve un dict con resultado, métricas y transcript completo.
+    """Executes a task. Returns a dict with result, metrics and the full transcript.
 
-    tools: lista de tools a exponer (por defecto READONLY_TOOLS).
-    grader_root: si True, el grader se llama como check(answer, root) (para tareas
-    que escriben/ejecutan y hay que verificar el filesystem).
-    system_prompt: override del prompt de sistema."""
+    tools: list of tools to expose (defaults to READONLY_TOOLS).
+    grader_root: if True, the grader is called as check(answer, root) (for tasks
+    that write/execute and the filesystem needs to be verified).
+    system_prompt: override of the system prompt."""
     tools = tools if tools is not None else READONLY_TOOLS
     messages = [
         {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
         {"role": "user", "content": task["prompt"]},
     ]
-    transcript = []           # todos los turnos (razonamiento + content + tools)
-    tool_calls_made = []      # nombres de tools llamadas (en orden)
+    transcript = []           # all turns (reasoning + content + tools)
+    tool_calls_made = []      # names of tools called (in order)
     malformed_json = 0
     answer = ""
     status = "ok"             # ok | no_answer | max_iter | error
@@ -91,7 +91,7 @@ def run_task(client, model_name, task, root, enable_thinking, tools=None,
                 timeout=PER_CALL_TIMEOUT,
                 extra_body=extra_body,
             )
-        except Exception as e:  # timeout, APIError, 400 por kwargs, etc.
+        except Exception as e:  # timeout, APIError, 400 from kwargs, etc.
             status = "error"
             error_msg = f"{type(e).__name__}: {e}"
             transcript.append({"turn": iteration, "error": error_msg})
@@ -116,7 +116,7 @@ def run_task(client, model_name, task, root, enable_thinking, tools=None,
             "tool_calls": [],
         }
 
-        # reconstruir el assistant message para el historial
+        # reconstruct the assistant message for the history
         assistant_msg = {"role": "assistant", "content": clean_content or None}
         if tc:
             assistant_msg["tool_calls"] = [
@@ -132,7 +132,7 @@ def run_task(client, model_name, task, root, enable_thinking, tools=None,
             transcript.append(turn_log)
             break
 
-        # ejecutar cada tool call
+        # execute each tool call
         for c in tc:
             name = c.function.name
             raw_args = c.function.arguments or "{}"
@@ -157,7 +157,7 @@ def run_task(client, model_name, task, root, enable_thinking, tools=None,
         transcript.append(turn_log)
     else:
         status = "max_iter"
-        # último intento de respuesta: pedir resumen sin tools
+        # last attempt at an answer: ask for a summary without tools
         answer = ""
 
     latency = time.time() - t0
@@ -175,7 +175,7 @@ def run_task(client, model_name, task, root, enable_thinking, tools=None,
     tool_ok = any(n in task["expect_tools"] for n in tool_calls_made)
     hallucinated = bool(task.get("negative")) and used_tool is not None and not correct and bool((answer or "").strip())
 
-    # eficiencia: penaliza iteraciones de más
+    # efficiency: penalizes extra iterations
     eff = 1.0 if iterations_used <= 2 else max(0.0, 1.0 - (iterations_used - 2) * 0.2)
     per_task_score = (0.70 * (1.0 if correct else 0.0)
                       + 0.20 * (1.0 if tool_ok else 0.0)
@@ -207,7 +207,7 @@ def run_task(client, model_name, task, root, enable_thinking, tools=None,
 
 
 def aggregate(results: list) -> dict:
-    """Métricas y nota final 0-100 de un conjunto de resultados de un modelo/modo."""
+    """Metrics and final 0-100 score for a set of results from a model/mode."""
     n = len(results)
     if n == 0:
         return {}
@@ -225,12 +225,12 @@ def aggregate(results: list) -> dict:
     tool_accuracy = tool_ok / n
     efficiency = sum(r["efficiency"] for r in results) / n
 
-    # nota final: correctness 70%, tool 20%, eficiencia 10%, menos penalizaciones
+    # final score: correctness 70%, tool 20%, efficiency 10%, minus penalties
     base = 100 * (0.70 * correctness_rate + 0.20 * tool_accuracy + 0.10 * efficiency)
     penalty = min(10, malformed) + min(10, timeouts * 2)
     final_score = max(0.0, round(base - penalty, 1))
 
-    # desglose por categoría (% acierto)
+    # breakdown by category (% accuracy)
     cats = {}
     for r in results:
         cats.setdefault(r["category"], []).append(r["correct"])

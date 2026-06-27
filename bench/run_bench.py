@@ -1,16 +1,16 @@
-"""Orquestador del benchmark.
+"""Benchmark orchestrator.
 
-Por cada modelo del registro: arranca llama-server (--jinja), y corre la batería
-completa en modo thinking ON y OFF; mata el servidor; pasa al siguiente. Al final
-escribe un leaderboard comparativo y loguea TODO (razonamiento + completions +
-tools) en bench/results/logs/.
+For each model in the registry: starts llama-server (--jinja), and runs the full
+suite in thinking ON and OFF mode; kills the server; moves on to the next. At the
+end it writes a comparative leaderboard and logs EVERYTHING (reasoning + completions +
+tools) in bench/results/logs/.
 
-Uso:
-  python run_bench.py                         # todos los modelos, ambos modos
-  python run_bench.py --models qwythos        # solo uno
-  python run_bench.py --modes think           # solo un modo
-  python run_bench.py --limit 5               # smoke rápido (5 tareas)
-  python run_bench.py --no-serve --alias X    # usa un server ya levantado
+Usage:
+  python run_bench.py                         # all models, both modes
+  python run_bench.py --models qwythos        # only one
+  python run_bench.py --modes think           # only one mode
+  python run_bench.py --limit 5               # quick smoke (5 tasks)
+  python run_bench.py --no-serve --alias X    # use an already-running server
 """
 
 import argparse
@@ -45,7 +45,7 @@ def _partial_path(label):
 
 
 def load_partial(label):
-    """Carga resultados ya completados de la JSONL incremental (id -> result)."""
+    """Loads already-completed results from the incremental JSONL (id -> result)."""
     done = {}
     path = _partial_path(label)
     if os.path.exists(path):
@@ -63,7 +63,7 @@ def load_partial(label):
 
 
 def is_complete(label, total):
-    """True si el summary json de este run ya tiene las `total` tareas."""
+    """True if this run's summary json already has the `total` tasks."""
     summ = os.path.join(RESULTS_DIR, f"{label}.json")
     if os.path.exists(summ):
         try:
@@ -74,8 +74,8 @@ def is_complete(label, total):
 
 
 def run_suite(client, model_name, run_label, tasks, root, enable_thinking):
-    """Corre las tareas de un run con RESUME: salta las ya hechas (JSONL incremental)
-    y guarda cada resultado al instante para sobrevivir a cortes/sleeps."""
+    """Runs the tasks of a run with RESUME: skips the already-done ones (incremental
+    JSONL) and saves each result instantly to survive interruptions/sleeps."""
     os.makedirs(LOGS_DIR, exist_ok=True)
     done = load_partial(run_label)
     results = []
@@ -104,20 +104,20 @@ def run_suite(client, model_name, run_label, tasks, root, enable_thinking):
 
 
 def save_run(run_label, results, agg):
-    """Guarda summary json + transcript completo (jsonl) + log legible."""
+    """Saves summary json + full transcript (jsonl) + readable log."""
     os.makedirs(LOGS_DIR, exist_ok=True)
-    # summary sin transcript
+    # summary without transcript
     summary = {"run": run_label, "aggregate": agg,
                "tasks": [{k: v for k, v in r.items() if k != "transcript"} for r in results]}
     with open(os.path.join(RESULTS_DIR, f"{run_label}.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
 
-    # transcript completo (todo lo que dijo el LLM)
+    # full transcript (everything the LLM said)
     with open(os.path.join(LOGS_DIR, f"{run_label}.jsonl"), "w", encoding="utf-8") as f:
         for r in results:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
-    # log legible
+    # readable log
     with open(os.path.join(LOGS_DIR, f"{run_label}.log"), "w", encoding="utf-8") as f:
         for r in results:
             f.write(f"\n{'='*80}\n[{r['id']}] ({r['category']}) {'NEGATIVE' if r['negative'] else ''}\n")
@@ -141,15 +141,15 @@ def save_run(run_label, results, agg):
 
 
 def write_report(all_runs, truth, n_tasks):
-    """Escribe results/report.md con leaderboard + categorías."""
+    """Writes results/report.md with leaderboard + categories."""
     rows = sorted(all_runs, key=lambda x: x["agg"].get("final_score", 0), reverse=True)
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    lines = [f"# Benchmark de tool-calling local — {ts}", ""]
-    lines.append(f"- **{n_tasks} tareas** por run (tools de solo lectura, decoding determinista "
+    lines = [f"# Local tool-calling benchmark — {ts}", ""]
+    lines.append(f"- **{n_tasks} tasks** per run (read-only tools, deterministic decoding "
                  f"`temperature=0, seed=42`).")
-    lines.append("- Cada modelo se evalúa en **thinking ON** (`think`) y **OFF** (`nothink`).")
-    lines.append("- Nota final = 70% correctness + 20% tool-selection + 10% eficiencia − penalizaciones.")
+    lines.append("- Each model is evaluated in **thinking ON** (`think`) and **OFF** (`nothink`).")
+    lines.append("- Final score = 70% correctness + 20% tool-selection + 10% efficiency − penalties.")
     lines.append("")
 
     lines.append("## 🏆 Leaderboard")
@@ -161,7 +161,7 @@ def write_report(all_runs, truth, n_tasks):
     for i, run in enumerate(rows, 1):
         a = run["agg"]
         if not a:
-            lines.append(f"| {i} | {run['label']} | — (no cargó) |||||||||||")
+            lines.append(f"| {i} | {run['label']} | — (failed to load) |||||||||||")
             continue
         lines.append(
             f"| {i} | **{run['label']}** | **{a['final_score']}** | {a['correctness_pct']} | "
@@ -170,10 +170,10 @@ def write_report(all_runs, truth, n_tasks):
             f"{a['errors_timeouts']} | {a['avg_latency_s']} | {a['total_completion_tokens']} |")
     lines.append("")
 
-    # categorías
+    # categories
     cats = sorted({c for run in rows if run["agg"] for c in run["agg"]["by_category"]})
     if cats:
-        lines.append("## Acierto por categoría (%)")
+        lines.append("## Accuracy by category (%)")
         lines.append("")
         lines.append("| Category | " + " | ".join(run["label"] for run in rows if run["agg"]) + " |")
         lines.append("|---|" + "---|" * len([r for r in rows if r["agg"]]))
@@ -182,17 +182,17 @@ def write_report(all_runs, truth, n_tasks):
             lines.append(f"| {c} | " + " | ".join(cells) + " |")
         lines.append("")
 
-    # veredicto
+    # verdict
     if rows and rows[0]["agg"]:
         win = rows[0]
-        lines.append("## Veredicto")
+        lines.append("## Verdict")
         lines.append("")
-        lines.append(f"**Ganador: `{win['label']}`** con nota **{win['agg']['final_score']}/100** "
-                     f"({win['agg']['correctness_pct']}% de tareas correctas, "
-                     f"{win['agg']['tool_accuracy_pct']}% de acierto en selección de tool).")
+        lines.append(f"**Winner: `{win['label']}`** with a score of **{win['agg']['final_score']}/100** "
+                     f"({win['agg']['correctness_pct']}% of tasks correct, "
+                     f"{win['agg']['tool_accuracy_pct']}% tool-selection accuracy).")
         lines.append("")
-        lines.append("Transcripts completos (razonamiento + respuestas + tools) en "
-                     "`results/logs/<run>.jsonl` y `.log`.")
+        lines.append("Full transcripts (reasoning + answers + tools) in "
+                     "`results/logs/<run>.jsonl` and `.log`.")
     lines.append("")
 
     with open(os.path.join(RESULTS_DIR, "report.md"), "w", encoding="utf-8") as f:
@@ -207,7 +207,7 @@ def print_leaderboard(all_runs):
     for i, run in enumerate(rows, 1):
         a = run["agg"]
         if not a:
-            table.add_row(str(i), run["label"], "— no cargó", "", "", "", "", "")
+            table.add_row(str(i), run["label"], "— failed to load", "", "", "", "", "")
             continue
         table.add_row(str(i), run["label"], str(a["final_score"]),
                       str(a["correctness_pct"]), str(a["tool_accuracy_pct"]),
@@ -217,24 +217,24 @@ def print_leaderboard(all_runs):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--models", help="alias separados por coma (default: todos)")
+    ap.add_argument("--models", help="comma-separated aliases (default: all)")
     ap.add_argument("--modes", default="think,nothink", help="think,nothink")
-    ap.add_argument("--limit", type=int, default=0, help="usar solo las primeras N tareas")
-    ap.add_argument("--no-serve", action="store_true", help="usar un server ya levantado")
-    ap.add_argument("--alias", default="local", help="alias del modelo si --no-serve")
+    ap.add_argument("--limit", type=int, default=0, help="use only the first N tasks")
+    ap.add_argument("--no-serve", action="store_true", help="use an already-running server")
+    ap.add_argument("--alias", default="local", help="model alias if --no-serve")
     args = ap.parse_args()
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
     modes = [m.strip() for m in args.modes.split(",") if m.strip()]
 
-    # sandbox + ground truth (una vez); el cwd pasa a ser el sandbox
+    # sandbox + ground truth (once); the cwd becomes the sandbox
     info = fixtures.build_sandbox(SCRATCH)
     root = info["root"]
     os.chdir(root)
     tasks = build_tasks(info["truth"])
     if args.limit:
         tasks = tasks[:args.limit]
-    console.print(f"[bold]Sandbox:[/] {root}  ·  {len(tasks)} tareas  ·  modos: {modes}")
+    console.print(f"[bold]Sandbox:[/] {root}  ·  {len(tasks)} tasks  ·  modes: {modes}")
 
     all_runs = []
 
@@ -251,19 +251,19 @@ def main():
         total = len(tasks)
         for model in chosen:
             labels = [f"{model['alias']}-{m}" for m in modes]
-            # si todos los modos de este modelo ya están completos, ni cargamos el modelo
+            # if all modes for this model are already complete, don't even load the model
             if not args.limit and all(is_complete(l, total) for l in labels):
-                console.print(f"[dim]{model['alias']}: ya completo, salto (no cargo el modelo)[/]")
+                console.print(f"[dim]{model['alias']}: already complete, skipping (not loading the model)[/]")
                 for l in labels:
                     agg = json.load(open(os.path.join(RESULTS_DIR, f"{l}.json"), encoding="utf-8"))["aggregate"]
                     all_runs.append({"label": l, "agg": agg})
                 continue
-            console.rule(f"[bold magenta]Cargando modelo: {model['alias']}[/]")
+            console.rule(f"[bold magenta]Loading model: {model['alias']}[/]")
             proc = None
             try:
                 proc = serve.start_server(model, log=console.print)
             except Exception as e:
-                console.print(f"[red]No se pudo cargar {model['alias']}: {e}[/]")
+                console.print(f"[red]Could not load {model['alias']}: {e}[/]")
                 for mode in modes:
                     all_runs.append({"label": f"{model['alias']}-{mode}", "agg": {}})
                 continue
@@ -280,8 +280,8 @@ def main():
 
     write_report(all_runs, info["truth"], len(tasks))
     print_leaderboard(all_runs)
-    console.print(f"\n[bold green]Listo.[/] Informe: {os.path.join(RESULTS_DIR, 'report.md')}")
-    console.print(f"Logs completos: {LOGS_DIR}")
+    console.print(f"\n[bold green]Done.[/] Report: {os.path.join(RESULTS_DIR, 'report.md')}")
+    console.print(f"Full logs: {LOGS_DIR}")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,8 @@
-"""Ciclo de vida de llama-server para el benchmark.
+"""llama-server lifecycle for the benchmark.
 
-Arranca el servidor con --jinja (imprescindible para que el tool-calling
-funcione en llama.cpp), espera a que /health diga ok, y al terminar mata el
-árbol de procesos para no dejar el .exe ocupando puerto/VRAM.
+Starts the server with --jinja (essential for tool-calling to work in
+llama.cpp), waits for /health to say ok, and when finished kills the process
+tree so the .exe doesn't keep occupying the port/VRAM.
 """
 
 import subprocess
@@ -22,10 +22,10 @@ def health_url():
 
 
 def start_server(model: dict, log=print):
-    """Lanza llama-server para `model`. Devuelve el Popen ya con /health ok.
+    """Launches llama-server for `model`. Returns the Popen once /health is ok.
 
-    Lanza RuntimeError si el modelo no carga dentro del timeout o el proceso
-    muere durante el arranque.
+    Raises RuntimeError if the model doesn't load within the timeout or the
+    process dies during startup.
     """
     cmd = [
         LLAMA_SERVER,
@@ -37,7 +37,7 @@ def start_server(model: dict, log=print):
         "--jinja",
         "--alias", model["alias"],
     ]
-    log(f"[serve] lanzando: {model['alias']}")
+    log(f"[serve] launching: {model['alias']}")
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,
@@ -45,25 +45,25 @@ def start_server(model: dict, log=print):
         creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
     )
 
-    deadline = time.time() + 240  # carga en GPU puede tardar
+    deadline = time.time() + 240  # GPU load can take a while
     while time.time() < deadline:
         if proc.poll() is not None:
-            raise RuntimeError(f"llama-server murió al arrancar (code {proc.returncode})")
+            raise RuntimeError(f"llama-server died on startup (code {proc.returncode})")
         try:
             r = requests.get(health_url(), timeout=2)
             if r.status_code == 200 and r.json().get("status") == "ok":
-                log(f"[serve] {model['alias']} listo en {base_url()}")
+                log(f"[serve] {model['alias']} ready at {base_url()}")
                 return proc
         except (requests.RequestException, ValueError):
             pass
         time.sleep(1.5)
 
     stop_server(proc)
-    raise RuntimeError(f"timeout esperando /health de {model['alias']}")
+    raise RuntimeError(f"timeout waiting for /health of {model['alias']}")
 
 
 def stop_server(proc, log=print):
-    """Mata el proceso y todo su árbol (Windows)."""
+    """Kills the process and its entire tree (Windows)."""
     if proc is None or proc.poll() is not None:
         return
     try:
@@ -78,6 +78,6 @@ def stop_server(proc, log=print):
         proc.wait(timeout=15)
     except Exception:
         pass
-    # margen para que el SO libere el puerto antes del siguiente modelo
+    # margin for the OS to release the port before the next model
     time.sleep(2)
-    log("[serve] servidor parado")
+    log("[serve] server stopped")

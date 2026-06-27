@@ -1,0 +1,13 @@
+{
+  "llama_server": "C:/path/to/llama-server.exe",
+  "host": "127.0.0.1",
+  "port": 25565,
+  "models_base": "",
+  "models": [
+    {
+      "alias": "my-model",
+      "path": "C:/path/to/your/model-Q4_K_M.gguf",
+      "ctx": 16000
+    }
+  ]
+}

@@ -1,7 +1,7 @@
-"""Runner del tier HARDCORE (incidente real) contra los 3 ganadores.
+"""Runner for the HARDCORE tier (real incident) against the 3 winners.
 
-Sandbox FRESCO por tarea (dir único) porque varias tareas editan/arreglan código.
-Tool set completo, graders estrictos (algunos ejecutan el código). Resumible.
+FRESH sandbox per task (unique dir) because several tasks edit/fix code.
+Full tool set, strict graders (some run the code). Resumable.
 """
 
 import argparse
@@ -40,7 +40,7 @@ HARD_SYSTEM = (
     "containing exactly the values requested."
 )
 
-# v2: además le ordena PARAR y responder en cuanto tenga el dato (anti-loop)
+# v2: additionally tells it to STOP and answer as soon as it has the value (anti-loop)
 HARD_SYSTEM_V2 = HARD_SYSTEM + (
     " CRITICAL: The moment you have gathered the specific value(s) the task asks for, STOP "
     "calling tools and immediately write your final answer in plain text. Do NOT keep "
@@ -49,7 +49,7 @@ HARD_SYSTEM_V2 = HARD_SYSTEM + (
     "pick the one the task actually asks for and commit to it."
 )
 
-# se fijan en main() según los flags
+# set in main() according to the flags
 SYS_PROMPT = HARD_SYSTEM
 MAX_ITERS = None
 
@@ -133,11 +133,11 @@ def run_suite(client, alias, label, tasks, enable_thinking):
 
 def write_report(all_runs, n_tasks):
     rows = sorted(all_runs, key=lambda x: x["agg"].get("final_score", 0), reverse=True)
-    lines = ["# Benchmark HARDCORE (incidente real dev/sysadmin)", "",
-             f"- **{n_tasks} tareas** multi-paso · sandbox fresco por tarea · graders estrictos.",
-             "- Incluye parsear tracebacks, correlacionar configs, encontrar un secreto, ARREGLAR",
-             "  un bug (se ejecuta su self-test), bumps multi-fichero y análisis de access logs.",
-             "- Solo los 3 ganadores.", "",
+    lines = ["# HARDCORE benchmark (real dev/sysadmin incident)", "",
+             f"- **{n_tasks} tasks** multi-step · fresh sandbox per task · strict graders.",
+             "- Includes parsing tracebacks, correlating configs, finding a secret, FIXING",
+             "  a bug (its self-test is run), multi-file bumps and access-log analysis.",
+             "- Only the 3 winners.", "",
              "## Leaderboard", "",
              "| # | Run | Score | Correct% | Tool% | BadJSON | Errs | Lat(s) | OutTok |",
              "|---|---|---|---|---|---|---|---|---|"]
@@ -147,12 +147,12 @@ def write_report(all_runs, n_tasks):
                      f"{a['tool_accuracy_pct']} | {a['malformed_json']} | {a['errors_timeouts']} | "
                      f"{a['avg_latency_s']} | {a['total_completion_tokens']} |")
     cats = sorted({c for run in rows for c in run["agg"]["by_category"]})
-    lines += ["", "## Acierto por categoría (%)", "",
+    lines += ["", "## Accuracy by category (%)", "",
               "| Category | " + " | ".join(r["label"] for r in rows) + " |",
               "|---|" + "---|" * len(rows)]
     for c in cats:
         lines.append(f"| {c} | " + " | ".join(str(r["agg"]["by_category"].get(c, "—")) for r in rows) + " |")
-    lines += ["", "Transcripts en `results/hard/logs/`.", ""]
+    lines += ["", "Transcripts in `results/hard/logs/`.", ""]
     os.makedirs(HARD_DIR, exist_ok=True)
     open(os.path.join(HARD_DIR, "report_hard.md"), "w", encoding="utf-8").write("\n".join(lines))
 
@@ -162,9 +162,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--runs", help="alias:modo,...")
     ap.add_argument("--limit", type=int, default=0)
-    ap.add_argument("--tag", default="", help="sufijo del dir de resultados (p.ej. v2)")
-    ap.add_argument("--max-iters", type=int, default=0, help="override de MAX_ITERATIONS")
-    ap.add_argument("--strong", action="store_true", help="usar el system prompt v2 (anti-loop)")
+    ap.add_argument("--tag", default="", help="suffix for the results dir (e.g. v2)")
+    ap.add_argument("--max-iters", type=int, default=0, help="override of MAX_ITERATIONS")
+    ap.add_argument("--strong", action="store_true", help="use the v2 system prompt (anti-loop)")
     args = ap.parse_args()
 
     if args.tag:
@@ -189,18 +189,18 @@ def main():
     target = TARGET_RUNS
     if args.runs:
         target = [(x.split(":")[0], x.split(":")[1]) for x in args.runs.split(",")]
-    console.print(f"[bold]HARDCORE:[/] {total} tareas · runs: {target}")
+    console.print(f"[bold]HARDCORE:[/] {total} tasks · runs: {target}")
 
     all_runs = []
     for alias, mode in target:
         label = f"{alias}-{mode}"
         if not args.limit and is_complete(label, total):
-            console.print(f"[dim]{label}: ya completo, salto[/]")
+            console.print(f"[dim]{label}: already complete, skipping[/]")
             agg = json.load(open(os.path.join(HARD_DIR, f"{label}.json"), encoding="utf-8"))["aggregate"]
             all_runs.append({"label": label, "agg": agg}); continue
         model = next((m for m in registry.MODELS if m["alias"] == alias), None)
         if model is None:
-            console.print(f"[red]alias desconocido: {alias}[/]"); continue
+            console.print(f"[red]unknown alias: {alias}[/]"); continue
         console.rule(f"[bold magenta]{label}[/]")
         proc = None
         try:
@@ -210,7 +210,7 @@ def main():
             save_run(label, results, agg)
             all_runs.append({"label": label, "agg": agg})
         except Exception as e:
-            console.print(f"[red]fallo en {label}: {e}[/]")
+            console.print(f"[red]failure in {label}: {e}[/]")
         finally:
             serve.stop_server(proc, log=console.print)
             os.chdir(HERE)
@@ -224,7 +224,7 @@ def main():
             a = run["agg"]
             t.add_row(run["label"], str(a["final_score"]), str(a["correctness_pct"]), str(a["tool_accuracy_pct"]))
         console.print(t)
-    console.print(f"[green]Listo.[/] Informe: {os.path.join(HARD_DIR, 'report_hard.md')}")
+    console.print(f"[green]Done.[/] Report: {os.path.join(HARD_DIR, 'report_hard.md')}")
 
 
 if __name__ == "__main__":

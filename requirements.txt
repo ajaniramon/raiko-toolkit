@@ -1,0 +1,11 @@
+# raiko-toolkit runtime dependencies
+openai>=1.0          # OpenAI-compatible client (all providers + local llama.cpp)
+textual>=8.0         # the TUI
+rich>=13.0           # rendering (markdown, panels, syntax, sparklines)
+psutil>=5.9          # CPU/RAM telemetry in the TUI sidebar
+requests>=2.28       # vault_get_secret
+paramiko>=3.0        # remote SSH/SFTP (benchmark circuit tier)
+mcp[cli]>=1.0        # MCP server + client
+
+# optional — only needed to regenerate the README charts:
+# matplotlib>=3.8

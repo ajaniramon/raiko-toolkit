@@ -1,9 +1,9 @@
-"""Tier AVANZADO del benchmark: el modelo escribe ficheros, edita el trozo
-concreto que toca, usa Python y usa PowerShell. Los graders verifican el
-FILESYSTEM resultante (check(answer, root)), no solo el texto.
+"""ADVANCED tier of the benchmark: the model writes files, edits the specific
+chunk it needs to, uses Python and uses PowerShell. The graders verify the
+resulting FILESYSTEM (check(answer, root)), not just the text.
 
-Cada tarea se corre sobre un sandbox recién reconstruido (las escrituras mutan
-el árbol), así que las tareas no interfieren entre sí.
+Each task runs on a freshly rebuilt sandbox (writes mutate the tree), so the
+tasks don't interfere with each other.
 """
 
 import json
@@ -35,7 +35,7 @@ def build_tasks_adv():
     WRITE = ["write_file", "run_python", "run_powershell"]
     EDIT = ["edit_file", "write_file", "run_python", "run_powershell"]
 
-    # ---------------- escribir ficheros ----------------
+    # ---------------- write files ----------------
     add("w_create", "write",
         "Create a new file named output.txt containing exactly this text: Hello Nebula",
         WRITE, lambda a, r: (rf(r, "output.txt") or "").strip() == "Hello Nebula")
@@ -49,7 +49,7 @@ def build_tasks_adv():
         "Create a file lines.txt with exactly three lines, in this order: alpha, beta, gamma (one per line).",
         WRITE, lambda a, r: [l.strip() for l in (rf(r, "lines.txt") or "").splitlines() if l.strip()][:3] == ["alpha", "beta", "gamma"])
 
-    # ---------------- editar el trozo concreto ----------------
+    # ---------------- edit the specific chunk ----------------
     add("e_port", "edit",
         "In config.ini, change the server port value from 8080 to 9999, leaving everything else unchanged.",
         EDIT, lambda a, r: (lambda c: bool(c) and "9999" in c and "8080" not in c and "timeout=30" in c)(rf(r, "config.ini") or ""))
@@ -108,7 +108,7 @@ def build_tasks_adv():
         "Using PowerShell, read config.ini and report the configured port number.",
         ["run_powershell"], lambda a, r: has_number(a, 8080))
 
-    # ---------------- mixto / multipaso ----------------
+    # ---------------- mixed / multistep ----------------
     add("m_edit_verify", "mixed",
         "Change the timeout value in config.ini from 30 to 45, then read the file back to confirm the new value and report it.",
         EDIT, lambda a, r: "timeout=45" in (rf(r, "config.ini") or ""))

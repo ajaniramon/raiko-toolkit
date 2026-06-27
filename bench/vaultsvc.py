@@ -1,7 +1,7 @@
-"""Ciclo de vida de un Vault dev local para el circuito del benchmark.
+"""Lifecycle of a local dev Vault for the benchmark circuit.
 
-Arranca `vault server -dev` (auto-unseal, token root fijo), espera /health,
-permite sembrar secretos KV v2, y lo mata al terminar.
+Starts `vault server -dev` (auto-unseal, fixed root token), waits for /health,
+allows seeding KV v2 secrets, and kills it when done.
 """
 
 import subprocess
@@ -23,26 +23,26 @@ def start_vault(log=print):
     deadline = time.time() + 30
     while time.time() < deadline:
         if proc.poll() is not None:
-            raise RuntimeError(f"vault murió al arrancar (code {proc.returncode})")
+            raise RuntimeError(f"vault died on startup (code {proc.returncode})")
         try:
             r = requests.get(f"{ADDR}/v1/sys/health", timeout=2)
             if r.status_code in (200, 429, 473, 501):
-                log(f"[vault] listo en {ADDR}")
+                log(f"[vault] ready at {ADDR}")
                 return proc
         except requests.RequestException:
             pass
         time.sleep(1)
     stop_vault(proc)
-    raise RuntimeError("timeout esperando /health de vault")
+    raise RuntimeError("timeout waiting for vault /health")
 
 
 def seed_secret(path, data, log=print):
-    """Escribe un secreto KV v2. path tipo 'secret/data/mac'."""
+    """Writes a KV v2 secret. path like 'secret/data/mac'."""
     r = requests.post(f"{ADDR}/v1/{path}", headers={"X-Vault-Token": TOKEN},
                       json={"data": data}, timeout=10)
     if r.status_code not in (200, 204):
-        raise RuntimeError(f"seed falló {r.status_code}: {r.text[:200]}")
-    log(f"[vault] secreto escrito en {path}")
+        raise RuntimeError(f"seed failed {r.status_code}: {r.text[:200]}")
+    log(f"[vault] secret written to {path}")
 
 
 def stop_vault(proc, log=print):
@@ -54,4 +54,4 @@ def stop_vault(proc, log=print):
         except Exception:
             proc.kill()
     time.sleep(1)
-    log("[vault] parado")
+    log("[vault] stopped")

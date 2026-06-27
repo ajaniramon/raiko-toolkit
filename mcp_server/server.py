@@ -1,13 +1,13 @@
-"""JJ tools — servidor MCP + backoffice web.
+"""JJ tools — MCP server + web backoffice.
 
-Expone las tools por MCP (endpoint /mcp) y, en modo --http, sirve además un
-BACKOFFICE en / para ver/activar/desactivar tools y crear tools personalizadas
-(nombre + descripción + comando de shell con {args}) — guarda en tools_config.json
-y reinicia el server para aplicar.
+Exposes the tools over MCP (endpoint /mcp) and, in --http mode, also serves a
+BACKOFFICE at / to view/enable/disable tools and create custom tools
+(name + description + shell command with {args}) — saves to tools_config.json
+and restarts the server to apply.
 
-Uso:
-  python server.py                      # stdio (Claude Desktop / Code local)
-  python server.py --http --port 8765   # MCP en /mcp + backoffice en /
+Usage:
+  python server.py                      # stdio (Claude Desktop / local Code)
+  python server.py --http --port 8765   # MCP at /mcp + backoffice at /
 """
 
 import argparse
@@ -36,7 +36,7 @@ SIMPLE_TOOLS = [
     "tree", "find_in_files", "edit_file",
 ]
 
-# descripciones para las tools sin docstring (mejora el schema del MCP y el backoffice)
+# descriptions for the tools without a docstring (improves the MCP schema and the backoffice)
 DESC = {
     "read_file": "Read a UTF-8 text file and return its contents.",
     "write_file": "Write text to a file (creates parent dirs, overwrites existing).",
@@ -142,8 +142,8 @@ EXEC_TOOLS = [run_python, run_shell, run_powershell, os_info]
 def build_server():
     cfg = load_config()
     disabled = set(cfg.get("disabled", []))
-    # red local de confianza: desactivamos la protección anti DNS-rebinding para
-    # poder conectar por IP en la LAN sin 421 Misdirected Request.
+    # trusted local network: we disable the anti DNS-rebinding protection so we
+    # can connect by IP on the LAN without a 421 Misdirected Request.
     mcp = FastMCP("jj-tools",
                   transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False))
     for name in SIMPLE_TOOLS:
@@ -169,8 +169,8 @@ def build_server():
 
 
 def _full_desc(doc):
-    """La descripción COMPLETA que ve el modelo, normalizada a un párrafo limpio
-    (los docstrings multilínea con sangría se colapsan a espacios simples)."""
+    """The FULL description the model sees, normalized to a clean paragraph
+    (multiline docstrings with indentation are collapsed to single spaces)."""
     return " ".join((doc or "").split())
 
 
@@ -225,7 +225,7 @@ label{font-size:12px;color:var(--muted);font-family:ui-monospace,monospace}
 .toast.show{opacity:1}
 </style></head><body><div class=wrap>
 <h1>🔧 JJ tools <span class=sub>· backoffice</span></h1>
-<div class=sub>Activa/desactiva tools y crea las tuyas. Al guardar se reinicia el MCP server.</div>
+<div class=sub>Enable/disable tools and create your own. Saving restarts the MCP server.</div>
 <div class=url id=url></div>
 <div class=bar><button class=primary onclick=save()>💾 Save &amp; restart</button>
 <button onclick=location.reload()>↻ Reload</button></div>
@@ -242,7 +242,7 @@ label{font-size:12px;color:var(--muted);font-family:ui-monospace,monospace}
 let TOOLS=[],CUSTOM=[];
 async function load(){
   const r=await fetch('/api/tools');const d=await r.json();TOOLS=d.tools;
-  document.getElementById('url').innerHTML='MCP endpoint para clientes: <b>'+location.origin+'/mcp</b>';
+  document.getElementById('url').innerHTML='MCP endpoint for clients: <b>'+location.origin+'/mcp</b>';
   render();
 }
 function render(){

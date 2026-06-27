@@ -1,51 +1,58 @@
-"""Registro de modelos locales para el benchmark.
+"""Registry of local models for the benchmark.
 
-Para añadir un modelo nuevo: copia una línea y apunta `path` a su .gguf.
-`alias` es el nombre que verás en el leaderboard (y el --alias que recibe
-llama-server). `ctx` debe ser <= a lo que aguante tu VRAM.
+Machine-specific paths are NOT hardcoded here: they are read from `models.json`
+(NOT versioned — see `models.example.json` for the shape). Copy the example to
+`models.json` and fill in your llama-server path, your models folder, and one
+entry per model:
+
+    {
+      "llama_server": "C:/llamacpp/llama-server.exe",
+      "models_base": "C:/path/to/your/models",
+      "models": [
+        {"alias": "qwythos", "path": "C:/.../model.gguf", "ctx": 16000}
+      ]
+    }
+
+`alias` is the name you'll see in the leaderboard (and the --alias that
+llama-server receives). `ctx` must be <= what your VRAM can handle. The
+LLAMA_SERVER / MODELS_BASE / MODELS values can also be overridden via the
+LLAMA_SERVER and MODELS_BASE environment variables.
 """
 
+import json
 import os
 
-LLAMA_SERVER = r"C:\llamacpp\llama-server.exe"
-HOST = "127.0.0.1"
-PORT = 25565
+HERE = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(HERE, "models.json")
 
-# Carpeta base donde viven los modelos en disco. `discover()` la recorre (tree)
-# buscando ficheros .gguf y se queda con cada uno como un modelo.
-MODELS_BASE = r"C:\Users\reimon\.lmstudio\models"
 
-MODELS = [
-    {
-        "alias": "qwythos",
-        "path": r"C:\Users\reimon\.lmstudio\models\mradermacher\Qwythos\Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf",
-        "ctx": 16000,
-    },
-    {
-        "alias": "hauhau",
-        "path": r"C:\Users\reimon\.lmstudio\models\HauhauCS\Qwen3.5-9B-Uncensored-HauhauCS-Aggressive\Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf",
-        "ctx": 16000,
-    },
-    # --- modelos modernos descargados para comparar (familias distintas) ---
-    {
-        "alias": "qwen35-9b",
-        "path": r"C:\Users\reimon\.lmstudio\models\mradermacher\Qwen3.5-9B\Qwen3.5-9B-Q4_K_M.gguf",
-        "ctx": 16000,
-    },
-    {
-        "alias": "gemma4-12b",
-        "path": r"C:\Users\reimon\.lmstudio\models\mradermacher\Gemma4-12B\gemma-4-12b-it-Q4_K_M.gguf",
-        "ctx": 8192,   # 12B: ctx menor para no apurar la VRAM de la 4070
-    },
-    # (Nemotron Nano v2 descartado: es de 2025. GLM pequeño descartado: el único
-    #  es GLM-4.6V-Flash 9B de dic-2025 y es de visión; los GLM de 2026 son 700B+.)
-    # Añade aquí más modelos cuando quieras compararlos:
-    # {"alias": "loquesea", "path": r"C:\ruta\al\modelo.gguf", "ctx": 16000},
-]
+def _load_config():
+    """Load local paths + model registry from models.json (NOT versioned).
+    Returns an empty config if the file is missing, so the repo ships with no
+    machine-specific paths baked in."""
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+_CFG = _load_config()
+
+LLAMA_SERVER = os.environ.get("LLAMA_SERVER", _CFG.get("llama_server", "llama-server"))
+HOST = _CFG.get("host", "127.0.0.1")
+PORT = int(_CFG.get("port", 25565))
+
+# Base folder where the models live on disk. `discover()` walks it (tree)
+# looking for .gguf files and keeps each one as a model.
+MODELS_BASE = os.environ.get("MODELS_BASE", _CFG.get("models_base", ""))
+
+# Curated registry, loaded from models.json (empty until you create that file).
+MODELS = _CFG.get("models", [])
 
 
 def gpu_mem():
-    """Devuelve (free_GB, total_GB) de la GPU vía nvidia-smi, o (None, None)."""
+    """Returns (free_GB, total_GB) of the GPU via nvidia-smi, or (None, None)."""
     import subprocess
     try:
         out = subprocess.run(
@@ -58,9 +65,9 @@ def gpu_mem():
 
 
 def optimal_ctx(model_path, reserve_gb=1.5):
-    """Estima el ctx-size más grande que cabe en la VRAM libre tras cargar los
-    pesos del modelo. Heurístico conservador (redondea a múltiplos de 1024,
-    cap 32768). Si no hay GPU detectable, 8192 por defecto."""
+    """Estimates the largest ctx-size that fits in the free VRAM after loading the
+    model weights. Conservative heuristic (rounds to multiples of 1024,
+    cap 32768). If no GPU is detectable, 8192 by default."""
     free, _total = gpu_mem()
     try:
         weights = os.path.getsize(model_path) / 1e9
@@ -68,19 +75,19 @@ def optimal_ctx(model_path, reserve_gb=1.5):
         weights = 6.0
     if not free:
         return 8192
-    budget = free - weights - reserve_gb          # GB que quedan para el KV cache
+    budget = free - weights - reserve_gb          # GB left for the KV cache
     if budget <= 0.3:
         return 2048
-    kv_per_1k = max(0.10, 0.12 * (weights / 6.0))  # GB por cada 1k tokens (aprox)
+    kv_per_1k = max(0.10, 0.12 * (weights / 6.0))  # GB per 1k tokens (approx)
     ctx = int((budget / kv_per_1k) * 1024)
     ctx = max(2048, min(32768, ctx))
     return (ctx // 1024) * 1024
 
 
 def discover(base=MODELS_BASE):
-    """Recorre `base` (tree) y devuelve un modelo por cada .gguf encontrado.
-    Excluye los mmproj (proyectores de visión, no son modelos de chat).
-    El alias se toma del nombre de la carpeta que contiene el .gguf."""
+    """Walks `base` (tree) and returns one model for each .gguf found.
+    Excludes the mmproj files (vision projectors, not chat models).
+    The alias is taken from the name of the folder containing the .gguf."""
     found = []
     if not os.path.isdir(base):
         return found
@@ -90,15 +97,15 @@ def discover(base=MODELS_BASE):
                 found.append({
                     "alias": os.path.basename(root) or os.path.splitext(f)[0],
                     "path": os.path.join(root, f),
-                    "ctx": 8192,            # por defecto, seguro para la 4070
+                    "ctx": 8192,            # default, safe for the 4070
                     "discovered": True,
                 })
     return found
 
 
 def all_models(base=MODELS_BASE):
-    """Registro curado (MODELS) + modelos descubiertos en disco que no estén ya.
-    Dedup por ruta; alias duplicados se desambiguan con sufijo."""
+    """Curated registry (MODELS) + models discovered on disk that aren't already in it.
+    Dedup by path; duplicate aliases are disambiguated with a suffix."""
     known_paths = {os.path.normcase(m["path"]) for m in MODELS}
     seen_alias = {m["alias"] for m in MODELS}
     out = [dict(m) for m in MODELS]
@@ -115,18 +122,18 @@ def all_models(base=MODELS_BASE):
 
 
 def find(alias, base=MODELS_BASE):
-    """Devuelve el dict de un modelo por alias (busca en registro + descubiertos)."""
+    """Returns a model's dict by alias (searches registry + discovered)."""
     return next((m for m in all_models(base) if m["alias"] == alias), None)
 
 
 def select(aliases=None):
-    """Devuelve la lista de modelos, filtrada por una lista de alias si se pasa."""
+    """Returns the list of models, filtered by a list of aliases if one is passed."""
     if not aliases:
         return list(MODELS)
     wanted = {a.strip() for a in aliases}
     chosen = [m for m in MODELS if m["alias"] in wanted]
     missing = wanted - {m["alias"] for m in chosen}
     if missing:
-        raise SystemExit(f"Alias desconocidos: {', '.join(sorted(missing))}. "
-                         f"Disponibles: {', '.join(m['alias'] for m in MODELS)}")
+        raise SystemExit(f"Unknown aliases: {', '.join(sorted(missing))}. "
+                         f"Available: {', '.join(m['alias'] for m in MODELS)}")
     return chosen

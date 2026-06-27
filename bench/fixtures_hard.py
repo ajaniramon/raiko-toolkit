@@ -1,9 +1,9 @@
-"""Fixture HARDCORE: un microservicio 'orders-service' en producción con un
-incidente. Configs inconsistentes, un secreto hardcodeado, un bug real con
-self-test, logs estructurados con un traceback, y un access.log estilo Apache.
+"""HARDCORE fixture: an 'orders-service' microservice in production with an
+incident. Inconsistent configs, a hardcoded secret, a real bug with a
+self-test, structured logs with a traceback, and an Apache-style access.log.
 
-Pensado para que tareas multi-paso con graders estrictos hagan flaquear a los
-modelos pequeños. El ground-truth se calcula parseando lo escrito.
+Designed so that multi-step tasks with strict graders make small models
+falter. The ground-truth is computed by parsing what was written.
 """
 
 import json
@@ -14,7 +14,7 @@ from pathlib import Path
 
 SECRET_TOKEN = "sk-live-9f8e7d6c5b4a3210"
 
-# distribución determinista de IPs en el access.log (top = 10.0.0.7)
+# deterministic distribution of IPs in the access.log (top = 10.0.0.7)
 IP_COUNTS = [
     ("10.0.0.7", 80), ("10.0.0.3", 55), ("10.0.0.9", 40), ("192.168.1.5", 35),
     ("172.16.0.2", 30), ("10.0.0.11", 25), ("203.0.113.9", 20), ("198.51.100.4", 15),
@@ -128,7 +128,7 @@ FILES = {
         "def summary(orders):\n"
         "    return sum(process_order(o) for o in orders)\n"
     ),
-    # bug off-by-one en chunk(): coge size-1 elementos pero avanza size
+    # off-by-one bug in chunk(): takes size-1 elements but advances by size
     "src/parser.py": (
         "def chunk(items, size):\n"
         "    out = []\n"
@@ -198,7 +198,7 @@ def _truth(root: Path) -> dict:
     prod = json.loads((root / "config/config.prod.json").read_text(encoding="utf-8"))
     diff_keys = {k for k in dev if dev.get(k) != prod.get(k)}
 
-    # ficheros que importan 'db' (import db / from db import)
+    # files that import 'db' (import db / from db import)
     import_db = []
     for f in (root / "src").glob("*.py"):
         t = f.read_text(encoding="utf-8")

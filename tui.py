@@ -1,17 +1,17 @@
-"""TUI molón para el agente — wizard de arranque + nano-gpt / llama.cpp local.
+"""Cool TUI for the agent — startup wizard + nano-gpt / local llama.cpp.
 
-Arranque:
-  1) Elige proveedor (nano-gpt cloud / local llama.cpp).
-  2) Elige modelo de una lista (nano: 600+ vía API con filtro; local: registro).
-  3) Si es local y el server no está levantado, el TUI lo arranca solo.
+Startup:
+  1) Choose provider (nano-gpt cloud / local llama.cpp).
+  2) Choose a model from a list (nano: 600+ via API with filter; local: registry).
+  3) If local and the server is not up, the TUI starts it itself.
 
-Interfaz:
-  - Panel principal: thinking en streaming + tool-calling detallado con colorines.
-  - Sidebar derecha (solo local): gráficas en vivo GPU/VRAM/CPU/RAM + temp/pot/tok-s.
+Interface:
+  - Main panel: streaming thinking + detailed tool-calling with colors.
+  - Right sidebar (local only): live GPU/VRAM/CPU/RAM graphs + temp/power/tok-s.
 
-Flags opcionales (saltan el wizard):
-  python tui.py                      -> wizard completo
-  python tui.py --provider local     -> wizard desde la lista de modelos
+Optional flags (skip the wizard):
+  python tui.py                      -> full wizard
+  python tui.py --provider local     -> wizard from the model list
   python tui.py --provider local --model qwen35-9b
   python tui.py --provider nano --model deepseek-ai/DeepSeek-R1
 """
@@ -48,19 +48,19 @@ import serve  # noqa: E402  (bench/serve.py)
 import models as registry  # noqa: E402  (bench/models.py)
 from tools import TOOLS, call_tool, danger_match  # noqa: E402
 from context import ContextTracker  # noqa: E402
-import mcp_client  # noqa: E402  (cliente MCP para tools remotas)
+import mcp_client  # noqa: E402  (MCP client for remote tools)
 
 
-# ---- parseo de tool-calls escupidos como TEXTO (fallback) ----
-_TC_BLOCK = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)  # captura TODO el bloque
-_TC_OPEN = re.compile(r"<tool_call>\s*(\{.*)", re.DOTALL)                 # bloque sin cierre
+# ---- parsing of tool-calls emitted as TEXT (fallback) ----
+_TC_BLOCK = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)  # captures the WHOLE block
+_TC_OPEN = re.compile(r"<tool_call>\s*(\{.*)", re.DOTALL)                 # block without closing tag
 _TC_FUNC = re.compile(r"<function=([\w\-/.]+)>(.*?)</function>", re.DOTALL)
 _TC_PARAM = re.compile(r"<parameter=([\w\-]+)>(.*?)</parameter>", re.DOTALL)
 
 
 def _balanced_objects(s):
-    """Devuelve todos los objetos JSON {...} de primer nivel (con llaves anidadas
-    bien balanceadas) que haya en s."""
+    """Returns all top-level JSON objects {...} (with well-balanced nested
+    braces) found in s."""
     objs, i, n = [], 0, len(s)
     while i < n:
         if s[i] == "{":
@@ -102,11 +102,11 @@ def _as_call(d):
 
 
 def parse_text_tool_calls(content):
-    """Recupera tool-calls que el modelo escupió como texto plano. Soporta:
-    - <tool_call>{...}</tool_call> con arguments ANIDADOS (parseo por llaves balanceadas),
-      varios bloques, y bloques sin </tool_call> de cierre.
+    """Recovers tool-calls that the model emitted as plain text. Supports:
+    - <tool_call>{...}</tool_call> with NESTED arguments (parsing by balanced braces),
+      several blocks, and blocks without a closing </tool_call>.
     - <function=NAME><parameter=p>val</parameter></function>.
-    - JSON suelto {"name":...,"arguments":...} sin tags."""
+    - Loose JSON {"name":...,"arguments":...} without tags."""
     content = content or ""
     out = []
     blocks = _TC_BLOCK.findall(content)
@@ -124,13 +124,13 @@ def parse_text_tool_calls(content):
                 out.append(call)
     if out:
         return out
-    # formato XML <function=...>
+    # XML format <function=...>
     for m in _TC_FUNC.finditer(content):
         args = {p: v.strip() for p, v in _TC_PARAM.findall(m.group(2))}
         out.append({"name": m.group(1), "arguments": json.dumps(args)})
     if out:
         return out
-    # JSON suelto con "name" (sin ningún tag)
+    # loose JSON with "name" (without any tag)
     if '"name"' in content:
         for frag in _balanced_objects(content):
             if '"name"' in frag:
@@ -147,7 +147,7 @@ def strip_tool_call_text(content):
     if not content:
         return content
     c = re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=re.DOTALL)
-    c = re.sub(r"<tool_call>\s*\{.*", "", c, flags=re.DOTALL)   # bloque sin cierre
+    c = re.sub(r"<tool_call>\s*\{.*", "", c, flags=re.DOTALL)   # block without closing tag
     c = _TC_FUNC.sub("", c)
     return c.strip()
 
@@ -158,7 +158,7 @@ DEFAULT_CONFIG = {
     "nano": {"base_url": "https://nano-gpt.com/api/v1",
              "api_key": "",   # set in tui_config.json (not versioned) or via the key prompt
              "model": "xiaomi/mimo-v2.5-pro-ultraspeed",
-             "ctx_window": 131072},   # nano = frontier: asumimos el máx del modelo
+             "ctx_window": 131072},   # nano = frontier: we assume the model's max
     "local": {"base_url": "http://localhost:25565/v1", "api_key": "sk-noop",
               "model": "qwen35-9b", "enable_thinking": True},
     "xai": {"base_url": "https://api.x.ai/v1", "api_key": "",
@@ -167,20 +167,20 @@ DEFAULT_CONFIG = {
                    "model": "", "ctx_window": 131072},
     "openai": {"base_url": "https://api.openai.com/v1", "api_key": "",
                "model": "gpt-5", "ctx_window": 128000},
-    # Anthropic vía su endpoint OpenAI-compatible (mismo SDK openai)
+    # Anthropic via its OpenAI-compatible endpoint (same openai SDK)
     "anthropic": {"base_url": "https://api.anthropic.com/v1/", "api_key": "",
                   "model": "claude-opus-4-8", "ctx_window": 200000,
                   "models": ["claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
                              "claude-sonnet-4-6", "claude-haiku-4-5", "claude-fable-5"]},
-    # llama.cpp remoto: la URL se pide al seleccionarlo y se recuerda aquí
+    # remote llama.cpp: the URL is requested on selection and remembered here
     "remote": {"base_url": "", "api_key": "sk-noop", "model": "", "ctx_window": 16000},
-    # url del MCP: se sobreescribe en tui_config.json (no versionado) con tu host real
+    # MCP url: overridden in tui_config.json (not versioned) with your real host
     "mcp": {"enabled": True, "url": "http://localhost:8765/mcp", "prefix": "mac_"},
-    "last": {"provider": None, "model": None},   # último usado (default al arrancar)
+    "last": {"provider": None, "model": None},   # last used (default on startup)
     "favorites": {"nano": [], "xai": [], "openrouter": [], "openai": [], "anthropic": [], "remote": []},
 }
 
-# proveedores OpenAI-compatibles servidos por API (sidebar de GPU OFF; ctx del modelo)
+# OpenAI-compatible providers served via API (GPU sidebar OFF; model's ctx)
 CLOUD = {"nano", "xai", "openrouter", "openai", "anthropic", "remote"}
 
 SYSTEM_PROMPT = (
@@ -221,7 +221,7 @@ def save_config(cfg):
         pass
 
 
-# ----------------------------- utilidades de render -----------------------------
+# ----------------------------- render utilities -----------------------------
 
 class ThinkSplitter:
     OPEN, CLOSE = "<think>", "</think>"
@@ -275,7 +275,7 @@ def util_color(p):
     return "green" if p < 60 else ("yellow" if p < 85 else "red")
 
 
-# --------------------------------- pantallas ---------------------------------
+# --------------------------------- screens ---------------------------------
 
 class ProviderScreen(Screen):
     CSS = """
@@ -324,7 +324,7 @@ class ProviderScreen(Screen):
 
 
 class ApiKeyScreen(Screen):
-    """Pide la API key de un proveedor cloud cuando falta y la guarda en el config."""
+    """Asks for a cloud provider's API key when missing and saves it to the config."""
 
     CSS = """
     ApiKeyScreen { align: center middle; }
@@ -369,7 +369,7 @@ class ApiKeyScreen(Screen):
 
 
 class RemoteUrlScreen(Screen):
-    """Pide la URL de un llama-server remoto y luego lista sus modelos."""
+    """Asks for a remote llama-server's URL and then lists its models."""
 
     CSS = """
     RemoteUrlScreen { align: center middle; }
@@ -432,8 +432,8 @@ class ModelScreen(Screen):
     def __init__(self, provider):
         super().__init__()
         self.provider = provider
-        self.names = []                # nombres/alias de modelos
-        self.label_of = {}             # name -> etiqueta a mostrar
+        self.names = []                # model names/aliases
+        self.label_of = {}             # name -> label to display
 
     def compose(self) -> ComposeResult:
         with Vertical(id="box"):
@@ -470,7 +470,7 @@ class ModelScreen(Screen):
             self.app.call_from_thread(self.set_cloud, ids)
         except Exception as e:
             if fallback:
-                # /models no disponible (p.ej. Anthropic): usa la lista curada del config
+                # /models not available (e.g. Anthropic): use the curated list from config
                 self.app.call_from_thread(self.set_cloud, list(fallback))
                 return
             hint = (f"set an api_key for '{self.provider}' in tui_config.json"
@@ -560,9 +560,9 @@ class LoadingScreen(Screen):
 
 
 class PermissionScreen(ModalScreen):
-    """Pide permiso (estilo Claude Code) cuando una tool quiere ejecutar algo
-    marcado como peligroso. Devuelve True (permitir) / False (denegar) al dismiss.
-    'Always allow' activa skip_permissions en la app."""
+    """Asks for permission (Claude Code style) when a tool wants to run something
+    flagged as dangerous. Returns True (allow) / False (deny) on dismiss.
+    'Always allow' enables skip_permissions in the app."""
 
     CSS = """
     PermissionScreen { align: center middle; background: $background 60%; }
@@ -610,7 +610,7 @@ class PermissionScreen(ModalScreen):
 
 
 class CtxScreen(Screen):
-    """Confirma/override del ctx-size óptimo (local) antes de arrancar el modelo."""
+    """Confirm/override of the optimal ctx-size (local) before starting the model."""
 
     CSS = """
     CtxScreen { align: center middle; }
@@ -668,7 +668,7 @@ class UsageSidebar(Vertical):
 
 
 class SettingsScreen(ModalScreen):
-    """Abre tui_config.json en un editor para verlo/editarlo y guardarlo."""
+    """Opens tui_config.json in an editor to view/edit and save it."""
 
     CSS = """
     SettingsScreen { align: center middle; background: $background 70%; }
@@ -692,7 +692,7 @@ class SettingsScreen(ModalScreen):
             except Exception:
                 ta.text = json.dumps(DEFAULT_CONFIG, indent=2)
             try:
-                ta.language = "json"   # resaltado si hay tree-sitter; si no, texto plano
+                ta.language = "json"   # highlighting if tree-sitter is present; otherwise plain text
             except Exception:
                 pass
             yield ta
@@ -726,7 +726,7 @@ class SettingsScreen(ModalScreen):
         except Exception as ex:
             err.update(Text(f"✗ Write failed: {ex}", style="bold red"))
             return
-        self.app.cfg = load_config()   # recarga en caliente (merge con defaults)
+        self.app.cfg = load_config()   # hot reload (merge with defaults)
         self.app.pop_screen()
         try:
             self.app.write_log(Panel(Text("Settings saved to tui_config.json",
@@ -877,7 +877,7 @@ class AgentTUI(App):
         self.update_live()
         self.poll_usage()
 
-    # ---------- selección / arranque ----------
+    # ---------- selection / startup ----------
     def local_running(self):
         try:
             import requests
@@ -911,7 +911,7 @@ class AgentTUI(App):
         if ctx_limit:
             self.tracker.limit = ctx_limit
         elif not self.is_local:
-            # nano = frontier: usamos el máximo del modelo (asumido)
+            # nano = frontier: we use the model's maximum (assumed)
             self.tracker.limit = pc.get("ctx_window", 131072)
 
     def _save_last(self, provider, model):
@@ -929,13 +929,13 @@ class AgentTUI(App):
         if model is None:
             return
         if self.local_running():
-            # ya hay server levantado: reutilizamos su ctx
+            # server already up: we reuse its ctx
             alias = self._loaded_local_model() or model_value
             self.configure("local", alias)
             self._save_last("local", alias)
             self._go_main()
         else:
-            # calcular ctx óptimo según la GPU y dejar overridearlo
+            # compute the optimal ctx based on the GPU and allow overriding it
             optimal = registry.optimal_ctx(model["path"])
             free, total = registry.gpu_mem()
             weights = 0
@@ -991,7 +991,7 @@ class AgentTUI(App):
             self.started_server = False
 
     def action_quit(self):
-        # parar el modelo ANTES de salir para no dejar la GPU ocupada
+        # stop the model BEFORE exiting so we don't leave the GPU busy
         self._shutdown_server()
         self.exit()
 
@@ -1000,7 +1000,7 @@ class AgentTUI(App):
 
     # ---------- logging ----------
     def _q(self, selector, typ):
-        """Query SIEMPRE en la pantalla activa (no en la _default)."""
+        """ALWAYS query on the active screen (not the _default one)."""
         return self.screen.query_one(selector, typ)
 
     def write_log(self, renderable):
@@ -1029,7 +1029,7 @@ class AgentTUI(App):
             parts += [Text("◇ thinking", style="bold magenta"),
                       Text(self.cur_think.strip(), style="dim italic magenta")]
         if self.cur_content:
-            # render del mensaje final como Markdown bonito (##, **bold**, listas…)
+            # render the final message as nice Markdown (##, **bold**, lists…)
             parts += [Text("◆ assistant", style="bold cyan"),
                       Markdown(self.cur_content.strip())]
         if parts:
@@ -1047,7 +1047,7 @@ class AgentTUI(App):
         except Exception:
             pass
 
-    # ---------- MCP (tools remotas) ----------
+    # ---------- MCP (remote tools) ----------
     def load_mcp_tools(self):
         raw, _names = mcp_client.list_tools_openai(self.mcp_url)
         self.mcp_tools, self.mcp_map = [], {}
@@ -1065,9 +1065,9 @@ class AgentTUI(App):
         self.call_from_thread(self.write_log, Panel(Text.from_markup(msg),
                               border_style="green" if n else "yellow", expand=False))
 
-    # ---------- permisos + ejecución de tools ----------
+    # ---------- permissions + tool execution ----------
     def ask_permission(self, tool, snippet, code):
-        """Bloquea el thread del worker hasta que el usuario decide en el modal."""
+        """Blocks the worker thread until the user decides in the modal."""
         box = {}
         ev = threading.Event()
 
@@ -1079,9 +1079,9 @@ class AgentTUI(App):
         return box.get("v", False)
 
     def execute_tool(self, name, raw_args):
-        """Ejecuta una tool; para run_python/run_powershell con op peligrosa pide
-        permiso (salvo skip_permissions) y, si se aprueba, ejecuta con allow_unsafe."""
-        if name in self.mcp_names:   # tool remota (MCP) → ejecutar en el server
+        """Runs a tool; for run_python/run_powershell with a dangerous op it asks
+        for permission (unless skip_permissions) and, if approved, runs with allow_unsafe."""
+        if name in self.mcp_names:   # remote tool (MCP) → run on the server
             return mcp_client.call_tool(self.mcp_url, self.mcp_map[name], raw_args)
         try:
             args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
@@ -1100,7 +1100,7 @@ class AgentTUI(App):
                         return f"DENIED by user: refused to run flagged operation '{snip}'"
         return call_tool(name, args)
 
-    # ---------- agente (en thread) ----------
+    # ---------- agent (in thread) ----------
     def agent_turn(self, text):
         self.messages.append({"role": "user", "content": text})
         self._turn_tokens = 0
@@ -1146,8 +1146,8 @@ class AgentTUI(App):
             params["extra_body"] = {"chat_template_kwargs": {"enable_thinking": self.enable_thinking}}
         elif self.provider == "nano":
             params["extra_body"] = {"reasoning": {"enabled": True}, "include_reasoning": True}
-        # xai / openrouter / openai / anthropic / remote: OpenAI-compatible
-        # estándar, sin extra_body propietario (Anthropic vía su capa OpenAI-compat)
+        # xai / openrouter / openai / anthropic / remote: standard OpenAI-compatible,
+        # without proprietary extra_body (Anthropic via its OpenAI-compat layer)
         stream = self.client.chat.completions.create(**params)
         content_parts, tool_calls = [], {}
         splitter = ThinkSplitter()
@@ -1157,7 +1157,7 @@ class AgentTUI(App):
         def emit(mode, t):
             if not t:
                 return
-            self._stream_chars += len(t)   # para el tok/s en vivo (estimado)
+            self._stream_chars += len(t)   # for the live tok/s (estimated)
             if mode == "thinking":
                 self.cur_think += t
             else:
@@ -1196,7 +1196,7 @@ class AgentTUI(App):
             self.tracker.update_from_chunk_dict(last_pricing)
             self._turn_tokens += self.tracker.last_output
 
-        # fallback: el modelo escupió el tool-call como texto plano -> recuperarlo
+        # fallback: the model emitted the tool-call as plain text -> recover it
         if not tool_calls:
             fb = parse_text_tool_calls("".join(content_parts))
             if fb:
@@ -1265,7 +1265,7 @@ class AgentTUI(App):
                 bar(vram_pct, color=util_color(vram_pct)),
                 Text(f"{mused/1024:.1f} / {mtot/1024:.1f} GiB", style="#999999")))
             self._q("#lbl_extra", Static).update(Text.from_markup(
-                f"[#00d7ff]temp[/] {temp:.0f}°C   [#00d7ff]pot[/] {power} W"))
+                f"[#00d7ff]temp[/] {temp:.0f}°C   [#00d7ff]power[/] {power} W"))
         except Exception:
             pass
         try:
@@ -1277,7 +1277,7 @@ class AgentTUI(App):
             self._q("#lbl_ram", Static).update(Group(
                 bar(vm.percent, color=util_color(vm.percent)),
                 Text(f"{vm.used/1e9:.1f} / {vm.total/1e9:.1f} GB", style="#999999")))
-            # tok/s en vivo (estimado por caracteres ~4/token mientras llega el stream)
+            # live tok/s (estimated by characters ~4/token as the stream arrives)
             tps = (self._stream_chars / 4) / max(0.001, time.time() - self._turn_start) if self.busy else 0
             self._q("#lbl_toks", Static).update(Text.from_markup(
                 f"[#00d7ff]tok/s~[/] {tps:5.1f}   [#00d7ff]out[/] {self.tracker.total_output if self.tracker else 0}"))

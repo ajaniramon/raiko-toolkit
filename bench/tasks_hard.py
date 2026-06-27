@@ -1,9 +1,9 @@
-"""Tier HARDCORE: incidente real de dev/sysadmin sobre 'orders-service'.
+"""HARDCORE tier: real dev/sysadmin incident on 'orders-service'.
 
-~20 tareas multi-paso con graders ESTRICTOS: parsear tracebacks, correlacionar
-configs, encontrar un secreto, ARREGLAR un bug y que pase su self-test (se ejecuta
-de verdad), bumps de versión multi-fichero, análisis de access logs, etc.
-Graders firman (answer, root).
+~20 multi-step tasks with STRICT graders: parse tracebacks, correlate
+configs, find a secret, FIX a bug and make its self-test pass (it actually
+runs), multi-file version bumps, access log analysis, etc.
+Graders are signed (answer, root).
 """
 
 import subprocess
@@ -37,7 +37,7 @@ def build_tasks_hard(truth):
 
     READ = ["read_file", "head", "read_lines", "grep", "find_in_files"]
 
-    # ---------- incidente / logs ----------
+    # ---------- incident / logs ----------
     add("incident_exc", "incident",
         "Read logs/app.log. The service threw one unhandled exception. Report three things: "
         "(a) the exception type, (b) the source file and the line number where it was raised, "
@@ -75,7 +75,7 @@ def build_tasks_hard(truth):
         ["run_python", "run_powershell"],
         lambda a, r: contains(a, T["top_ip"]) and has_number(a, T["top_ip_count"]))
 
-    # ---------- seguridad / config ----------
+    # ---------- security / config ----------
     add("hardcoded_secret", "security",
         "There is a hardcoded API secret committed in the source code. Report the file name it "
         "lives in and the exact secret value.",
@@ -94,7 +94,7 @@ def build_tasks_hard(truth):
         READ,
         lambda a, r: has_number(a, T["env_db_port"]) and has_number(a, T["compose_host_port"]))
 
-    # ---------- análisis de código ----------
+    # ---------- code analysis ----------
     add("imports_db", "code",
         "Which Python files inside src/ import the 'db' module? List their file names.",
         ["grep", "find_in_files", "read_file"],
@@ -111,14 +111,14 @@ def build_tasks_hard(truth):
         READ,
         lambda a, r: has_number(a, 4) and contains(a, "2.0.1"))
 
-    # ---------- el bug real: arreglar y que pase el self-test ----------
+    # ---------- the real bug: fix it and make the self-test pass ----------
     add("fix_parser", "fix",
         "src/parser.py has an off-by-one bug in the chunk() function. Fix it so that running the "
         "file executes its built-in self-test successfully and prints 'ok'. Do not change the test.",
         ["edit_file", "read_file", "run_python", "write_file"],
         lambda a, r: (lambda rc_out: rc_out[0] == 0 and "ok" in rc_out[1].lower())(_run_py(r, "src/parser.py")))
 
-    # ---------- edición multi-fichero ----------
+    # ---------- multi-file editing ----------
     add("version_bump", "edit",
         "Bump the project version from 1.4.2 to 1.5.0 in all three places: pyproject.toml, "
         "src/__init__.py, and CHANGELOG.md (add a new '## 1.5.0' heading at the top of the "
@@ -129,7 +129,7 @@ def build_tasks_hard(truth):
                      and "## 1.5.0" in (rf(r, "CHANGELOG.md") or "")
                      and 'version = "1.4.2"' not in (rf(r, "pyproject.toml") or ""))
 
-    # ---------- python sobre el código ----------
+    # ---------- python over the code ----------
     add("slugify_run", "python",
         "Using Python, import the slugify function from src/utils.py and report what "
         "slugify('  Hello World  ') returns.",
@@ -160,7 +160,7 @@ def build_tasks_hard(truth):
         ["run_powershell"],
         lambda a, r: has_number(a, T["py_lines_total"]))
 
-    # ---------- negativo / robustez ----------
+    # ---------- negative / robustness ----------
     add("neg_tests", "negative",
         "Run the test suite located in the tests/ directory and report how many tests passed.",
         ["list_dir", "find_files", "run_python", "tree"],

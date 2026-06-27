@@ -28,7 +28,7 @@ def list_dir(path: str = ".") -> str:
     entries = []
     for child in sorted(p.iterdir()):
         if child.is_dir():
-            # Contar tamaño total recursivo del directorio
+            # Count total recursive size of the directory
             total = sum(f.stat().st_size for f in child.rglob("*") if f.is_file())
             size_str = _format_size(total)
             entries.append(f"DIR  {child.name:<30} {size_str}")
@@ -92,7 +92,7 @@ def _format_size(size_bytes: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tools adicionales, todas de SOLO LECTURA (no escriben nada).
+# Additional tools, all READ-ONLY (they write nothing).
 # ---------------------------------------------------------------------------
 
 def find_files(name_glob: str, path: str = ".") -> str:
@@ -213,12 +213,12 @@ def find_in_files(pattern: str, path: str = ".", glob: str = "**/*") -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tools de ESCRITURA / EJECUCIÓN (semi-destructivas, con guardas).
-# Pensadas para correr dentro de un sandbox; tienen denylist + timeout.
+# WRITE / EXECUTION tools (semi-destructive, with guards).
+# Designed to run inside a sandbox; they have a denylist + timeout.
 # ---------------------------------------------------------------------------
 
-# Solo se bloquea lo claramente DESTRUCTIVO/irreversible. Introspección de sistema
-# (socket, platform, subprocess) y red de lectura SÍ se permiten — es tu máquina.
+# Only clearly DESTRUCTIVE/irreversible operations are blocked. System introspection
+# (socket, platform, subprocess) and read-only network access ARE allowed — it's your machine.
 _DANGER = [
     r"Remove-Item\b[^\n]*-Recurse", r"\brmdir\b[^\n]*/s", r"\bdel\b[^\n]*/s",
     r"\brm\b[^\n]*-rf\b", r"shutil\.rmtree", r"os\.removedirs",
@@ -237,8 +237,8 @@ def _danger_check(code: str):
 
 
 def danger_match(text: str):
-    """Devuelve el fragmento peligroso detectado (o None). Para que la capa de UI
-    pueda pedir permiso en vez de bloquear directamente."""
+    """Returns the detected dangerous fragment (or None). So the UI layer
+    can ask for permission instead of blocking outright."""
     m = _DANGER_RX.search(text or "")
     return m.group(0) if m else None
 
@@ -316,31 +316,8 @@ def vault_get_secret(path: str) -> str:
     if r.status_code != 200:
         return f"ERROR: Vault returned {r.status_code}: {r.text[:200]}"
     body = r.json().get("data", {})
-    secret = body.get("data", body)  # KV v2 anida en data.data
+    secret = body.get("data", body)  # KV v2 nests under data.data
     return json.dumps(secret)
-
-
-def copy_file_to_mac(local_path: str, remote_path: str, host: str,
-                     username: str, password: str, port: int = 22) -> str:
-    """Copy a local file to a remote host over SFTP/SSH (used for the Mac).
-    Authenticates with username+password. Returns OK or an ERROR string."""
-    import paramiko
-    if not Path(local_path).is_file():
-        return f"ERROR: local file not found: {local_path}"
-    transport = None
-    try:
-        transport = paramiko.Transport((host, int(port)))
-        transport.banner_timeout = 20
-        transport.connect(username=username, password=password)
-        sftp = paramiko.SFTPClient.from_transport(transport)
-        sftp.put(local_path, remote_path)
-        sftp.close()
-        return f"OK: copied {local_path} -> {host}:{remote_path}"
-    except Exception as e:
-        return f"ERROR: {type(e).__name__}: {e}"
-    finally:
-        if transport is not None:
-            transport.close()
 
 
 TOOLS = [
@@ -591,25 +568,6 @@ TOOLS = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "copy_file_to_mac",
-            "description": "Copy a local file to a remote machine (the Mac) over SFTP/SSH using username+password authentication. Returns OK on success.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "local_path": {"type": "string", "description": "Path of the local file to copy."},
-                    "remote_path": {"type": "string", "description": "Destination path on the remote machine."},
-                    "host": {"type": "string", "description": "Remote host/IP."},
-                    "username": {"type": "string"},
-                    "password": {"type": "string"},
-                    "port": {"type": "integer", "default": 22},
-                },
-                "required": ["local_path", "remote_path", "host", "username", "password"],
-            },
-        },
-    },
 ]
 
 
@@ -632,15 +590,14 @@ DISPATCH = {
     "run_python": run_python,
     "run_powershell": run_powershell,
     "vault_get_secret": vault_get_secret,
-    "copy_file_to_mac": copy_file_to_mac,
 }
 
 
 def call_tool(name: str, arguments: str | dict) -> str:
     if name not in DISPATCH:
         return f"ERROR: unknown tool {name}"
-    # JSON malformado en los argumentos NO debe tumbar el turno: devolvemos un
-    # error recuperable para que el modelo reintente con JSON válido.
+    # Malformed JSON in the arguments must NOT crash the turn: we return a
+    # recoverable error so the model retries with valid JSON.
     try:
         args = json.loads(arguments) if isinstance(arguments, str) else arguments
     except (json.JSONDecodeError, TypeError) as e:

@@ -1,0 +1,28 @@
+{
+  "nano": {
+    "base_url": "https://nano-gpt.com/api/v1",
+    "api_key": "",
+    "model": "xiaomi/mimo-v2.5-pro-ultraspeed",
+    "ctx_window": 131072
+  },
+  "local": {
+    "base_url": "http://localhost:25565/v1",
+    "api_key": "sk-noop",
+    "model": "qwen35-9b",
+    "enable_thinking": true
+  },
+  "xai": { "base_url": "https://api.x.ai/v1", "api_key": "", "model": "grok-4", "ctx_window": 256000 },
+  "openrouter": { "base_url": "https://openrouter.ai/api/v1", "api_key": "", "model": "", "ctx_window": 131072 },
+  "openai": { "base_url": "https://api.openai.com/v1", "api_key": "", "model": "gpt-5", "ctx_window": 128000 },
+  "anthropic": {
+    "base_url": "https://api.anthropic.com/v1/",
+    "api_key": "",
+    "model": "claude-opus-4-8",
+    "ctx_window": 200000,
+    "models": ["claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5", "claude-fable-5"]
+  },
+  "remote": { "base_url": "", "api_key": "sk-noop", "model": "", "ctx_window": 16000 },
+  "mcp": { "enabled": false, "url": "http://localhost:8765/mcp", "prefix": "mac_" },
+  "last": { "provider": null, "model": null },
+  "favorites": { "nano": [], "xai": [], "openrouter": [], "openai": [], "anthropic": [], "remote": [] }
+}

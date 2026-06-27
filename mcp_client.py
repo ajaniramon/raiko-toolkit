@@ -1,6 +1,6 @@
-"""Cliente MCP para el agente: lista las tools de un server MCP (streamable-http)
-y las llama. Convierte el schema MCP al formato de tools de OpenAI para mezclarlas
-con las tools locales. Síncrono por fuera (usa asyncio.run por dentro)."""
+"""MCP client for the agent: lists the tools of an MCP server (streamable-http)
+and calls them. Converts the MCP schema to the OpenAI tools format to mix them
+with the local tools. Synchronous on the outside (uses asyncio.run inside)."""
 
 import asyncio
 import json
@@ -29,7 +29,7 @@ async def _call(url, name, args):
 
 
 def list_tools_openai(url, timeout=12):
-    """Devuelve (tool_schemas_openai, set_de_nombres). [] si falla."""
+    """Returns (tool_schemas_openai, set_of_names). [] if it fails."""
     try:
         tools = asyncio.run(asyncio.wait_for(_list(url), timeout))
     except Exception:
@@ -61,6 +61,6 @@ if __name__ == "__main__":
     import sys
     u = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8765/mcp"
     ts, names = list_tools_openai(u)
-    print(f"MCP tools en {u}: {len(ts)}")
+    print(f"MCP tools at {u}: {len(ts)}")
     print(" ", ", ".join(sorted(names)))
     print("run_shell('uname -a') ->", call_tool(u, "run_shell", {"command": "uname -a"}))

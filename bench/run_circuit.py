@@ -1,9 +1,9 @@
-"""Runner del tier CIRCUITO con los 3 ganadores.
+"""Runner for the CIRCUIT tier with the 3 winners.
 
-Monta un Vault dev, mete las credenciales del Mac como secreto, y para cada
-modelo corre el circuito: el agente lee el secreto de Vault y copia un fichero
-al Mac por SSH/SFTP. Cada tarea se verifica leyendo el fichero de vuelta en el
-Mac. Resumible (JSONL incremental).
+Spins up a dev Vault, stores the Mac credentials as a secret, and for each
+model runs the circuit: the agent reads the secret from Vault and copies a file
+to the Mac over SSH/SFTP. Each task is verified by reading the file back on the
+Mac. Resumable (incremental JSONL).
 """
 
 import argparse
@@ -19,9 +19,60 @@ import fixtures
 import models as registry
 import serve
 import vaultsvc
-from harness import run_task, aggregate
+from harness import run_task, aggregate   # also puts the repo root on sys.path
 from tools import TOOLS
+import tools as _tools
 from tasks_circuit import build_circuit_tasks, PAYLOAD_TOKEN
+
+
+# The Mac SFTP tool is NOT part of the shipped toolset (tools.py): in production the
+# agent operates the Mac through the MCP server, whose file/shell tools already run
+# ON the Mac. This benchmark tier still tests an SSH copy, so we register the tool
+# locally (test-only) and feed it the gitignored Mac credentials.
+def copy_file_to_mac(local_path, remote_path, host, username, password, port=22):
+    """Copy a local file to a remote host over SFTP/SSH. Test-only helper."""
+    import paramiko
+    from pathlib import Path
+    if not Path(local_path).is_file():
+        return f"ERROR: local file not found: {local_path}"
+    transport = None
+    try:
+        transport = paramiko.Transport((host, int(port)))
+        transport.banner_timeout = 20
+        transport.connect(username=username, password=password)
+        sftp = paramiko.SFTPClient.from_transport(transport)
+        sftp.put(local_path, remote_path)
+        sftp.close()
+        return f"OK: copied {local_path} -> {host}:{remote_path}"
+    except Exception as e:
+        return f"ERROR: {type(e).__name__}: {e}"
+    finally:
+        if transport is not None:
+            transport.close()
+
+
+_COPY_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "copy_file_to_mac",
+        "description": "Copy a local file to a remote machine (the Mac) over SFTP/SSH using "
+                       "username+password authentication. Returns OK on success.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "local_path": {"type": "string", "description": "Path of the local file to copy."},
+                "remote_path": {"type": "string", "description": "Destination path on the remote machine."},
+                "host": {"type": "string", "description": "Remote host/IP."},
+                "username": {"type": "string"},
+                "password": {"type": "string"},
+                "port": {"type": "integer", "default": 22},
+            },
+            "required": ["local_path", "remote_path", "host", "username", "password"],
+        },
+    },
+}
+# register the test-only tool so harness.call_tool can dispatch it for this tier
+_tools.DISPATCH["copy_file_to_mac"] = copy_file_to_mac
 
 console = Console()
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -32,9 +83,9 @@ SCRATCH = (r"C:\Users\RAMN~1\AppData\Local\Temp\claude"
 
 TARGET_RUNS = [("qwen35-9b", "nothink"), ("gemma4-12b", "nothink"), ("qwythos", "think")]
 
-# Datos del Mac (NO versionados): mac-credentials.txt en la raíz del repo, con
-# línea 1 = "user:pass" y línea 2 (opcional) = host. El entorno
-# (MAC_USER/MAC_PASS/MAC_HOST) tiene prioridad. Defaults inocuos para el repo.
+# Mac data (NOT versioned): mac-credentials.txt at the repo root, with
+# line 1 = "user:pass" and line 2 (optional) = host. The environment
+# (MAC_USER/MAC_PASS/MAC_HOST) takes priority. Harmless defaults for the repo.
 def _mac_creds():
     user = os.environ.get("MAC_USER", "")
     pw = os.environ.get("MAC_PASS", "")
@@ -56,7 +107,7 @@ _MAC_USER, _MAC_PASS, _MAC_HOST = _mac_creds()
 MAC = {"host": _MAC_HOST, "port": "22", "username": _MAC_USER, "password": _MAC_PASS}
 SECRET = dict(MAC, credentials=f"{_MAC_USER}:{_MAC_PASS}")
 
-FULL_TOOLS = TOOLS
+FULL_TOOLS = TOOLS + [_COPY_SCHEMA]
 
 CIRCUIT_SYSTEM = (
     "You are a tool-using agent with access to filesystem tools, a Vault secret tool "
@@ -111,7 +162,7 @@ def save_run(label, results, agg):
                 if turn.get("content"):
                     f.write(f"  [SAY]   {turn['content']}\n")
                 for c in turn.get("tool_calls", []):
-                    # ocultar el password en el log
+                    # hide the password in the log
                     args = c["arguments"].replace(MAC["password"], "****")
                     f.write(f"  [TOOL]  {c['name']}({args})\n  [RESULT]{c['result'][:300]}\n")
             f.write(f"FINAL: {r['answer']}\nCORRECT={r['correct']} TOOL_OK={r['tool_ok']} SCORE={r['score']}\n")
@@ -143,11 +194,11 @@ def run_suite(client, alias, label, tasks, root, enable_thinking):
 
 def write_report(all_runs, n_tasks):
     rows = sorted(all_runs, key=lambda x: x["agg"].get("final_score", 0), reverse=True)
-    lines = ["# Benchmark CIRCUITO (Vault -> SSH/SCP al Mac)", "",
-             f"- **{n_tasks} tareas** por run. El agente lee el secreto de Vault y copia el",
-             "  fichero al Mac; se verifica leyendo el fichero de vuelta por SSH.",
-             "- Tools nuevas: `vault_get_secret`, `copy_file_to_mac`. Secreto KV v2 en `secret/data/mac`.",
-             "- Solo los 3 ganadores.", "",
+    lines = ["# CIRCUIT benchmark (Vault -> SSH/SCP to the Mac)", "",
+             f"- **{n_tasks} tasks** per run. The agent reads the secret from Vault and copies the",
+             "  file to the Mac; it's verified by reading the file back over SSH.",
+             "- New tools: `vault_get_secret`, `copy_file_to_mac`. KV v2 secret at `secret/data/mac`.",
+             "- Only the 3 winners.", "",
              "## Leaderboard", "",
              "| # | Run | Score | Correct% | Tool% | Errs | Lat(s) |",
              "|---|---|---|---|---|---|---|"]
@@ -155,14 +206,14 @@ def write_report(all_runs, n_tasks):
         a = run["agg"]
         lines.append(f"| {i} | **{run['label']}** | **{a['final_score']}** | {a['correctness_pct']} | "
                      f"{a['tool_accuracy_pct']} | {a['errors_timeouts']} | {a['avg_latency_s']} |")
-    lines += ["", "Transcripts (password censurado) en `results/circuit/logs/`.", ""]
+    lines += ["", "Transcripts (password redacted) in `results/circuit/logs/`.", ""]
     os.makedirs(CIRC_DIR, exist_ok=True)
     open(os.path.join(CIRC_DIR, "report_circuit.md"), "w", encoding="utf-8").write("\n".join(lines))
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--runs", help="alias:modo,... (default: 3 ganadores)")
+    ap.add_argument("--runs", help="alias:mode,... (default: 3 winners)")
     args = ap.parse_args()
     os.makedirs(CIRC_LOGS, exist_ok=True)
     target = TARGET_RUNS
@@ -176,19 +227,19 @@ def main():
         os.environ["VAULT_ADDR"] = vaultsvc.ADDR
         os.environ["VAULT_TOKEN"] = vaultsvc.TOKEN
 
-        # nº de tareas (mismo para todos)
+        # number of tasks (same for all)
         total = len(build_circuit_tasks(MAC, "x"))
-        console.print(f"[bold]Circuito:[/] {total} tareas · runs: {target}")
+        console.print(f"[bold]Circuit:[/] {total} tasks · runs: {target}")
 
         for alias, mode in target:
             label = f"{alias}-{mode}"
             if is_complete(label, total):
-                console.print(f"[dim]{label}: ya completo, salto[/]")
+                console.print(f"[dim]{label}: already complete, skipping[/]")
                 agg = json.load(open(os.path.join(CIRC_DIR, f"{label}.json"), encoding="utf-8"))["aggregate"]
                 all_runs.append({"label": label, "agg": agg}); continue
             model = next((m for m in registry.MODELS if m["alias"] == alias), None)
             if model is None:
-                console.print(f"[red]alias desconocido: {alias}[/]"); continue
+                console.print(f"[red]unknown alias: {alias}[/]"); continue
             console.rule(f"[bold magenta]{label}[/]")
             proc = None
             try:
@@ -203,7 +254,7 @@ def main():
                 save_run(label, results, agg)
                 all_runs.append({"label": label, "agg": agg})
             except Exception as e:
-                console.print(f"[red]fallo en {label}: {e}[/]")
+                console.print(f"[red]failure in {label}: {e}[/]")
             finally:
                 serve.stop_server(proc, log=console.print)
                 os.chdir(HERE)
@@ -219,7 +270,7 @@ def main():
             a = run["agg"]
             t.add_row(run["label"], str(a["final_score"]), str(a["correctness_pct"]), str(a["tool_accuracy_pct"]))
         console.print(t)
-    console.print(f"[green]Listo.[/] Informe: {os.path.join(CIRC_DIR, 'report_circuit.md')}")
+    console.print(f"[green]Done.[/] Report: {os.path.join(CIRC_DIR, 'report_circuit.md')}")
 
 
 if __name__ == "__main__":

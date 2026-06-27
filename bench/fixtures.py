@@ -1,13 +1,13 @@
-"""Construye un sandbox rico con contenido conocido y calcula TODO el ground-truth.
+"""Builds a rich sandbox with known content and computes ALL the ground-truth.
 
-El sandbox simula un proyecto real (código multi-módulo, CSVs numéricos, JSON
-anidado, logs con niveles, docs) para poder plantear ~100 tareas: lecturas,
-conteos, agregaciones, navegación, cadenas multi-paso, comparaciones cross-file,
-razonamiento condicional y negativos.
+The sandbox simulates a real project (multi-module code, numeric CSVs, nested
+JSON, leveled logs, docs) so that ~100 tasks can be posed: reads, counts,
+aggregations, navigation, multi-step chains, cross-file comparisons,
+conditional reasoning and negatives.
 
-Todo el ground-truth se calcula aquí (de las estructuras en memoria y escaneando
-los ficheros escritos) para que las respuestas correctas nunca se desincronicen
-del contenido.
+All the ground-truth is computed here (from the in-memory structures and by
+scanning the written files) so that the correct answers never drift out of sync
+with the content.
 """
 
 import json
@@ -17,7 +17,7 @@ import shutil
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Datos fuente (de aquí salen tanto los ficheros como los agregados de verdad)
+# Source data (both the files and the real aggregates come from here)
 # ---------------------------------------------------------------------------
 
 USERS = [  # id, name, role, age, score
@@ -71,7 +71,7 @@ def _notes_text():
 
 
 def _log_text(errors, warns, infos, special=None, special_at=1):
-    """Genera un log con counts exactos de cada nivel."""
+    """Generates a log with exact counts of each level."""
     lines = []
     idx = 1
     def emit(level, n):
@@ -243,7 +243,7 @@ def _compute_truth(root: Path) -> dict:
     csv_all = sorted(f.name for f in root.rglob("*.csv"))
     log_all = sorted(f.name for f in root.rglob("*.log"))
 
-    # agregados CSV
+    # CSV aggregates
     admin = sum(1 for u in USERS if u[2] == "admin")
     user = sum(1 for u in USERS if u[2] == "user")
     oldest = max(USERS, key=lambda u: u[3])
@@ -273,7 +273,7 @@ def _compute_truth(root: Path) -> dict:
     warn_total = sum(_count_in_file(root / "logs" / n, r"\bWARN\b")
                      for n in ["app.log", "server.log", "debug.log"])
 
-    # conteos de líneas por fichero usados por las tareas
+    # per-file line counts used by the tasks
     line_counts = {rel: len((root / rel).read_text(encoding="utf-8").splitlines())
                    for rel in ["data/users.csv", "data/notes.txt", "src/main.py",
                                "src/utils.py", "docs/guide.md", "big.log"]}
@@ -284,7 +284,7 @@ def _compute_truth(root: Path) -> dict:
     todo_count = sum(_count_in_file(f, r"\bTODO\b") for f in all_files)
     import_main = _count_in_file(root / "src/main.py", r"\bimport\b")
 
-    # fichero .py de src con más líneas
+    # .py file in src with the most lines
     most_lines_py = max(py_src, key=lambda f: len(f.read_text(encoding="utf-8").splitlines()))
 
     models_dir = Path("F:/models")

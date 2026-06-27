@@ -12,8 +12,8 @@ from context import ContextTracker
 
 MAX_ITERATIONS = 5
 
-# Config por entorno (defaults = nano-gpt, comportamiento original intacto).
-# Para apuntar a un llama.cpp local:
+# Environment config (defaults = nano-gpt, original behavior unchanged).
+# To point at a local llama.cpp:
 #   AGENT_PROVIDER=llamacpp AGENT_BASE_URL=http://localhost:25565/v1 \
 #   AGENT_API_KEY=sk-noop AGENT_MODEL=qwythos python agent.py
 PROVIDER = os.environ.get("AGENT_PROVIDER", "nanogpt")  # "nanogpt" | "llamacpp"
@@ -22,11 +22,11 @@ API_KEY = os.environ.get("AGENT_API_KEY", "")  # set via env or tui_config.json 
 MODEL = os.environ.get("AGENT_MODEL", "xiaomi/mimo-v2.5-pro-ultraspeed")
 
 SYSTEM_PROMPT = (
-    "Eres un agente con acceso a herramientas de fichero. Úsalas cuando haga falta.\n"
-    "REGLA OBLIGATORIA: antes de llamar a CUALQUIER tool, escribe primero 1-2 frases "
-    "en texto plano explicando qué vas a hacer y por qué (qué fichero/patrón, qué esperas "
-    "encontrar, en qué paso del plan estás). Después haz la tool call en el mismo turno. "
-    "Nunca llames a una tool en silencio."
+    "You are an agent with access to file tools. Use them when needed.\n"
+    "MANDATORY RULE: before calling ANY tool, first write 1-2 sentences "
+    "in plain text explaining what you are going to do and why (which file/pattern, what you expect "
+    "to find, which step of the plan you are on). Then make the tool call in the same turn. "
+    "Never call a tool silently."
 )
 
 DEBUG = os.environ.get("AGENT_DEBUG") == "1"
@@ -39,9 +39,9 @@ client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
 
 
 class ThinkSplitter:
-    """Trocea un stream de texto y separa lo que va dentro de <think>...</think>.
-    Maneja tags partidos entre chunks. feed() devuelve [(mode, text), ...] donde
-    mode es 'thinking' o 'content'."""
+    """Slices a text stream and separates what goes inside <think>...</think>.
+    Handles tags split across chunks. feed() returns [(mode, text), ...] where
+    mode is 'thinking' or 'content'."""
 
     OPEN = "<think>"
     CLOSE = "</think>"
@@ -62,7 +62,7 @@ class ThinkSplitter:
                 self.buffer = self.buffer[idx + len(tag):]
                 self.mode = "thinking" if self.mode == "content" else "content"
                 continue
-            # no tag completo, pero el final del buffer podría ser un prefijo del tag
+            # no complete tag, but the end of the buffer could be a prefix of the tag
             safe = len(self.buffer)
             for i in range(min(len(tag) - 1, len(self.buffer)), 0, -1):
                 if self.buffer.endswith(tag[:i]):
@@ -83,7 +83,7 @@ class ThinkSplitter:
 
 
 def stream_completion(messages):
-    """Stream la respuesta, acumulando content + tool_calls. Devuelve el assistant message como dict."""
+    """Stream the response, accumulating content + tool_calls. Returns the assistant message as a dict."""
     params = dict(
         model=MODEL,
         messages=messages,
@@ -92,11 +92,11 @@ def stream_completion(messages):
         stream=True,
     )
     if PROVIDER == "nanogpt":
-        # campos propietarios de nano-gpt para exponer el reasoning
+        # nano-gpt proprietary fields to expose the reasoning
         params["extra_body"] = {"reasoning": {"enabled": True}, "include_reasoning": True}
     else:
-        # llama-server (OpenAI-compatible): pedir el usage en el chunk final.
-        # No mandamos los campos propietarios para no provocar un 400.
+        # llama-server (OpenAI-compatible): request the usage in the final chunk.
+        # We don't send the proprietary fields to avoid triggering a 400.
         params["stream_options"] = {"include_usage": True}
     stream = client.chat.completions.create(**params)
 
@@ -139,14 +139,14 @@ def stream_completion(messages):
         if DEBUG:
             console.print(Text(f"[debug] {chunk.model_dump_json(exclude_none=True)}", style="dim yellow"))
 
-        # 1) campo de reasoning a parte (DeepSeek/Qwen API style)
+        # 1) separate reasoning field (DeepSeek/Qwen API style)
         reasoning_chunk = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
         if not reasoning_chunk and getattr(delta, "model_extra", None):
             reasoning_chunk = delta.model_extra.get("reasoning_content") or delta.model_extra.get("reasoning")
         if reasoning_chunk:
             emit("thinking", reasoning_chunk)
 
-        # 2) <think>...</think> inline dentro del content (QwQ / self-hosted style)
+        # 2) <think>...</think> inline within the content (QwQ / self-hosted style)
         if delta.content:
             for mode, text in splitter.feed(delta.content):
                 emit(mode, text)
@@ -197,7 +197,7 @@ def render_tool_call(name: str, arguments: str):
 
 
 def render_tool_result(name: str, result: str):
-    preview = result if len(result) <= 1500 else result[:1500] + f"\n... ({len(result) - 1500} chars más)"
+    preview = result if len(result) <= 1500 else result[:1500] + f"\n... ({len(result) - 1500} more chars)"
     is_err = preview.startswith("ERROR")
     style = "red" if is_err else "green"
     icon = "✗" if is_err else "✓"
