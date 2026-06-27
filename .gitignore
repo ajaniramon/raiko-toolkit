@@ -1,0 +1,40 @@
+# ---- Secrets & local config (NEVER COMMIT) ----
+mac-credentials.txt
+tui_config.json
+mcp_server/tools_config.json
+.env
+*.key
+*.pem
+*credentials*
+*secret*
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Virtual environments ----
+.venv/
+venv/
+env/
+ENV/
+
+# ---- Benchmark outputs & logs (data; may contain transcripts/credentials) ----
+bench/results/
+
+# ---- Editor / IDE / OS junk ----
+.vscode/
+.idea/
+.claude/
+.DS_Store
+Thumbs.db
+
+# ---- Generated / scratch artifacts ----
+*.log
+*.svg
+demo.png
+*.tmp
