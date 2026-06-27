@@ -156,6 +156,9 @@ MAX_ITERATIONS = 8
 # How many times to retry a turn when the model leaks its tool call into the
 # thinking and emits no real tool_call (qwen sometimes "thinks" the call and stops).
 THINK_RETRIES = 2
+# Hard ceiling for a single tool call so a hung tool / unreachable MCP can't freeze
+# the turn. Above every tool's own timeout (run_python 20s, powershell/shell 25s).
+TOOL_TIMEOUT = 60
 
 DEFAULT_CONFIG = {
     "nano": {"base_url": "https://nano-gpt.com/api/v1",
@@ -1082,15 +1085,38 @@ class AgentTUI(App):
         ev.wait()
         return box.get("v", False)
 
+    def _with_timeout(self, name, fn):
+        """Run a (blocking) tool call with a hard ceiling so a hung tool or an
+        unreachable MCP server can't freeze the turn. The work runs in a daemon
+        thread; on timeout we return an ERROR and move on (it keeps running in the
+        background but won't block the UI or process exit)."""
+        box = {}
+
+        def run():
+            try:
+                box["v"] = fn()
+            except Exception as e:
+                box["v"] = f"ERROR: {type(e).__name__}: {e}"
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        t.join(TOOL_TIMEOUT)
+        if t.is_alive():
+            return (f"ERROR: tool '{name}' timed out after {TOOL_TIMEOUT}s "
+                    f"(it may still be running in the background; the turn continued)")
+        return box.get("v", "ERROR: tool produced no result")
+
     def execute_tool(self, name, raw_args):
         """Runs a tool; for run_python/run_powershell with a dangerous op it asks
-        for permission (unless skip_permissions) and, if approved, runs with allow_unsafe."""
+        for permission (unless skip_permissions) and, if approved, runs with allow_unsafe.
+        Every actual call is bounded by TOOL_TIMEOUT (the permission prompt is not)."""
         if name in self.mcp_names:   # remote tool (MCP) → run on the server
-            return mcp_client.call_tool(self.mcp_url, self.mcp_map[name], raw_args)
+            return self._with_timeout(
+                name, lambda: mcp_client.call_tool(self.mcp_url, self.mcp_map[name], raw_args))
         try:
             args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
         except Exception:
-            return call_tool(name, raw_args)
+            return self._with_timeout(name, lambda: call_tool(name, raw_args))
         if name in ("run_python", "run_powershell"):
             code = args.get("code") or args.get("command") or ""
             if self.skip_permissions:
@@ -1098,11 +1124,11 @@ class AgentTUI(App):
             else:
                 snip = danger_match(code)
                 if snip:
-                    if self.ask_permission(name, snip, code):
+                    if self.ask_permission(name, snip, code):   # user wait — not timed
                         args["allow_unsafe"] = True
                     else:
                         return f"DENIED by user: refused to run flagged operation '{snip}'"
-        return call_tool(name, args)
+        return self._with_timeout(name, lambda: call_tool(name, args))
 
     # ---------- agent (in thread) ----------
     def agent_turn(self, text):
