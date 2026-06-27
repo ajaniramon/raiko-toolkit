@@ -148,22 +148,29 @@ and any model is one line in `bench/models.json`.
 
 ### The key finding: thinking is not free
 
-Enabling the model's own "thinking" only helps the Mythos merge; it **hurts** every other
-model — sometimes badly.
+Enabling the model's own "thinking" is **neutral-to-helpful for Ornith and the Mythos
+merge, but hurts every other model** — sometimes badly (Gemma loses ~21 pts, the Hauhau
+merge ~31).
 
 ![Thinking impact](assets/thinking_impact.png)
 
-### The 3 finalists, stress-tested across all tiers
+### Champion vs. the field, across tiers
 
-They ace the easy tiers and **flake under real pressure** (multi-step incidents, secret
-hunting, multi-file edits).
+The interesting tier is **hardcore** (real multi-step dev/sysadmin incidents) — that's
+where most models flake. Ornith doesn't.
 
 ![Across tiers](assets/tiers.png)
 
-> **Verdict:** **`qwen3.5-9b` with thinking OFF** is the best all-rounder — it ties on the
-> basic tier, wins advanced/circuit/hardcore, and is faster and cheaper than the rest.
-> `gemma4-12b` (nothink) is a close second. The Mythos merge (`qwythos`) only keeps up
-> *with* thinking, and fades first under load.
+> **Verdict:** **`Ornith-1.0-9B` (Q4_K_M) is the new overall #1.** A 9B model that tops the
+> basic tier (96.9), stays top-tier on advanced (97.5), and **runs away with hardcore
+> (94.3 — the best score the benchmark has ever recorded**, vs the prior best of 82.0), all
+> while being fast and token-efficient. Uniquely, thinking doesn't hurt it. `qwen3.5-9b`
+> (nothink) and `gemma4-12b` (nothink) are the next best all-rounders.
+>
+> Two finetunes tested and **rejected**: `gemma4-v2` ("agentic-fable5" tune) regressed hard
+> — it collapses on the hardcore tier (40.6 / 30% correct vs base Gemma's 79.0) and is slow
+> and hyper-verbose. The `Q3_K_M` of Ornith also scores a touch below the `Q4_K_M` (esp. on
+> hardcore: 86.7 → 94.3), so use the Q4 if it fits your VRAM.
 
 Regenerate the charts after a new run:
 

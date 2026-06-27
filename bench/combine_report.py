@@ -12,7 +12,7 @@ import os
 from run_bench import write_report, print_leaderboard, RESULTS_DIR
 
 TARGET_TASKS = 104
-KNOWN_ALIASES = ("qwythos", "hauhau", "qwen35-9b", "gemma4-12b")
+KNOWN_ALIASES = ("qwythos", "hauhau", "qwen35-9b", "gemma4-12b", "gemma4-v2", "ornith-9b")
 
 
 def main():
