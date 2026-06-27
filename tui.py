@@ -153,6 +153,9 @@ def strip_tool_call_text(content):
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tui_config.json")
 MAX_ITERATIONS = 8
+# How many times to retry a turn when the model leaks its tool call into the
+# thinking and emits no real tool_call (qwen sometimes "thinks" the call and stops).
+THINK_RETRIES = 2
 
 DEFAULT_CONFIG = {
     "nano": {"base_url": "https://nano-gpt.com/api/v1",
@@ -826,6 +829,7 @@ class AgentTUI(App):
         self.gpu_hist = deque([0] * 40, maxlen=40)
         self.cpu_hist = deque([0] * 40, maxlen=40)
         self.cur_think = self.cur_content = ""
+        self._think_leak_calls = []
         self.busy = False
         self.mcp_url = None
         self.mcp_prefix = "mac_"
@@ -1109,6 +1113,24 @@ class AgentTUI(App):
         try:
             for _ in range(MAX_ITERATIONS):
                 msg = self.stream_one()
+                # If the model leaked the tool call into its thinking and produced
+                # no real tool_call, retry the whole turn (the discarded attempt is
+                # not added to history). Recover from the thinking as a last resort.
+                attempt = 0
+                while (self._think_leak_calls and not msg.get("tool_calls")
+                       and attempt < THINK_RETRIES):
+                    attempt += 1
+                    self.call_from_thread(self.write_log, Text.from_markup(
+                        f"[dim yellow]↻ tool call ended up in the thinking; retrying turn "
+                        f"({attempt}/{THINK_RETRIES})…[/]"))
+                    msg = self.stream_one()
+                if self._think_leak_calls and not msg.get("tool_calls"):
+                    msg["tool_calls"] = [
+                        {"id": f"tk_{i}", "type": "function",
+                         "function": {"name": tc["name"], "arguments": tc["arguments"]}}
+                        for i, tc in enumerate(self._think_leak_calls)]
+                    self.call_from_thread(self.write_log, Text.from_markup(
+                        "[dim yellow]↻ recovered the tool call from the thinking[/]"))
                 self.messages.append(msg)
                 tcs = msg.get("tool_calls")
                 if not tcs:
@@ -1207,6 +1229,10 @@ class AgentTUI(App):
                 content_parts[:] = [cleaned] if cleaned else []
                 self.call_from_thread(self.write_log, Text.from_markup(
                     "[dim yellow]↻ recovered a tool call the model emitted as plain text[/]"))
+
+        # detect a tool call leaked into the THINKING (qwen sometimes stops there
+        # and emits the call as part of its reasoning instead of a real tool_call)
+        self._think_leak_calls = parse_text_tool_calls(self.cur_think) if not tool_calls else []
 
         self.call_from_thread(self.commit_live)
 
