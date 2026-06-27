@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 
 from openai import OpenAI
 from rich.console import Console
@@ -78,8 +79,9 @@ console = Console()
 HERE = os.path.dirname(os.path.abspath(__file__))
 CIRC_DIR = os.path.join(HERE, "results", "circuit")
 CIRC_LOGS = os.path.join(CIRC_DIR, "logs")
-SCRATCH = (r"C:\Users\RAMN~1\AppData\Local\Temp\claude"
-           r"\C--Users-Ram-n-Desktop-agent\9f784f53-c05e-4e87-a7ba-e6b921ad38b0\scratchpad")
+# Per-run sandbox workspace (portable temp dir; created on demand).
+SCRATCH = os.path.join(tempfile.gettempdir(), "raiko-bench")
+os.makedirs(SCRATCH, exist_ok=True)
 
 TARGET_RUNS = [("qwen35-9b", "nothink"), ("gemma4-12b", "nothink"), ("qwythos", "think")]
 

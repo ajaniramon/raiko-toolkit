@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 import time
 from datetime import datetime
 
@@ -34,8 +35,9 @@ console = Console()
 HERE = os.path.dirname(os.path.abspath(__file__))
 RESULTS_DIR = os.path.join(HERE, "results")
 LOGS_DIR = os.path.join(RESULTS_DIR, "logs")
-SCRATCH = (r"C:\Users\RAMN~1\AppData\Local\Temp\claude"
-           r"\C--Users-Ram-n-Desktop-agent\9f784f53-c05e-4e87-a7ba-e6b921ad38b0\scratchpad")
+# Per-run sandbox workspace (portable temp dir; created on demand).
+SCRATCH = os.path.join(tempfile.gettempdir(), "raiko-bench")
+os.makedirs(SCRATCH, exist_ok=True)
 
 MODE_FLAGS = {"think": True, "nothink": False}
 

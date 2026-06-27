@@ -16,6 +16,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 
 from openai import OpenAI
 from rich.console import Console
@@ -32,8 +33,9 @@ console = Console()
 HERE = os.path.dirname(os.path.abspath(__file__))
 ADV_DIR = os.path.join(HERE, "results", "adv")
 ADV_LOGS = os.path.join(ADV_DIR, "logs")
-SCRATCH = (r"C:\Users\RAMN~1\AppData\Local\Temp\claude"
-           r"\C--Users-Ram-n-Desktop-agent\9f784f53-c05e-4e87-a7ba-e6b921ad38b0\scratchpad")
+# Per-run sandbox workspace (portable temp dir; created on demand).
+SCRATCH = os.path.join(tempfile.gettempdir(), "raiko-bench")
+os.makedirs(SCRATCH, exist_ok=True)
 
 # the 3 winners of the base tier (run = model + its winning mode).
 # Order: fast ones first (nothink), qwythos-think (slow) at the end.
