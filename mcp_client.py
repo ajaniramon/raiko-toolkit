@@ -59,7 +59,7 @@ def call_tool(url, name, args):
 
 if __name__ == "__main__":
     import sys
-    u = sys.argv[1] if len(sys.argv) > 1 else "http://192.168.1.13:8765/mcp"
+    u = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8765/mcp"
     ts, names = list_tools_openai(u)
     print(f"MCP tools en {u}: {len(ts)}")
     print(" ", ", ".join(sorted(names)))

@@ -43,7 +43,7 @@ def build_circuit_tasks(verify, alias):
         "Use the Vault tool to read the secret stored at path 'secret/data/mac', "
         "and report the value of its 'username' field.",
         ["vault_get_secret"],
-        lambda a, r: "ramonmartineztarin" in a.lower())
+        lambda a, r: verify["username"].lower() in a.lower())
 
     # 2) circuito completo: secreto de Vault -> copiar payload.txt al Mac
     rp_payload = f"{home}/agent_drop_{alias}_payload.txt"

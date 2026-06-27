@@ -32,19 +32,28 @@ SCRATCH = (r"C:\Users\RAMN~1\AppData\Local\Temp\claude"
 
 TARGET_RUNS = [("qwen35-9b", "nothink"), ("gemma4-12b", "nothink"), ("qwythos", "think")]
 
-# credenciales del Mac: se leen de mac-credentials.txt (NO versionado) o del entorno.
+# Datos del Mac (NO versionados): mac-credentials.txt en la raíz del repo, con
+# línea 1 = "user:pass" y línea 2 (opcional) = host. El entorno
+# (MAC_USER/MAC_PASS/MAC_HOST) tiene prioridad. Defaults inocuos para el repo.
 def _mac_creds():
+    user = os.environ.get("MAC_USER", "")
+    pw = os.environ.get("MAC_PASS", "")
+    host = os.environ.get("MAC_HOST", "")
     cred_file = os.path.join(os.path.dirname(HERE), "mac-credentials.txt")
     try:
         with open(cred_file, encoding="utf-8") as fh:
-            user, pw = fh.read().strip().split(":", 1)
-            return user, pw
+            lines = [ln.strip() for ln in fh if ln.strip()]
+        if lines and ":" in lines[0]:
+            fu, fp = lines[0].split(":", 1)
+            user, pw = user or fu, pw or fp
+        if len(lines) > 1:
+            host = host or lines[1]
     except Exception:
-        return os.environ.get("MAC_USER", ""), os.environ.get("MAC_PASS", "")
+        pass
+    return user, pw, (host or "localhost")
 
-_MAC_USER, _MAC_PASS = _mac_creds()
-MAC = {"host": os.environ.get("MAC_HOST", "100.102.204.32"), "port": "22",
-       "username": _MAC_USER, "password": _MAC_PASS}
+_MAC_USER, _MAC_PASS, _MAC_HOST = _mac_creds()
+MAC = {"host": _MAC_HOST, "port": "22", "username": _MAC_USER, "password": _MAC_PASS}
 SECRET = dict(MAC, credentials=f"{_MAC_USER}:{_MAC_PASS}")
 
 FULL_TOOLS = TOOLS

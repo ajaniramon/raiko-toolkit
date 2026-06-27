@@ -143,7 +143,7 @@ def build_server():
     cfg = load_config()
     disabled = set(cfg.get("disabled", []))
     # red local de confianza: desactivamos la protección anti DNS-rebinding para
-    # poder conectar por IP (192.168.1.13) sin 421 Misdirected Request.
+    # poder conectar por IP en la LAN sin 421 Misdirected Request.
     mcp = FastMCP("jj-tools",
                   transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False))
     for name in SIMPLE_TOOLS:

@@ -174,7 +174,8 @@ DEFAULT_CONFIG = {
                              "claude-sonnet-4-6", "claude-haiku-4-5", "claude-fable-5"]},
     # llama.cpp remoto: la URL se pide al seleccionarlo y se recuerda aquí
     "remote": {"base_url": "", "api_key": "sk-noop", "model": "", "ctx_window": 16000},
-    "mcp": {"enabled": True, "url": "http://192.168.1.13:8765/mcp", "prefix": "mac_"},
+    # url del MCP: se sobreescribe en tui_config.json (no versionado) con tu host real
+    "mcp": {"enabled": True, "url": "http://localhost:8765/mcp", "prefix": "mac_"},
     "last": {"provider": None, "model": None},   # último usado (default al arrancar)
     "favorites": {"nano": [], "xai": [], "openrouter": [], "openai": [], "anthropic": [], "remote": []},
 }
