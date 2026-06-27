@@ -3,6 +3,7 @@ mac-credentials.txt
 tui_config.json
 mcp_server/tools_config.json
 bench/models.json
+sessions/
 .env
 *.key
 *.pem

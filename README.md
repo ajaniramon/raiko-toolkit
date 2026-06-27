@@ -75,6 +75,12 @@ python tui.py --dangerously-skip-permissions
   (saved to `tui_config.json`).
 - **Local mode**: computes the optimal `ctx-size` for your GPU (overridable), **starts the
   llama-server only if it isn't already running**, and stops it on exit.
+- **Sessions**: conversations are auto-saved per turn and linked to their model. On
+  startup, if you have saved sessions, a **Continue / New** menu lets you resume one
+  (history replayed into the log); pick it from a list, or delete with `d`.
+- **Model swap (`F3`)**: switch model mid-conversation on cloud/remote providers
+  (nano · OpenAI · Anthropic · xAI · OpenRouter · remote llama.cpp) — history is kept.
+  Not available in local mode (one model per llama-server).
 - **Settings (`F2`)**: open and edit `tui_config.json` in-app, with JSON validation.
 - **MCP routing**: remote tools are auto-discovered and exposed with a `mac_` prefix.
 

@@ -25,6 +25,7 @@ import sys
 import threading
 import time
 from collections import deque
+from datetime import datetime
 
 import psutil
 from openai import OpenAI
@@ -223,6 +224,56 @@ def load_config():
 def save_config(cfg):
     try:
         json.dump(cfg, open(CONFIG_PATH, "w", encoding="utf-8"), indent=2)
+    except Exception:
+        pass
+
+
+# ------------------------------ session storage ------------------------------
+# One JSON file per saved conversation under sessions/ (gitignored). A session
+# stores its provider + model so it can be restored exactly.
+SESSIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions")
+
+
+def _sessions_dir():
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+    return SESSIONS_DIR
+
+
+def list_sessions():
+    """All saved sessions (full dicts), newest-updated first."""
+    out = []
+    try:
+        for fn in os.listdir(_sessions_dir()):
+            if not fn.endswith(".json"):
+                continue
+            try:
+                out.append(json.load(open(os.path.join(SESSIONS_DIR, fn), encoding="utf-8")))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    out.sort(key=lambda s: s.get("updated", ""), reverse=True)
+    return out
+
+
+def load_session(sid):
+    try:
+        return json.load(open(os.path.join(_sessions_dir(), sid + ".json"), encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def write_session(sess):
+    try:
+        path = os.path.join(_sessions_dir(), sess["id"] + ".json")
+        json.dump(sess, open(path, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def delete_session(sid):
+    try:
+        os.remove(os.path.join(_sessions_dir(), sid + ".json"))
     except Exception:
         pass
 
@@ -435,11 +486,18 @@ class ModelScreen(Screen):
 
     BINDINGS = [("escape", "back", "Back"), ("f", "fav", "Favorite")]
 
-    def __init__(self, provider):
+    def __init__(self, provider, swap=False):
         super().__init__()
         self.provider = provider
+        self.swap = swap               # True → switch model mid-session (keep history)
         self.names = []                # model names/aliases
         self.label_of = {}             # name -> label to display
+
+    def _pick(self, model_value):
+        if self.swap:
+            self.app.swap_model(model_value)
+        else:
+            self.app.choose_model(model_value)
 
     def compose(self) -> ComposeResult:
         with Vertical(id="box"):
@@ -525,7 +583,7 @@ class ModelScreen(Screen):
         ol = self.query_one("#models", OptionList)
         if ol.option_count:
             idx = ol.highlighted if ol.highlighted is not None else 0
-            self.app.choose_model(ol.get_option_at_index(idx).id)
+            self._pick(ol.get_option_at_index(idx).id)
 
     def action_back(self):
         self.app.pop_screen()
@@ -544,7 +602,7 @@ class ModelScreen(Screen):
         self.rebuild(self.query_one("#filter", Input).value)
 
     def on_option_list_option_selected(self, e: OptionList.OptionSelected):
-        self.app.choose_model(e.option.id)
+        self._pick(e.option.id)
 
 
 class LoadingScreen(Screen):
@@ -742,8 +800,100 @@ class SettingsScreen(ModalScreen):
             pass
 
 
+class StartScreen(Screen):
+    """First screen when saved sessions exist: continue one or start fresh."""
+
+    CSS = """
+    StartScreen { align: center middle; }
+    #box { width: 64; height: auto; border: round #5f5fd7; padding: 1 2; }
+    #title { text-style: bold; color: #d787ff; margin-bottom: 1; }
+    OptionList { height: auto; }
+    #shint { color: #999999; margin-top: 1; }
+    """
+    BINDINGS = [("escape", "quit", "Quit")]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="box"):
+            yield Static("🦊  raiko — welcome back", id="title")
+            yield OptionList(
+                Option("▸  Continue a session", id="continue"),
+                Option("✦  Start a new session", id="new"),
+                id="start")
+            yield Static("", id="shint")
+
+    def on_mount(self):
+        self.query_one("#start", OptionList).focus()
+        n = len(list_sessions())
+        self.query_one("#shint", Static).update(Text.from_markup(
+            f"[dim]{n} saved session{'s' if n != 1 else ''} · Esc to quit[/]"))
+
+    def on_option_list_option_selected(self, e: OptionList.OptionSelected):
+        if e.option.id == "continue":
+            self.app.push_screen(SessionListScreen())
+        else:
+            self.app.push_screen(ProviderScreen())
+
+
+class SessionListScreen(Screen):
+    """Pick a saved session to resume (or delete one)."""
+
+    CSS = """
+    SessionListScreen { align: center middle; }
+    #box { width: 92; height: 80%; border: round #00afaf; padding: 1 2; }
+    #title { text-style: bold; color: #00d7ff; }
+    OptionList { height: 1fr; }
+    #shint { color: #999999; }
+    """
+    BINDINGS = [("escape", "back", "Back"), ("d", "delete", "Delete")]
+
+    def __init__(self):
+        super().__init__()
+        self.sessions = []
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="box"):
+            yield Static("Continue a session", id="title")
+            yield OptionList(id="sessions")
+            yield Static("", id="shint")
+
+    def on_mount(self):
+        self.rebuild()
+
+    def rebuild(self):
+        ol = self.query_one("#sessions", OptionList)
+        ol.clear_options()
+        self.sessions = list_sessions()
+        for s in self.sessions:
+            when = (s.get("updated", "") or "")[:16].replace("T", " ")
+            title = s.get("title") or "(untitled)"
+            ol.add_option(Option(Text.from_markup(
+                f"[b]{title}[/]\n   [dim]{s.get('provider')} · {s.get('model')} · "
+                f"{len(s.get('messages', []))} msgs · {when}[/]"), id=s["id"]))
+        if ol.option_count:
+            ol.highlighted = 0
+        self.query_one("#shint", Static).update(Text.from_markup(
+            "[dim]Enter resume · d delete · Esc back[/]"))
+
+    def on_option_list_option_selected(self, e: OptionList.OptionSelected):
+        sess = load_session(e.option.id)
+        if sess:
+            self.app.resume_session(sess)
+
+    def action_delete(self):
+        ol = self.query_one("#sessions", OptionList)
+        if ol.highlighted is None:
+            return
+        delete_session(ol.get_option_at_index(ol.highlighted).id)
+        self.rebuild()
+        if not self.sessions:
+            self.app.pop_screen()   # nothing left → back to start
+
+    def action_back(self):
+        self.app.pop_screen()
+
+
 class MainScreen(Screen):
-    BINDINGS = [("f2", "settings", "⚙ Settings")]
+    BINDINGS = [("f2", "settings", "⚙ Settings"), ("f3", "swap_model", "⇄ Model")]
     CSS = """
     #main { width: 3fr; border: round #5f5fd7; padding: 0 1; }
     #log { height: 1fr; background: $surface; scrollbar-size-vertical: 1; }
@@ -783,11 +933,16 @@ class MainScreen(Screen):
         app = self.app
         app.update_ctx()
         app._log_lines = []
+        resumed = getattr(app, "resumed", False)
+        head = "[bold green]Resumed session[/]" if resumed else "[bold]Connected[/]"
+        swap_hint = ("[green]LOCAL mode: live GPU/CPU graphs on the right →[/]" if app.is_local
+                     else f"[yellow]{app.provider} · cloud[/]  ·  [dim]F3 to swap model[/]")
         app.write_log(Panel(Text.from_markup(
-            f"[bold]Connected[/]  provider=[cyan]{app.provider}[/]  model=[cyan]{app.model}[/]\n"
-            + ("[green]LOCAL mode: live GPU/CPU graphs on the right →[/]" if app.is_local
-               else f"[yellow]{app.provider} · cloud[/]")),
-            title="[bold magenta]JJ agent TUI[/]", border_style="magenta"))
+            f"{head}  provider=[cyan]{app.provider}[/]  model=[cyan]{app.model}[/]\n" + swap_hint),
+            title="[bold magenta]raiko TUI[/]", border_style="magenta"))
+        if resumed:
+            app.render_history()
+            app.resumed = False
         if app.is_local:
             self.set_interval(1.0, app.poll_usage)
             app.poll_usage()
@@ -797,6 +952,14 @@ class MainScreen(Screen):
 
     def action_settings(self):
         self.app.push_screen(SettingsScreen())
+
+    def action_swap_model(self):
+        if self.app.is_local:
+            self.app.write_log(Panel(
+                Text("Model swap isn't available in local mode (one model per llama-server).",
+                     style="yellow"), border_style="yellow", expand=False))
+            return
+        self.app.push_screen(ModelScreen(self.app.provider, swap=True))
 
     def on_input_submitted(self, event: Input.Submitted):
         text = event.value.strip()
@@ -846,6 +1009,9 @@ class AgentTUI(App):
         self._log_lines = []
         self._turn_tokens = 0
         self._turn_start = 0.0
+        self.session_id = None          # set on first save; reused on resume
+        self._resume_messages = None    # carried into a (local) resume
+        self.resumed = False            # MainScreen renders prior history when True
 
     def on_mount(self):
         self.title = "🤖 JJ agent"
@@ -863,6 +1029,8 @@ class AgentTUI(App):
         elif self.cli_provider:
             self.provider = self.cli_provider
             self.push_screen(ModelScreen(self.cli_provider))
+        elif list_sessions():
+            self.push_screen(StartScreen())   # continue / new
         else:
             self.push_screen(ProviderScreen())
 
@@ -940,6 +1108,7 @@ class AgentTUI(App):
             alias = self._loaded_local_model() or model_value
             self.configure("local", alias)
             self._save_last("local", alias)
+            self._apply_resume()
             self._go_main()
         else:
             # compute the optimal ctx based on the GPU and allow overriding it
@@ -974,7 +1143,99 @@ class AgentTUI(App):
         loaded = self._loaded_local_model() or alias
         self.configure("local", loaded, ctx_limit=getattr(self, "_pending_ctx", None))
         self._save_last("local", loaded)
+        self._apply_resume()
         self._go_main(replace=True)
+
+    # ---------- sessions ----------
+    def _apply_resume(self):
+        """If a resume is pending, install its messages as the live conversation."""
+        if self._resume_messages is not None:
+            self.messages = self._resume_messages
+            self._resume_messages = None
+            self.resumed = True
+
+    def resume_session(self, sess):
+        """Restore a saved session: re-select its provider+model and load its history.
+        Local restores boot the server for that model; cloud/remote just reconnect
+        (a remote whose API is down will simply error on the next turn)."""
+        provider = sess.get("provider")
+        model = sess.get("model")
+        msgs = sess.get("messages") or [{"role": "system", "content": SYSTEM_PROMPT}]
+        self.provider = provider
+        self.session_id = sess.get("id")
+        if provider == "remote":
+            self.cfg.setdefault("remote", {})["base_url"] = (
+                sess.get("base_url") or self.cfg.get("remote", {}).get("base_url", ""))
+        if provider == "local":
+            if registry.find(model) is None:
+                self.push_screen(ProviderScreen())
+                self.write_log(Panel(Text(f"Model '{model}' is no longer in the registry.",
+                                          style="red"), border_style="red", expand=False))
+                return
+            self._resume_messages = msgs
+            self.choose_model(model)           # boots the server, then _apply_resume
+            return
+        # cloud + remote
+        self.configure(provider, model)
+        if sess.get("ctx_window"):
+            self.tracker.limit = sess["ctx_window"]
+        self.messages = msgs
+        self.resumed = True
+        self._save_last(provider, model)
+        self._go_main()
+
+    def save_session(self):
+        """Persist the current conversation (skipped for demo / empty sessions)."""
+        if self.cli_demo or not self.model or len(self.messages) <= 1:
+            return
+        if not self.session_id:
+            self.session_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+        title = next((m.get("content") for m in self.messages
+                      if m.get("role") == "user" and m.get("content")), "(no prompt)")
+        sess = {
+            "id": self.session_id,
+            "updated": datetime.now().isoformat(timespec="seconds"),
+            "provider": self.provider,
+            "model": self.model,
+            "title": (title or "")[:70],
+            "ctx_window": getattr(self.tracker, "limit", None),
+            "messages": self.messages,
+        }
+        if self.provider == "remote":
+            sess["base_url"] = self.cfg.get("remote", {}).get("base_url", "")
+        write_session(sess)
+
+    def swap_model(self, model_value):
+        """Switch the model mid-session (cloud/remote only). History is kept."""
+        old = self.model
+        self.configure(self.provider, model_value)   # new client+tracker, messages untouched
+        self._save_last(self.provider, model_value)
+        self.save_session()
+        if len(self.screen_stack) > 1:
+            self.pop_screen()                        # back to MainScreen
+        self.write_log(Panel(Text.from_markup(
+            f"[bold]Model switched[/]  [cyan]{old}[/] → [cyan]{model_value}[/]  "
+            f"[dim](history kept)[/]"), border_style="magenta", expand=False))
+        self.update_ctx()
+
+    def render_history(self):
+        """Replay a resumed conversation into the log (user/assistant/tools, compact)."""
+        for m in self.messages:
+            role, content = m.get("role"), m.get("content")
+            if role == "user" and content:
+                self.write_log(Panel(Text(content, style="bold white"),
+                                     title="[bold blue]you[/]", border_style="blue"))
+            elif role == "assistant":
+                if content:
+                    self.write_log(Panel(Markdown(content), title="[bold green]assistant[/]",
+                                         border_style="green"))
+                for tc in (m.get("tool_calls") or []):
+                    self.write_log(Text.from_markup(
+                        f"[dim]🔧 {tc.get('function', {}).get('name', '?')}(…)[/]"))
+            elif role == "tool":
+                prev = (content or "")[:200]
+                self.write_log(Text.from_markup(f"[dim]✓ tool → {prev}[/]"))
+        self.write_log(Text.from_markup("[dim]— end of restored history —[/]"))
 
     def _local_failed(self, err):
         try:
@@ -1185,6 +1446,7 @@ class AgentTUI(App):
             self.call_from_thread(self.write_log, Text.from_markup(
                 f"[dim]⚡ {tps:.1f} tok/s · {self._turn_tokens} output tokens · {elapsed:.1f}s[/]"))
             self.call_from_thread(self.update_ctx)
+            self.save_session()   # persist the conversation after every turn
 
     def stream_one(self):
         params = dict(model=self.model, messages=self.messages, tools=TOOLS + self.mcp_tools,
