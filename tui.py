@@ -1356,7 +1356,6 @@ class MainScreen(Screen):
         if text.startswith("/"):
             self.handle_command(text)
             return
-        self.app._chat_mount(UserMsg(text))
         self.app.busy = True
         self.app.run_worker(lambda: self.app.agent_turn(text), thread=True, exclusive=True)
 
@@ -1835,21 +1834,14 @@ class AgentTUI(App):
         txt = "\n".join(lines)
         return txt[-24000:] if len(txt) > 24000 else txt
 
-    def compact(self, auto=False):
-        """/compact — summarize older turns into a compact recap (keeps the system prompt)."""
-        if self.busy or not self.client:
-            return
+    def _enough_to_compact(self):
         real = [m for m in self.messages[1:] if m.get("role") in ("user", "assistant", "tool")]
-        if len(real) < 4:
-            if not auto:
-                self.write_log(Panel(Text("Not enough conversation to compact yet.", style="yellow"),
-                                     border_style="yellow", expand=False))
-            return
-        self.busy = True
-        self.write_log(Text.from_markup("[dim]✦ compacting context…[/]"))
-        self.run_worker(lambda: self._compact_worker(auto), thread=True, exclusive=True)
+        return len(real) >= 4
 
-    def _compact_worker(self, auto):
+    def _do_compact(self, auto):
+        """Summarize older turns into a recap (keeps the system prompt). Runs in a
+        worker thread and pushes UI updates via call_from_thread; does NOT touch
+        self.busy — the caller owns that. Returns True on success."""
         try:
             instr = ("Summarize the conversation so far so it can be continued without the full "
                      "history. Preserve the user's goals and decisions, key facts, file paths and "
@@ -1866,12 +1858,32 @@ class AgentTUI(App):
             self.messages = [self.messages[0],
                              {"role": "user", "content": "[Summary of the earlier conversation]\n" + summary}]
             self.call_from_thread(self._after_compact, before_n, len(self.messages), auto)
+            return True
         except Exception as e:
             self.call_from_thread(self.write_log, Panel(
                 Text(f"compaction failed: {type(e).__name__}: {e}", style="red"),
                 border_style="red", expand=False))
-        finally:
-            self.busy = False
+            return False
+
+    def compact(self, auto=False):
+        """/compact — manual entry point (main thread, while idle). Runs the
+        summarization in its own worker and owns the busy flag for it."""
+        if self.busy or not self.client:
+            return
+        if not self._enough_to_compact():
+            if not auto:
+                self.write_log(Panel(Text("Not enough conversation to compact yet.", style="yellow"),
+                                     border_style="yellow", expand=False))
+            return
+        self.busy = True
+        self.write_log(Text.from_markup("[dim]✦ compacting context…[/]"))
+
+        def _job():
+            try:
+                self._do_compact(auto)
+            finally:
+                self.busy = False
+        self.run_worker(_job, thread=True, exclusive=True)
 
     def _after_compact(self, before_n, after_n, auto):
         self.action_clear_log()
@@ -1885,7 +1897,12 @@ class AgentTUI(App):
         self.save_session()
 
     def _maybe_autocompact(self):
-        if not self.cfg.get("auto_compact", True) or self.busy or not self.tracker:
+        """Compact synchronously if the context is near full. Called inline at the
+        start of a turn (already inside the turn worker, busy=True) so a turn is
+        never interrupted mid-stream and no second worker races the call."""
+        if not self.cfg.get("auto_compact", True) or not self.client or not self.tracker:
+            return
+        if not self._enough_to_compact():
             return
         try:
             used, _ = self.tracker.current(self.messages)
@@ -1893,8 +1910,9 @@ class AgentTUI(App):
         except Exception:
             return
         if limit and used / limit >= AUTO_COMPACT_PCT:
-            self.write_log(Text.from_markup("[dim]context is getting full — auto-compacting…[/]"))
-            self.compact(auto=True)
+            self.call_from_thread(self.write_log, Text.from_markup(
+                "[dim]context is getting full — auto-compacting…[/]"))
+            self._do_compact(auto=True)
 
     # ---------- MCP (remote tools) ----------
     def load_mcp_tools(self):
@@ -1997,6 +2015,12 @@ class AgentTUI(App):
 
     # ---------- agent (in thread) ----------
     def agent_turn(self, text):
+        # Compact first if the context is nearly full, so a turn is never cut off
+        # mid-stream by compaction. Runs inline in this worker (no second worker
+        # racing the turn), and the new user message is mounted afterwards so it
+        # survives the post-compaction log clear.
+        self._maybe_autocompact()
+        self.call_from_thread(self._chat_mount, UserMsg(text))
         self.messages.append({"role": "user", "content": text})
         self._turn_tokens = 0
         self._stream_chars = 0
@@ -2060,8 +2084,6 @@ class AgentTUI(App):
                 f"[dim]⚡ {tps:.1f} tok/s · {self._turn_tokens} output tokens · {elapsed:.1f}s[/]"))
             self.call_from_thread(self.update_ctx)
             self.save_session()   # persist the conversation after every turn
-            if not self._cancel.is_set():
-                self.call_from_thread(self._maybe_autocompact)
 
     def stream_one(self):
         params = dict(model=self.model, messages=self.messages, tools=TOOLS + self.mcp_tools,
