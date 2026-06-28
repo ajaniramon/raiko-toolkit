@@ -83,7 +83,8 @@ python tui.py --dangerously-skip-permissions
   Not available in local mode (one model per llama-server).
 - **System prompt presets (`F6`)**: named personas in `tui_config.json`
   (`system_prompts`); pick/edit/save one and it applies live (next turn) and persists to
-  the session. New sessions use `active_system_prompt`; with >1 preset you get a picker at
+  the session. New sessions use `active_system_prompt`; you can also set it **before** a
+  session from the startup wizard (`Ctrl+P`), and with >1 preset a picker appears at
   session start. The fixed tool-calling rules are always appended so a custom persona
   can't break tool use.
 - **Settings (`F2`)**: open and edit `tui_config.json` in-app, with JSON validation.

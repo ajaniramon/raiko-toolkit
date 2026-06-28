@@ -378,13 +378,14 @@ class ProviderScreen(Screen):
         ("xai", "✦  xAI         (Grok · cloud)"),
         ("openrouter", "🔀  OpenRouter  (cloud · many models)"),
     ]
-    BINDINGS = [("escape", "quit", "Quit")]
+    BINDINGS = [("escape", "quit", "Quit"), ("ctrl+p", "prompt", "📝 Prompt")]
 
     def compose(self) -> ComposeResult:
         with Vertical(id="box"):
             yield Static("🤖  What do you want to run with?", id="title")
             yield OptionList(*[Option(lbl, id=pid) for pid, lbl in self.PROVIDERS], id="prov")
             yield Static("", id="phint")
+        yield Footer()
 
     def on_mount(self):
         ol = self.query_one("#prov", OptionList)
@@ -395,6 +396,9 @@ class ProviderScreen(Screen):
             ol.highlighted = ids.index(last["provider"])
             self.query_one("#phint", Static).update(Text.from_markup(
                 f"[dim]last used → [cyan]{last['provider']}[/] · {last.get('model') or '?'}[/]"))
+
+    def action_prompt(self):
+        self.app.push_screen(SystemPromptScreen(wizard=True))
 
     def on_option_list_option_selected(self, e: OptionList.OptionSelected):
         pid = e.option.id
@@ -837,7 +841,7 @@ class StartScreen(Screen):
     OptionList { height: auto; }
     #shint { color: #999999; margin-top: 1; }
     """
-    BINDINGS = [("escape", "quit", "Quit")]
+    BINDINGS = [("escape", "quit", "Quit"), ("ctrl+p", "prompt", "📝 Prompt")]
 
     def compose(self) -> ComposeResult:
         with Vertical(id="box"):
@@ -847,12 +851,16 @@ class StartScreen(Screen):
                 Option("✦  Start a new session", id="new"),
                 id="start")
             yield Static("", id="shint")
+        yield Footer()
 
     def on_mount(self):
         self.query_one("#start", OptionList).focus()
         n = len(list_sessions())
         self.query_one("#shint", Static).update(Text.from_markup(
             f"[dim]{n} saved session{'s' if n != 1 else ''} · Esc to quit[/]"))
+
+    def action_prompt(self):
+        self.app.push_screen(SystemPromptScreen(wizard=True))
 
     def on_option_list_option_selected(self, e: OptionList.OptionSelected):
         if e.option.id == "continue":
@@ -992,14 +1000,16 @@ class SystemPromptScreen(Screen):
     """
     BINDINGS = [("escape", "cancel", "Cancel"), ("ctrl+s", "apply", "Apply")]
 
-    def __init__(self, start=False):
+    def __init__(self, start=False, wizard=False):
         super().__init__()
-        self.start = start
+        self.start = start      # shown right before a new session begins
+        self.wizard = wizard    # opened from the startup wizard (apply → back to wizard)
 
     def compose(self) -> ComposeResult:
+        sub = ("  ·  starting a new session" if self.start
+               else "  ·  for the next session" if self.wizard else "")
         with Vertical(id="box"):
-            yield Static("📝  System prompt" + ("  ·  starting a new session" if self.start else ""),
-                         id="title")
+            yield Static("📝  System prompt" + sub, id="title")
             yield OptionList(id="presets")
             yield Input(placeholder="preset name", id="pname")
             yield TextArea(id="pbody")
@@ -1049,6 +1059,9 @@ class SystemPromptScreen(Screen):
         self.app.apply_persona(text)
         if self.start:
             self.app._go_main(replace=True)
+        elif self.wizard:
+            self.app._prompt_chosen = True   # don't re-prompt at session start
+            self.app.pop_screen()
         else:
             self.app.pop_screen()
             self.app.write_log(Panel(Text.from_markup(
@@ -1222,6 +1235,7 @@ class AgentTUI(App):
         self.session_id = None          # set on first save; reused on resume
         self._resume_messages = None    # carried into a (local) resume
         self.resumed = False            # MainScreen renders prior history when True
+        self._prompt_chosen = False     # True once the prompt was set from the wizard
 
     def on_mount(self):
         self.title = "🤖 JJ agent"
@@ -1496,7 +1510,8 @@ class AgentTUI(App):
         let the user pick the system prompt first; resumes and single-preset setups go
         straight in. (The picker replaces itself with MainScreen on confirm.)"""
         presets = self.cfg.get("system_prompts") or {}
-        if not self.resumed and not self.session_id and len(presets) > 1:
+        if (not self.resumed and not self.session_id and not self._prompt_chosen
+                and len(presets) > 1):
             self.push_screen(SystemPromptScreen(start=True))
         else:
             self._go_main(replace=replace)
