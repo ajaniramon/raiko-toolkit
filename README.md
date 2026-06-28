@@ -81,7 +81,14 @@ python tui.py --dangerously-skip-permissions
 - **Model swap (`F3`)**: switch model mid-conversation on cloud/remote providers
   (nano · OpenAI · Anthropic · xAI · OpenRouter · remote llama.cpp) — history is kept.
   Not available in local mode (one model per llama-server).
+- **System prompt presets (`F6`)**: named personas in `tui_config.json`
+  (`system_prompts`); pick/edit/save one and it applies live (next turn) and persists to
+  the session. New sessions use `active_system_prompt`; with >1 preset you get a picker at
+  session start. The fixed tool-calling rules are always appended so a custom persona
+  can't break tool use.
 - **Settings (`F2`)**: open and edit `tui_config.json` in-app, with JSON validation.
+- **Slash commands**: `/clear` (reset the conversation, keep the system prompt) · `/system`
+  (prompt editor) · `/tools` (tool log) · `/help`.
 - **MCP routing**: remote tools are auto-discovered and exposed with a `mac_` prefix.
 
 There's also a headless agent loop in **`agent.py`** (same providers via env vars) for
