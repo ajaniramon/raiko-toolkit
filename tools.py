@@ -393,6 +393,49 @@ def web_search(query: str, max_results: int = 5) -> str:
     return "\n".join(out) if out else "(no results)"
 
 
+def web_fetch(url: str, max_chars: int = 8000) -> str:
+    """Fetch a web page and return its main text content (cleaned), via the Tavily
+    Extract API. Needs TAVILY_API_KEY in the environment. Use after web_search to
+    read a result in full, or to read the contents of a known URL."""
+    import urllib.request
+    import urllib.error
+    key = os.environ.get("TAVILY_API_KEY", "")
+    if not key:
+        return ("ERROR: web fetch is not configured — set TAVILY_API_KEY "
+                "(get a free key at https://tavily.com).")
+    try:
+        limit = max(500, min(int(max_chars or 8000), 20000))
+    except (TypeError, ValueError):
+        limit = 8000
+    payload = json.dumps({
+        "api_key": key,
+        "urls": [url],
+        "extract_depth": "advanced",
+    }).encode("utf-8")
+    req = urllib.request.Request("https://api.tavily.com/extract", data=payload,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read().decode("utf-8", "replace")[:200]
+        except Exception:
+            detail = ""
+        return f"ERROR: Tavily returned {e.code}: {detail}"
+    except Exception as e:
+        return f"ERROR: web fetch failed: {type(e).__name__}: {e}"
+    results = data.get("results") or []
+    if not results:
+        failed = data.get("failed_results") or []
+        why = f" ({failed[0].get('error', '')})" if failed else ""
+        return f"ERROR: could not extract content from {url}{why}"
+    content = (results[0].get("raw_content") or "").strip()
+    if len(content) > limit:
+        content = content[:limit] + f"\n… (truncated, {len(content) - limit} more chars)"
+    return content or "(no content extracted)"
+
+
 TOOLS = [
     {
         "type": "function",
@@ -668,6 +711,21 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_fetch",
+            "description": "Fetch a URL and return its main page text (cleaned). Use to read a full page — e.g. a result returned by web_search, or a known link. Returns up to max_chars characters.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The URL to fetch."},
+                    "max_chars": {"type": "integer", "description": "Max characters of content to return (default 8000)."},
+                },
+                "required": ["url"],
+            },
+        },
+    },
 ]
 
 
@@ -692,6 +750,7 @@ DISPATCH = {
     "run_bash": run_bash,
     "vault_get_secret": vault_get_secret,
     "web_search": web_search,
+    "web_fetch": web_fetch,
 }
 
 

@@ -104,8 +104,9 @@ A portable, stdlib-only tool layer shared by the TUI, the agent, and the MCP ser
 **Write / execute (gated):** `write_file` · `edit_file` · `run_python` · `run_powershell`
 · `run_bash` · `vault_get_secret`
 
-**Web:** `web_search` — Tavily-backed ranked results + synthesized answer (set
-`tavily_api_key` in `tui_config.json`, or the `TAVILY_API_KEY` env var).
+**Web:** `web_search` — Tavily ranked results + synthesized answer · `web_fetch` — read
+a page's full text (Tavily Extract). Set `tavily_api_key` in `tui_config.json` (or the
+`TAVILY_API_KEY` env var); both are also exposed over the MCP server.
 
 Execution tools run in a subprocess with **timeouts** and a **denylist** that blocks only
 genuinely destructive operations (`rm -rf`, `format`, `shutdown`, registry edits); normal
