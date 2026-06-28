@@ -183,6 +183,7 @@ DEFAULT_CONFIG = {
     "remote": {"base_url": "", "api_key": "sk-noop", "model": "", "ctx_window": 16000},
     # MCP url: overridden in tui_config.json (not versioned) with your real host
     "mcp": {"enabled": True, "url": "http://localhost:8765/mcp", "prefix": "mac_"},
+    "tavily_api_key": "",   # for the web_search tool (free key at tavily.com)
     "last": {"provider": None, "model": None},   # last used (default on startup)
     "favorites": {"nano": [], "xai": [], "openrouter": [], "openai": [], "anthropic": [], "remote": []},
 }
@@ -218,6 +219,9 @@ def load_config():
         json.dump(DEFAULT_CONFIG, open(CONFIG_PATH, "w", encoding="utf-8"), indent=2)
     cfg.setdefault("last", {"provider": None, "model": None})
     cfg.setdefault("favorites", {})
+    # make the web_search tool's key available to tools.py without leaking it in source
+    if cfg.get("tavily_api_key") and not os.environ.get("TAVILY_API_KEY"):
+        os.environ["TAVILY_API_KEY"] = cfg["tavily_api_key"]
     return cfg
 
 
