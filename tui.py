@@ -161,6 +161,8 @@ THINK_RETRIES = 2
 # Hard ceiling for a single tool call so a hung tool / unreachable MCP can't freeze
 # the turn. Above every tool's own timeout (run_python 20s, powershell/shell 25s).
 TOOL_TIMEOUT = 60
+# Auto-compact the conversation once context usage crosses this fraction of the window.
+AUTO_COMPACT_PCT = 0.85
 
 DEFAULT_CONFIG = {
     "nano": {"base_url": "https://nano-gpt.com/api/v1",
@@ -185,6 +187,7 @@ DEFAULT_CONFIG = {
     # MCP url: overridden in tui_config.json (not versioned) with your real host
     "mcp": {"enabled": True, "url": "http://localhost:8765/mcp", "prefix": "mac_"},
     "tavily_api_key": "",   # for the web_search tool (free key at tavily.com)
+    "auto_compact": True,   # auto-summarize older turns when the context fills up
     # named system-prompt presets (persona text; "" = built-in default persona).
     # TOOL_RULES are always appended. Edit/add here or via the F6 editor in-app.
     "system_prompts": {"default": ""},
@@ -1242,6 +1245,8 @@ class MainScreen(Screen):
         cmd = text[1:].split()[0].lower() if len(text) > 1 else ""
         if cmd == "clear":
             self.app.clear_context()
+        elif cmd == "compact":
+            self.app.compact()
         elif cmd in ("system", "prompt"):
             self.app.push_screen(SystemPromptScreen())
         elif cmd == "tools":
@@ -1249,10 +1254,11 @@ class MainScreen(Screen):
         elif cmd == "help":
             self.app.write_log(Panel(Text.from_markup(
                 "[bold]Commands[/]\n"
-                "  [cyan]/clear[/]   clear the conversation context (keeps the system prompt)\n"
-                "  [cyan]/system[/]  edit the system prompt (also F6)\n"
-                "  [cyan]/tools[/]   open the tool-call log (also F4)\n"
-                "[dim]Footer: F2 settings · F3 swap model · F4 tools · F6 prompt[/]"),
+                "  [cyan]/clear[/]    clear the conversation context (keeps the system prompt)\n"
+                "  [cyan]/compact[/]  summarize older turns to free up context\n"
+                "  [cyan]/system[/]   edit the system prompt (also F6)\n"
+                "  [cyan]/tools[/]    open the tool-call log (also F4)\n"
+                "[dim]Footer: F2 settings · F3 swap model · F4 tools · F6 prompt · Esc stop[/]"),
                 title="[bold magenta]help[/]", border_style="magenta", expand=False))
         else:
             self.app.write_log(Panel(Text.from_markup(
@@ -1663,6 +1669,87 @@ class AgentTUI(App):
                                   style="bold green"), border_style="green", expand=False))
         self.update_ctx()
 
+    # ---------- compaction ----------
+    def _transcript(self, msgs):
+        """Flatten messages into a plain transcript for the summarizer (bounded)."""
+        lines = []
+        for m in msgs:
+            role = m.get("role")
+            if role == "user" and m.get("content"):
+                lines.append(f"USER: {m['content']}")
+            elif role == "assistant":
+                if m.get("content"):
+                    lines.append(f"ASSISTANT: {m['content']}")
+                for tc in (m.get("tool_calls") or []):
+                    fn = tc.get("function", {})
+                    lines.append(f"ASSISTANT called {fn.get('name')}"
+                                 f"({self._tool_arg_summary(fn.get('name'), fn.get('arguments', ''))})")
+            elif role == "tool":
+                lines.append(f"TOOL RESULT: {(m.get('content') or '')[:500]}")
+        txt = "\n".join(lines)
+        return txt[-24000:] if len(txt) > 24000 else txt
+
+    def compact(self, auto=False):
+        """/compact — summarize older turns into a compact recap (keeps the system prompt)."""
+        if self.busy or not self.client:
+            return
+        real = [m for m in self.messages[1:] if m.get("role") in ("user", "assistant", "tool")]
+        if len(real) < 4:
+            if not auto:
+                self.write_log(Panel(Text("Not enough conversation to compact yet.", style="yellow"),
+                                     border_style="yellow", expand=False))
+            return
+        self.busy = True
+        self.write_log(Text.from_markup("[dim]✦ compacting context…[/]"))
+        self.run_worker(lambda: self._compact_worker(auto), thread=True, exclusive=True)
+
+    def _compact_worker(self, auto):
+        try:
+            instr = ("Summarize the conversation so far so it can be continued without the full "
+                     "history. Preserve the user's goals and decisions, key facts, file paths and "
+                     "edits, important tool results, and any open/unfinished tasks. Be concise but "
+                     "complete; use bullet points. Do not invent anything not in the conversation.")
+            resp = self.client.chat.completions.create(
+                model=self.model, stream=False, max_tokens=1200,
+                messages=[{"role": "system", "content": instr},
+                          {"role": "user", "content": self._transcript(self.messages[1:])}])
+            summary = (resp.choices[0].message.content or "").strip()
+            if not summary:
+                raise ValueError("empty summary")
+            before_n = len(self.messages)
+            self.messages = [self.messages[0],
+                             {"role": "user", "content": "[Summary of the earlier conversation]\n" + summary}]
+            self.call_from_thread(self._after_compact, before_n, len(self.messages), auto)
+        except Exception as e:
+            self.call_from_thread(self.write_log, Panel(
+                Text(f"compaction failed: {type(e).__name__}: {e}", style="red"),
+                border_style="red", expand=False))
+        finally:
+            self.busy = False
+
+    def _after_compact(self, before_n, after_n, auto):
+        self.action_clear_log()
+        tag = "auto-compacted" if auto else "compacted"
+        self.write_log(Panel(Text.from_markup(
+            f"[bold green]✦ context {tag}[/] — {before_n} → {after_n} messages "
+            f"(older turns summarized)"), border_style="green", expand=False))
+        self.write_log(Panel(Markdown(self.messages[1]["content"]),
+                             title="[bold magenta]summary[/]", border_style="magenta"))
+        self.update_ctx()
+        self.save_session()
+
+    def _maybe_autocompact(self):
+        if not self.cfg.get("auto_compact", True) or self.busy or not self.tracker:
+            return
+        try:
+            used, _ = self.tracker.current(self.messages)
+            limit = self.tracker.limit or 0
+        except Exception:
+            return
+        if limit and used / limit >= AUTO_COMPACT_PCT:
+            self.write_log(Text.from_markup("[dim]context is getting full — auto-compacting…[/]"))
+            self.compact(auto=True)
+
     # ---------- MCP (remote tools) ----------
     def load_mcp_tools(self):
         raw, _names = mcp_client.list_tools_openai(self.mcp_url)
@@ -1827,6 +1914,8 @@ class AgentTUI(App):
                 f"[dim]⚡ {tps:.1f} tok/s · {self._turn_tokens} output tokens · {elapsed:.1f}s[/]"))
             self.call_from_thread(self.update_ctx)
             self.save_session()   # persist the conversation after every turn
+            if not self._cancel.is_set():
+                self.call_from_thread(self._maybe_autocompact)
 
     def stream_one(self):
         params = dict(model=self.model, messages=self.messages, tools=TOOLS + self.mcp_tools,
