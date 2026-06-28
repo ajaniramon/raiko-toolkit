@@ -995,11 +995,11 @@ class MainScreen(Screen):
         app._log_lines = []
         resumed = getattr(app, "resumed", False)
         head = "[bold green]Resumed session[/]" if resumed else "[bold]Connected[/]"
-        swap_hint = ("[green]LOCAL mode: live GPU/CPU graphs on the right →[/]" if app.is_local
-                     else f"[yellow]{app.provider} · cloud[/]  ·  [dim]F3 to swap model[/]")
-        app.write_log(Panel(Text.from_markup(
-            f"{head}  provider=[cyan]{app.provider}[/]  model=[cyan]{app.model}[/]\n" + swap_hint),
-            title="[bold magenta]raiko TUI[/]", border_style="magenta"))
+        banner = f"{head}  provider=[cyan]{app.provider}[/]  model=[cyan]{app.model}[/]"
+        if not app.is_local:
+            banner += f"\n[yellow]{app.provider} · cloud[/]  ·  [dim]F3 to swap model[/]"
+        app.write_log(Panel(Text.from_markup(banner),
+                            title="[bold magenta]raiko TUI[/]", border_style="magenta"))
         if resumed:
             app.render_history()
             app.resumed = False
