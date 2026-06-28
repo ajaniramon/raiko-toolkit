@@ -1144,14 +1144,136 @@ class Composer(TextArea):
         await super()._on_key(event)
 
 
+# ---- chat message widgets (lightweight, box-less) ----
+_WAVE = "▁▂▃▄▅▆▇▆▅▄▃▂"
+_SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧"
+
+
+class Notice(Static):
+    """A one-off, box-less line in the chat (connect line, errors, status notes)."""
+
+
+class UserMsg(Static):
+    def __init__(self, text):
+        t = Text()
+        t.append("› ", style="bold #5f8fff")
+        t.append("you\n", style="bold #5f8fff")
+        t.append(text)
+        super().__init__(t)
+
+
+class ThinkingBlock(Vertical):
+    """Inline, dim/italic reasoning under a left rule; click to collapse/expand."""
+
+    def __init__(self):
+        super().__init__()
+        self._head = Static(Text("💭 thinking", style="#9b93b8"), classes="thead")
+        self._body = Static("", classes="tbody")
+        self._open = True
+        self._has_text = False
+
+    def compose(self) -> ComposeResult:
+        yield self._head
+        yield self._body
+
+    def on_mount(self):
+        # respect whether set() already ran before mount (avoids a hide race)
+        self.display = self._has_text
+
+    def set(self, text):
+        self._has_text = True
+        self.display = True
+        self._body.update(Text(text, style="italic #9b93b8"))
+
+    def on_click(self):
+        self._open = not self._open
+        self._body.display = self._open
+        self._head.update(Text("💭 thinking" + ("" if self._open else "  (collapsed)"),
+                               style="#9b93b8"))
+
+
+class AssistantBlock(Vertical):
+    """One assistant segment: an (optional) thinking block + the answer content."""
+
+    def __init__(self):
+        super().__init__()
+        self.think = ThinkingBlock()
+        self.body = Static("")
+
+    def compose(self) -> ComposeResult:
+        yield self.think
+        yield self.body
+
+    def set_think(self, text):
+        self.think.set(text)
+
+    def set_content(self, text):
+        self.body.update(Text(text))
+
+    def finalize(self, md):
+        if md:
+            self.body.update(Markdown(md))
+        else:
+            self.body.display = False
+
+
+class ToolBlock(Vertical):
+    """A compact tool call (⏺ name(arg)) plus its result line / inline diff."""
+
+    def __init__(self, call_renderable):
+        super().__init__()
+        self.call_static = Static(call_renderable)
+        self.result_static = Static("")
+
+    def compose(self) -> ComposeResult:
+        yield self.call_static
+        yield self.result_static
+
+    def set_result(self, renderable):
+        self.result_static.update(renderable)
+
+
+class WorkingBar(Static):
+    """Animated 'working' indicator (opencode-style): spinner + phase + wiggling wave."""
+
+    def on_mount(self):
+        self._i = 0
+        self.display = False
+        self.set_interval(0.1, self._tick)
+
+    def _tick(self):
+        app = self.app
+        if not getattr(app, "busy", False):
+            if self.display:
+                self.display = False
+            return
+        self.display = True
+        self._i += 1
+        spin = _SPIN[self._i % len(_SPIN)]
+        off = self._i % len(_WAVE)
+        wave = (_WAVE * 2)[off:off + 14]
+        elapsed = time.time() - app._turn_start if app._turn_start else 0
+        tps = (app._stream_chars / 4) / max(0.001, elapsed)
+        phase = app._phase or "working"
+        self.update(Text.from_markup(
+            f"[#00d7ff]{spin}[/] [bold #00d7ff]{phase}[/][dim]…[/]  "
+            f"[#b394ff]{wave}[/]  [dim]{elapsed:.0f}s · {tps:.0f} tok/s · Esc to stop[/]"))
+
+
 class MainScreen(Screen):
     BINDINGS = [("f2", "settings", "⚙ Settings"), ("f3", "swap_model", "⇄ Model"),
                 ("f4", "tool_log", "🛠 Tools"), ("f6", "prompt", "📝 Prompt"),
                 ("escape", "interrupt", "⏹ Stop")]
     CSS = """
-    #main { width: 3fr; border: round #5f5fd7; padding: 0 1; margin-bottom: 1; }
-    #log { height: 1fr; background: $surface; scrollbar-size-vertical: 1; }
-    #live { height: auto; max-height: 14; border-top: dashed #44475a; padding: 0 1; }
+    #main { width: 3fr; padding: 0 1; }
+    #chat { height: 1fr; scrollbar-size-vertical: 1; }
+    #working { height: 1; padding: 0 1; }
+    UserMsg { margin-top: 1; }
+    AssistantBlock { margin-top: 1; }
+    ThinkingBlock { height: auto; }
+    ThinkingBlock .tbody { color: #9b93b8; text-style: italic; border-left: solid #44475a; padding-left: 1; }
+    ToolBlock { height: auto; }
+    Notice { color: #9b93b8; }
     UsageSidebar { width: 40; border: round #00afaf; padding: 0 1; }
     UsageSidebar .sec { color: #00d7ff; text-style: bold; margin-top: 1; }
     Sparkline { height: 3; margin-top: 0; }
@@ -1166,18 +1288,16 @@ class MainScreen(Screen):
     #lbl_ram { height: 2; }
     #lbl_extra { height: 1; }
     #lbl_toks { height: 2; }
-    #prompt { dock: bottom; height: 5; border: round #5f5fd7; margin: 1 1 1 1; }
-    #titlebar { height: 1; background: #5f5fd7; color: white; text-style: bold; padding: 0 1; }
-    #statusbar { height: 1; color: #00d7ff; padding: 0 1; }
+    #prompt { dock: bottom; height: 5; border: round #5f5fd7; margin: 0 1 1 1; }
+    #statusbar { height: 1; color: #00d7ff; padding: 0 1; background: #1b1830; }
     """
 
     def compose(self) -> ComposeResult:
-        yield Static("🤖  JJ agent", id="titlebar")
         yield Static(id="statusbar")
         with Horizontal(id="body"):
             with Vertical(id="main"):
-                yield RichLog(id="log", wrap=True, markup=False, highlight=False)
-                yield Static(id="live")
+                yield VerticalScroll(id="chat")
+                yield WorkingBar(id="working")
             if self.app.is_local:
                 yield UsageSidebar()
         yield Composer(id="prompt")
@@ -1186,17 +1306,14 @@ class MainScreen(Screen):
     def on_mount(self):
         app = self.app
         app.update_ctx()
-        app._log_lines = []
         resumed = getattr(app, "resumed", False)
-        head = "[bold green]Resumed session[/]" if resumed else "[bold]Connected[/]"
-        banner = f"{head}  provider=[cyan]{app.provider}[/]  model=[cyan]{app.model}[/]"
-        if not app.is_local:
-            banner += f"\n[yellow]{app.provider} · cloud[/]  ·  [dim]F3 to swap model[/]"
-        app.write_log(Panel(Text.from_markup(banner),
-                            title="[bold magenta]raiko TUI[/]", border_style="magenta"))
         if resumed:
             app.render_history()
             app.resumed = False
+        else:
+            hint = "" if app.is_local else "  ·  F3 swap model"
+            app.write_log(Text.from_markup(
+                f"[dim]● connected · [cyan]{app.provider}[/] · [cyan]{app.model}[/]{hint}[/]"))
         if app.is_local:
             self.set_interval(1.0, app.poll_usage)
             app.poll_usage()
@@ -1236,8 +1353,7 @@ class MainScreen(Screen):
         if text.startswith("/"):
             self.handle_command(text)
             return
-        self.app.write_log(Panel(Text(text, style="bold white"),
-                                 title="[bold blue]you[/]", border_style="blue"))
+        self.app._chat_mount(UserMsg(text))
         self.app.busy = True
         self.app.run_worker(lambda: self.app.agent_turn(text), thread=True, exclusive=True)
 
@@ -1310,6 +1426,9 @@ class AgentTUI(App):
         self._cancel = threading.Event()  # set to interrupt the running turn
         self.prompt_history = []        # submitted prompts (↑/↓ recall)
         self._pending_diff = None       # (path, unified_diff) for the next tool result
+        self._live = None               # current streaming AssistantBlock widget
+        self._live_tool = None          # current ToolBlock awaiting its result
+        self._phase = ""                # working-bar status: thinking/generating/running …
 
     def on_mount(self):
         self.title = "🤖 JJ agent"
@@ -1334,20 +1453,21 @@ class AgentTUI(App):
 
     def _demo_fill(self):
         self.update_ctx()
-        self.write_log(Panel(Text("How many .py files are in src and how many lines do they total?",
-                                  style="bold white"), title="[bold blue]you[/]", border_style="blue"))
+        self._chat_mount(UserMsg("How many .py files are in src and how many lines do they total?"))
+        self._start_assistant()
         self.cur_think = "I'll find the .py files in src with find_files, then count their lines."
-        self.cur_content = "Listing and counting."
+        self.cur_content = ""
+        self.update_live()
         self.commit_live()
         self.render_tool_call("find_files", '{"name_glob": "**/*.py", "path": "src"}')
         self.render_tool_result("find_files", "src/app.py\nsrc/db.py\nsrc/orders.py\nsrc/parser.py")
+        self._start_assistant()
+        self.cur_think = ""
         self.cur_content = ("## Result\n\nThere are **4** `.py` files in `src`:\n\n"
                             "1. `app.py`\n2. `db.py`\n3. `orders.py`\n4. `parser.py`\n\n"
                             "They total **46 lines**.")
-        self.commit_live()
-        self.cur_think = "Double-checking…"
-        self.cur_content = "Live streaming example."
         self.update_live()
+        self.commit_live()
         self.poll_usage()
 
     # ---------- selection / startup ----------
@@ -1548,22 +1668,25 @@ class AgentTUI(App):
         self.update_ctx()
 
     def render_history(self):
-        """Replay a resumed conversation into the log (user/assistant/tools, compact)."""
+        """Replay a resumed conversation as widgets (so it matches the live look)."""
         for m in self.messages:
             role, content = m.get("role"), m.get("content")
             if role == "user" and content:
-                self.write_log(Panel(Text(content, style="bold white"),
-                                     title="[bold blue]you[/]", border_style="blue"))
+                self._chat_mount(UserMsg(content))
             elif role == "assistant":
                 if content:
-                    self.write_log(Panel(Markdown(content), title="[bold green]assistant[/]",
-                                         border_style="green"))
+                    blk = AssistantBlock()
+                    self._chat_mount(blk)
+                    blk.finalize(content)
                 for tc in (m.get("tool_calls") or []):
-                    self.write_log(Text.from_markup(
-                        f"[dim]🔧 {tc.get('function', {}).get('name', '?')}(…)[/]"))
+                    fn = tc.get("function", {})
+                    color = self._tool_color(fn.get("name", ""))
+                    self._chat_mount(ToolBlock(Text.from_markup(
+                        f"[{color}]⏺[/] [bold {color}]{fn.get('name', '?')}[/]"
+                        f"[dim]({self._tool_arg_summary(fn.get('name', ''), fn.get('arguments', ''))})[/]")))
             elif role == "tool":
-                prev = (content or "")[:200]
-                self.write_log(Text.from_markup(f"[dim]✓ tool → {prev}[/]"))
+                note = " ".join((content or "").split())[:80]
+                self.write_log(Text.from_markup(f"  [dim]⎿ {note}[/]"))
         self.write_log(Text.from_markup("[dim]— end of restored history —[/]"))
 
     def _local_failed(self, err):
@@ -1611,47 +1734,55 @@ class AgentTUI(App):
         """ALWAYS query on the active screen (not the _default one)."""
         return self.screen.query_one(selector, typ)
 
-    def write_log(self, renderable):
-        self._log_lines.append(renderable)
+    def _chat_mount(self, widget):
+        """Mount a widget into the #chat scroll and keep the latest in view."""
         try:
-            self._q("#log", RichLog).write(renderable, expand=True)
+            chat = self._q("#chat", VerticalScroll)
+            chat.mount(widget)
+            chat.scroll_end(animate=False)
         except Exception:
             pass
 
+    def write_log(self, renderable):
+        """Append a box-less notice line to the chat (banners, errors, status).
+        Legacy callers pass a Panel; we unwrap it so nothing renders as a box."""
+        if isinstance(renderable, Panel):
+            renderable = renderable.renderable
+        self._chat_mount(Notice(renderable))
+
+    def _start_assistant(self):
+        self._live = AssistantBlock()
+        self._chat_mount(self._live)
+
     def update_live(self):
-        parts = []
+        if not self._live:
+            return
         if self.cur_think:
-            parts += [Text("◇ thinking", style="bold magenta"),
-                      Text(self.cur_think, style="dim italic magenta")]
+            self._live.set_think(self.cur_think)
         if self.cur_content:
-            parts += [Text("◆ assistant", style="bold cyan"),
-                      Text(self.cur_content, style="white")]
+            self._live.set_content(self.cur_content)
         try:
-            self._q("#live", Static).update(Group(*parts) if parts else Text(""))
+            self._q("#chat", VerticalScroll).scroll_end(animate=False)
         except Exception:
             pass
 
     def commit_live(self):
-        parts = []
-        if self.cur_think:
-            parts += [Text("◇ thinking", style="bold magenta"),
-                      Text(self.cur_think.strip(), style="dim italic magenta")]
-        if self.cur_content:
-            # render the final message as nice Markdown (##, **bold**, lists…)
-            parts += [Text("◆ assistant", style="bold cyan"),
-                      Markdown(self.cur_content.strip())]
-        if parts:
-            self.write_log(Group(*parts))
+        if self._live:
+            if self.cur_content.strip():
+                self._live.finalize(self.cur_content.strip())
+            elif not self.cur_think.strip():
+                try:
+                    self._live.remove()   # produced nothing (e.g. tool-call only)
+                except Exception:
+                    pass
+            else:
+                self._live.finalize(None)  # thinking only
+        self._live = None
         self.cur_think = self.cur_content = ""
-        try:
-            self._q("#live", Static).update(Text(""))
-        except Exception:
-            pass
 
     def action_clear_log(self):
-        self._log_lines = []
         try:
-            self._q("#log", RichLog).clear()
+            self._q("#chat", VerticalScroll).remove_children()
         except Exception:
             pass
 
@@ -1932,6 +2063,8 @@ class AgentTUI(App):
         splitter = ThinkSplitter()
         self.cur_think = self.cur_content = ""
         last_pricing = None
+        self._phase = "thinking"
+        self.call_from_thread(self._start_assistant)   # mount the live block for this segment
 
         def emit(mode, t):
             if not t:
@@ -1942,6 +2075,7 @@ class AgentTUI(App):
             else:
                 self.cur_content += t
                 content_parts.append(t)
+                self._phase = "generating"
             self.call_from_thread(self.update_live)
 
         for chunk in stream:
@@ -2061,12 +2195,16 @@ class AgentTUI(App):
         return note, False
 
     def render_tool_call(self, name, args):
+        self._phase = f"running {name}"
         color = self._tool_color(name)
         summ = self._tool_arg_summary(name, args)
-        self.write_log(Text.from_markup(
+        self._live_tool = ToolBlock(Text.from_markup(
             f"[{color}]⏺[/] [bold {color}]{name}[/][dim]({summ})[/]"))
+        self._chat_mount(self._live_tool)
 
     def render_tool_result(self, name, result):
+        tb = self._live_tool
+        self._live_tool = None
         diff = getattr(self, "_pending_diff", None)
         if diff and name in ("write_file", "edit_file"):
             self._pending_diff = None
@@ -2074,13 +2212,16 @@ class AgentTUI(App):
             lines = text.splitlines()
             shown = lines[:60]
             body = "\n".join(shown) + (f"\n… (+{len(lines) - 60} more diff lines)" if len(lines) > 60 else "")
-            self.write_log(Text.from_markup(f"  [dim]⎿[/] [green]edited[/] [cyan]{path}[/]"))
-            self.write_log(Syntax(body or "(no changes)", "diff", theme="monokai",
-                                  background_color="default"))
-            return
-        note, err = self._result_summary(result)
-        style = "red" if err else "green"
-        self.write_log(Text.from_markup(f"  [dim]⎿[/] [{style}]{note}[/]"))
+            res = Group(Text.from_markup(f"  [dim]⎿[/] [green]edited[/] [cyan]{path}[/]"),
+                        Syntax(body or "(no changes)", "diff", theme="monokai", background_color="default"))
+        else:
+            note, err = self._result_summary(result)
+            style = "red" if err else "green"
+            res = Text.from_markup(f"  [dim]⎿[/] [{style}]{note}[/]")
+        if tb:
+            tb.set_result(res)
+        else:
+            self.write_log(res)
 
     def update_ctx(self):
         if not self.tracker:
