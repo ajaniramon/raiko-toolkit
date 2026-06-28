@@ -184,6 +184,10 @@ DEFAULT_CONFIG = {
     # MCP url: overridden in tui_config.json (not versioned) with your real host
     "mcp": {"enabled": True, "url": "http://localhost:8765/mcp", "prefix": "mac_"},
     "tavily_api_key": "",   # for the web_search tool (free key at tavily.com)
+    # named system-prompt presets (persona text; "" = built-in default persona).
+    # TOOL_RULES are always appended. Edit/add here or via the F6 editor in-app.
+    "system_prompts": {"default": ""},
+    "active_system_prompt": "default",   # used for NEW sessions
     "last": {"provider": None, "model": None},   # last used (default on startup)
     "favorites": {"nano": [], "xai": [], "openrouter": [], "openai": [], "anthropic": [], "remote": []},
 }
@@ -191,9 +195,13 @@ DEFAULT_CONFIG = {
 # OpenAI-compatible providers served via API (GPU sidebar OFF; model's ctx)
 CLOUD = {"nano", "xai", "openrouter", "openai", "anthropic", "remote"}
 
-SYSTEM_PROMPT = (
+# The persona is user-configurable (via presets); TOOL_RULES are mechanical rules
+# that are ALWAYS appended so a custom persona can't break tool-calling.
+DEFAULT_PERSONA = (
     "You are an agent with access to file, execution and system tools. Use them when needed. "
-    "Before each tool call, briefly explain in 1-2 sentences what you are about to do and why.\n"
+    "Before each tool call, briefly explain in 1-2 sentences what you are about to do and why."
+)
+TOOL_RULES = (
     "TOOL ARGUMENTS RULE: every tool call's arguments must be ONE valid JSON object — escape "
     "newlines as \\n and double quotes as \\\". Keep run_python / run_shell code SHORT (a few "
     "lines). If you need a longer or multi-line script, do NOT paste it as a tool argument: "
@@ -201,6 +209,16 @@ SYSTEM_PROMPT = (
     "avoids invalid-JSON errors from large code blocks.\n"
     "When you have the answer, give it directly. Format your final answers in clean Markdown."
 )
+
+
+def build_system_prompt(persona):
+    """Effective system prompt = (persona or default) + the fixed TOOL_RULES."""
+    persona = (persona or "").strip() or DEFAULT_PERSONA
+    return f"{persona}\n{TOOL_RULES}"
+
+
+# back-compat alias (used as the built-in default)
+SYSTEM_PROMPT = build_system_prompt(DEFAULT_PERSONA)
 
 
 def load_config():
@@ -219,6 +237,11 @@ def load_config():
         json.dump(DEFAULT_CONFIG, open(CONFIG_PATH, "w", encoding="utf-8"), indent=2)
     cfg.setdefault("last", {"provider": None, "model": None})
     cfg.setdefault("favorites", {})
+    sp = cfg.setdefault("system_prompts", {"default": ""})
+    if not isinstance(sp, dict) or not sp:
+        cfg["system_prompts"] = sp = {"default": ""}
+    if cfg.setdefault("active_system_prompt", "default") not in sp:
+        cfg["active_system_prompt"] = next(iter(sp))
     # make the web_search tool's key available to tools.py without leaking it in source
     if cfg.get("tavily_api_key") and not os.environ.get("TAVILY_API_KEY"):
         os.environ["TAVILY_API_KEY"] = cfg["tavily_api_key"]
@@ -355,13 +378,14 @@ class ProviderScreen(Screen):
         ("xai", "✦  xAI         (Grok · cloud)"),
         ("openrouter", "🔀  OpenRouter  (cloud · many models)"),
     ]
-    BINDINGS = [("escape", "quit", "Quit")]
+    BINDINGS = [("escape", "quit", "Quit"), ("ctrl+p", "prompt", "📝 Prompt")]
 
     def compose(self) -> ComposeResult:
         with Vertical(id="box"):
             yield Static("🤖  What do you want to run with?", id="title")
             yield OptionList(*[Option(lbl, id=pid) for pid, lbl in self.PROVIDERS], id="prov")
             yield Static("", id="phint")
+        yield Footer()
 
     def on_mount(self):
         ol = self.query_one("#prov", OptionList)
@@ -372,6 +396,9 @@ class ProviderScreen(Screen):
             ol.highlighted = ids.index(last["provider"])
             self.query_one("#phint", Static).update(Text.from_markup(
                 f"[dim]last used → [cyan]{last['provider']}[/] · {last.get('model') or '?'}[/]"))
+
+    def action_prompt(self):
+        self.app.push_screen(SystemPromptScreen(wizard=True))
 
     def on_option_list_option_selected(self, e: OptionList.OptionSelected):
         pid = e.option.id
@@ -814,7 +841,7 @@ class StartScreen(Screen):
     OptionList { height: auto; }
     #shint { color: #999999; margin-top: 1; }
     """
-    BINDINGS = [("escape", "quit", "Quit")]
+    BINDINGS = [("escape", "quit", "Quit"), ("ctrl+p", "prompt", "📝 Prompt")]
 
     def compose(self) -> ComposeResult:
         with Vertical(id="box"):
@@ -824,12 +851,16 @@ class StartScreen(Screen):
                 Option("✦  Start a new session", id="new"),
                 id="start")
             yield Static("", id="shint")
+        yield Footer()
 
     def on_mount(self):
         self.query_one("#start", OptionList).focus()
         n = len(list_sessions())
         self.query_one("#shint", Static).update(Text.from_markup(
             f"[dim]{n} saved session{'s' if n != 1 else ''} · Esc to quit[/]"))
+
+    def action_prompt(self):
+        self.app.push_screen(SystemPromptScreen(wizard=True))
 
     def on_option_list_option_selected(self, e: OptionList.OptionSelected):
         if e.option.id == "continue":
@@ -951,9 +982,111 @@ class ToolLogScreen(Screen):
         self.app.pop_screen()
 
 
+class SystemPromptScreen(Screen):
+    """Pick / edit / save named system-prompt presets, and apply one live.
+    In `start` mode it's shown when a new session begins; otherwise it's the F6
+    in-session editor. The fixed tool-calling rules are always appended on top."""
+
+    CSS = """
+    SystemPromptScreen { align: center middle; background: $background 70%; }
+    #box { width: 88%; height: 88%; border: thick #5f5fd7; background: $surface; padding: 1 2; }
+    #title { text-style: bold; color: #d787ff; }
+    #presets { height: 6; border: round #44475a; margin-bottom: 1; }
+    #pname { margin-bottom: 1; }
+    #pbody { height: 1fr; border: round #44475a; }
+    #perr { height: auto; color: #ffd700; }
+    #pbtns { height: auto; align: center middle; margin-top: 1; }
+    Button { margin: 0 1; }
+    """
+    BINDINGS = [("escape", "cancel", "Cancel"), ("ctrl+s", "apply", "Apply")]
+
+    def __init__(self, start=False, wizard=False):
+        super().__init__()
+        self.start = start      # shown right before a new session begins
+        self.wizard = wizard    # opened from the startup wizard (apply → back to wizard)
+
+    def compose(self) -> ComposeResult:
+        sub = ("  ·  starting a new session" if self.start
+               else "  ·  for the next session" if self.wizard else "")
+        with Vertical(id="box"):
+            yield Static("📝  System prompt" + sub, id="title")
+            yield OptionList(id="presets")
+            yield Input(placeholder="preset name", id="pname")
+            yield TextArea(id="pbody")
+            yield Static("", id="perr")
+            with Horizontal(id="pbtns"):
+                yield Button("Apply & save (Ctrl+S)", id="apply", variant="success")
+                yield Button("Delete preset", id="delete", variant="warning")
+                yield Button("Skip" if self.start else "Cancel (Esc)", id="cancel", variant="error")
+
+    def on_mount(self):
+        self._reload(self.app.cfg.get("active_system_prompt", "default"))
+        self.query_one("#pbody", TextArea).focus()
+
+    def _reload(self, select=None):
+        sp = self.app.cfg.get("system_prompts") or {"default": ""}
+        ol = self.query_one("#presets", OptionList)
+        ol.clear_options()
+        names = list(sp)
+        for i, name in enumerate(names):
+            ol.add_option(Option(("★ " if name == self.app.cfg.get("active_system_prompt") else "  ") + name,
+                                 id=name))
+            if name == select:
+                ol.highlighted = i
+        if select is None and names:
+            ol.highlighted = 0
+            select = names[0]
+        self.query_one("#pname", Input).value = select or ""
+        self.query_one("#pbody", TextArea).text = sp.get(select, "")
+
+    def on_option_list_option_selected(self, e: OptionList.OptionSelected):
+        sp = self.app.cfg.get("system_prompts") or {}
+        self.query_one("#pname", Input).value = e.option.id
+        self.query_one("#pbody", TextArea).text = sp.get(e.option.id, "")
+
+    def on_button_pressed(self, e: Button.Pressed):
+        {"apply": self.action_apply, "delete": self.action_delete,
+         "cancel": self.action_cancel}[e.button.id]()
+
+    def action_apply(self):
+        name = self.query_one("#pname", Input).value.strip()
+        text = self.query_one("#pbody", TextArea).text
+        if not name:
+            self.query_one("#perr", Static).update(Text("Give the preset a name.", style="red"))
+            return
+        self.app.save_preset(name, text)
+        self.app.set_active_preset(name)
+        self.app.apply_persona(text)
+        if self.start:
+            self.app._go_main(replace=True)
+        elif self.wizard:
+            self.app._prompt_chosen = True   # don't re-prompt at session start
+            self.app.pop_screen()
+        else:
+            self.app.pop_screen()
+            self.app.write_log(Panel(Text.from_markup(
+                f"[bold]System prompt set[/] → preset [cyan]{name}[/] [dim](applies next turn)[/]"),
+                border_style="magenta", expand=False))
+            self.app.update_ctx()
+
+    def action_delete(self):
+        ol = self.query_one("#presets", OptionList)
+        if ol.highlighted is None:
+            return
+        name = ol.get_option_at_index(ol.highlighted).id
+        self.app.delete_preset(name)
+        self._reload(self.app.cfg.get("active_system_prompt", "default"))
+
+    def action_cancel(self):
+        if self.start:
+            self.app._go_main(replace=True)   # keep the active default and continue
+        else:
+            self.app.pop_screen()
+
+
 class MainScreen(Screen):
     BINDINGS = [("f2", "settings", "⚙ Settings"), ("f3", "swap_model", "⇄ Model"),
-                ("f4", "tool_log", "🛠 Tools")]
+                ("f4", "tool_log", "🛠 Tools"), ("f6", "prompt", "📝 Prompt")]
     CSS = """
     #main { width: 3fr; border: round #5f5fd7; padding: 0 1; margin-bottom: 1; }
     #log { height: 1fr; background: $surface; scrollbar-size-vertical: 1; }
@@ -1016,6 +1149,9 @@ class MainScreen(Screen):
     def action_tool_log(self):
         self.app.push_screen(ToolLogScreen())
 
+    def action_prompt(self):
+        self.app.push_screen(SystemPromptScreen())
+
     def action_swap_model(self):
         if self.app.is_local:
             self.app.write_log(Panel(
@@ -1029,10 +1165,34 @@ class MainScreen(Screen):
         if not text or self.app.busy:
             return
         self.query_one("#prompt", Input).value = ""
+        if text.startswith("/"):
+            self.handle_command(text)
+            return
         self.app.write_log(Panel(Text(text, style="bold white"),
                                  title="[bold blue]you[/]", border_style="blue"))
         self.app.busy = True
         self.app.run_worker(lambda: self.app.agent_turn(text), thread=True, exclusive=True)
+
+    def handle_command(self, text):
+        cmd = text[1:].split()[0].lower() if len(text) > 1 else ""
+        if cmd == "clear":
+            self.app.clear_context()
+        elif cmd in ("system", "prompt"):
+            self.app.push_screen(SystemPromptScreen())
+        elif cmd == "tools":
+            self.app.push_screen(ToolLogScreen())
+        elif cmd == "help":
+            self.app.write_log(Panel(Text.from_markup(
+                "[bold]Commands[/]\n"
+                "  [cyan]/clear[/]   clear the conversation context (keeps the system prompt)\n"
+                "  [cyan]/system[/]  edit the system prompt (also F6)\n"
+                "  [cyan]/tools[/]   open the tool-call log (also F4)\n"
+                "[dim]Footer: F2 settings · F3 swap model · F4 tools · F6 prompt[/]"),
+                title="[bold magenta]help[/]", border_style="magenta", expand=False))
+        else:
+            self.app.write_log(Panel(Text.from_markup(
+                f"Unknown command [yellow]{text}[/] — try [cyan]/help[/]"),
+                border_style="yellow", expand=False))
 
 
 # ----------------------------------- App -----------------------------------
@@ -1054,7 +1214,7 @@ class AgentTUI(App):
         self.is_local = False
         self.client = None
         self.tracker = None
-        self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        self.messages = [{"role": "system", "content": build_system_prompt(self._active_persona())}]
         self.gpu_hist = deque([0] * 40, maxlen=40)
         self.cpu_hist = deque([0] * 40, maxlen=40)
         self.cur_think = self.cur_content = ""
@@ -1075,6 +1235,7 @@ class AgentTUI(App):
         self.session_id = None          # set on first save; reused on resume
         self._resume_messages = None    # carried into a (local) resume
         self.resumed = False            # MainScreen renders prior history when True
+        self._prompt_chosen = False     # True once the prompt was set from the wizard
 
     def on_mount(self):
         self.title = "🤖 JJ agent"
@@ -1160,7 +1321,7 @@ class AgentTUI(App):
         if self.provider in CLOUD:
             self.configure(self.provider, model_value)
             self._save_last(self.provider, model_value)
-            self._go_main()
+            self._go_session()
             return
         # local
         model = registry.find(model_value)
@@ -1172,7 +1333,7 @@ class AgentTUI(App):
             self.configure("local", alias)
             self._save_last("local", alias)
             self._apply_resume()
-            self._go_main()
+            self._go_session()
         else:
             # compute the optimal ctx based on the GPU and allow overriding it
             optimal = registry.optimal_ctx(model["path"])
@@ -1207,7 +1368,7 @@ class AgentTUI(App):
         self.configure("local", loaded, ctx_limit=getattr(self, "_pending_ctx", None))
         self._save_last("local", loaded)
         self._apply_resume()
-        self._go_main(replace=True)
+        self._go_session(replace=True)
 
     # ---------- sessions ----------
     def _apply_resume(self):
@@ -1268,6 +1429,37 @@ class AgentTUI(App):
             sess["base_url"] = self.cfg.get("remote", {}).get("base_url", "")
         write_session(sess)
 
+    # ---------- system prompt (presets + live edit) ----------
+    def _active_persona(self):
+        sp = self.cfg.get("system_prompts") or {}
+        return sp.get(self.cfg.get("active_system_prompt", "default"), "")
+
+    def apply_persona(self, persona):
+        """Set the live system message (messages[0]); takes effect on the next turn."""
+        prompt = build_system_prompt(persona)
+        if self.messages and self.messages[0].get("role") == "system":
+            self.messages[0]["content"] = prompt
+        else:
+            self.messages.insert(0, {"role": "system", "content": prompt})
+        self.save_session()
+
+    def save_preset(self, name, text):
+        self.cfg.setdefault("system_prompts", {"default": ""})[name] = text
+        save_config(self.cfg)
+
+    def set_active_preset(self, name):
+        if name in (self.cfg.get("system_prompts") or {}):
+            self.cfg["active_system_prompt"] = name
+            save_config(self.cfg)
+
+    def delete_preset(self, name):
+        sp = self.cfg.setdefault("system_prompts", {"default": ""})
+        if name in sp and len(sp) > 1:
+            del sp[name]
+            if self.cfg.get("active_system_prompt") == name:
+                self.cfg["active_system_prompt"] = next(iter(sp))
+            save_config(self.cfg)
+
     def swap_model(self, model_value):
         """Switch the model mid-session (cloud/remote only). History is kept."""
         old = self.model
@@ -1312,6 +1504,17 @@ class AgentTUI(App):
             self.switch_screen(MainScreen())
         else:
             self.push_screen(MainScreen())
+
+    def _go_session(self, replace=False):
+        """Enter the chat. For a brand-new session with more than one prompt preset,
+        let the user pick the system prompt first; resumes and single-preset setups go
+        straight in. (The picker replaces itself with MainScreen on confirm.)"""
+        presets = self.cfg.get("system_prompts") or {}
+        if (not self.resumed and not self.session_id and not self._prompt_chosen
+                and len(presets) > 1):
+            self.push_screen(SystemPromptScreen(start=True))
+        else:
+            self._go_main(replace=replace)
 
     def _shutdown_server(self):
         if self.started_server and self.server_proc:
@@ -1377,6 +1580,20 @@ class AgentTUI(App):
             self._q("#log", RichLog).clear()
         except Exception:
             pass
+
+    def clear_context(self):
+        """/clear — drop the conversation (keep the system prompt) and start a fresh
+        session. The previous session stays saved on disk."""
+        if self.busy:
+            return
+        sys_msg = (self.messages[0] if self.messages and self.messages[0].get("role") == "system"
+                   else {"role": "system", "content": build_system_prompt(self._active_persona())})
+        self.messages = [sys_msg]
+        self.session_id = None          # the cleared chat becomes a new session
+        self.action_clear_log()
+        self.write_log(Panel(Text("Context cleared — fresh conversation (system prompt kept).",
+                                  style="bold green"), border_style="green", expand=False))
+        self.update_ctx()
 
     # ---------- MCP (remote tools) ----------
     def load_mcp_tools(self):
