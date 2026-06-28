@@ -183,6 +183,7 @@ DEFAULT_CONFIG = {
     "remote": {"base_url": "", "api_key": "sk-noop", "model": "", "ctx_window": 16000},
     # MCP url: overridden in tui_config.json (not versioned) with your real host
     "mcp": {"enabled": True, "url": "http://localhost:8765/mcp", "prefix": "mac_"},
+    "tavily_api_key": "",   # for the web_search tool (free key at tavily.com)
     "last": {"provider": None, "model": None},   # last used (default on startup)
     "favorites": {"nano": [], "xai": [], "openrouter": [], "openai": [], "anthropic": [], "remote": []},
 }
@@ -218,6 +219,9 @@ def load_config():
         json.dump(DEFAULT_CONFIG, open(CONFIG_PATH, "w", encoding="utf-8"), indent=2)
     cfg.setdefault("last", {"provider": None, "model": None})
     cfg.setdefault("favorites", {})
+    # make the web_search tool's key available to tools.py without leaking it in source
+    if cfg.get("tavily_api_key") and not os.environ.get("TAVILY_API_KEY"):
+        os.environ["TAVILY_API_KEY"] = cfg["tavily_api_key"]
     return cfg
 
 
@@ -892,10 +896,66 @@ class SessionListScreen(Screen):
         self.app.pop_screen()
 
 
-class MainScreen(Screen):
-    BINDINGS = [("f2", "settings", "⚙ Settings"), ("f3", "swap_model", "⇄ Model")]
+class ToolLogScreen(Screen):
+    """Full, scrollable log of every tool call in the current session (full commands
+    + results), derived from the conversation messages."""
+
     CSS = """
-    #main { width: 3fr; border: round #5f5fd7; padding: 0 1; }
+    ToolLogScreen { align: center middle; }
+    #box { width: 92%; height: 88%; border: round #e7b94e; padding: 1 2; }
+    #title { text-style: bold; color: #e7b94e; }
+    #toollog { height: 1fr; background: $surface; scrollbar-size-vertical: 1; }
+    #thint { color: #999999; height: 1; }
+    """
+    BINDINGS = [("escape", "back", "Back")]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="box"):
+            yield Static("🛠  Tool-call log — this session", id="title")
+            yield RichLog(id="toollog", wrap=True, markup=False, highlight=False)
+            yield Static(Text.from_markup("[dim]Esc to go back[/]"), id="thint")
+
+    def on_mount(self):
+        log = self.query_one("#toollog", RichLog)
+        # pair each tool result with its call id
+        results = {m.get("tool_call_id"): m.get("content", "")
+                   for m in self.app.messages if m.get("role") == "tool"}
+        n = 0
+        for m in self.app.messages:
+            if m.get("role") != "assistant":
+                continue
+            for tc in (m.get("tool_calls") or []):
+                n += 1
+                fn = tc.get("function", {})
+                name, raw = fn.get("name", "?"), fn.get("arguments", "")
+                try:
+                    pretty = json.dumps(json.loads(raw), indent=2, ensure_ascii=False)
+                except Exception:
+                    pretty = raw or "{}"
+                log.write(Panel(Syntax(pretty, "json", theme="monokai", background_color="default"),
+                                title=f"[bold yellow]#{n}  🔧 {name}[/]", border_style="yellow",
+                                expand=False), expand=True)
+                res = results.get(tc.get("id"), "")
+                if res:
+                    err = res.startswith("ERROR")
+                    style = "red" if err else "green"
+                    prev = res if len(res) <= 4000 else res[:4000] + f"\n… (+{len(res)-4000} chars)"
+                    log.write(Panel(Text(prev), title=f"[bold {style}]{'✗' if err else '✓'} result[/]",
+                                    border_style=style, expand=False), expand=True)
+        if n == 0:
+            log.write(Text("No tool calls in this session yet.", style="dim"))
+        self.query_one("#thint", Static).update(Text.from_markup(
+            f"[dim]{n} tool call{'s' if n != 1 else ''} · Esc to go back[/]"))
+
+    def action_back(self):
+        self.app.pop_screen()
+
+
+class MainScreen(Screen):
+    BINDINGS = [("f2", "settings", "⚙ Settings"), ("f3", "swap_model", "⇄ Model"),
+                ("f4", "tool_log", "🛠 Tools")]
+    CSS = """
+    #main { width: 3fr; border: round #5f5fd7; padding: 0 1; margin-bottom: 1; }
     #log { height: 1fr; background: $surface; scrollbar-size-vertical: 1; }
     #live { height: auto; max-height: 14; border-top: dashed #44475a; padding: 0 1; }
     UsageSidebar { width: 40; border: round #00afaf; padding: 0 1; }
@@ -912,7 +972,7 @@ class MainScreen(Screen):
     #lbl_ram { height: 2; }
     #lbl_extra { height: 1; }
     #lbl_toks { height: 2; }
-    #prompt { dock: bottom; border: round #5f5fd7; }
+    #prompt { dock: bottom; border: round #5f5fd7; margin: 1 1 1 1; }
     #titlebar { height: 1; background: #5f5fd7; color: white; text-style: bold; padding: 0 1; }
     #statusbar { height: 1; color: #00d7ff; padding: 0 1; }
     """
@@ -952,6 +1012,9 @@ class MainScreen(Screen):
 
     def action_settings(self):
         self.app.push_screen(SettingsScreen())
+
+    def action_tool_log(self):
+        self.app.push_screen(ToolLogScreen())
 
     def action_swap_model(self):
         if self.app.is_local:
@@ -1531,20 +1594,70 @@ class AgentTUI(App):
                                  for _, tc in sorted(tool_calls.items())]
         return msg
 
-    def render_tool_call(self, name, args):
+    # ---- tool-call rendering (compact colored bullets, Claude-Code style) ----
+    _READONLY_TOOLS = {
+        "read_file", "list_dir", "get_current_directory", "grep", "find_files",
+        "read_lines", "head", "tail", "count_lines", "stat_path", "tree",
+        "find_in_files", "list_models",
+    }
+    _EXEC_TOOLS = {"write_file", "edit_file", "run_python", "run_powershell", "run_bash"}
+
+    def _tool_color(self, name):
+        if name.startswith(self.mcp_prefix):
+            return "magenta"
+        if name == "vault_get_secret":
+            return "green"
+        if name in self._EXEC_TOOLS:
+            return "yellow"
+        if name in self._READONLY_TOOLS:
+            return "cyan"
+        return "white"
+
+    @staticmethod
+    def _tool_arg_summary(name, args):
+        """One-line, newline-free summary of the salient argument(s)."""
         try:
-            pretty = json.dumps(json.loads(args), indent=2, ensure_ascii=False)
+            d = json.loads(args) if isinstance(args, str) else dict(args or {})
         except Exception:
-            pretty = args
-        self.write_log(Panel(Syntax(pretty, "json", theme="monokai", background_color="default"),
-                             title=f"[bold yellow]🔧 {name}[/]", border_style="yellow", expand=False))
+            d = None
+        if isinstance(d, dict):
+            for key in ("pattern", "name_glob", "command", "code", "query", "path", "local_path"):
+                if d.get(key):
+                    val = str(d[key])
+                    break
+            else:
+                val = ", ".join(f"{k}={v}" for k, v in d.items()) if d else ""
+        else:
+            val = str(args or "")
+        val = " ".join(val.split())
+        return val[:70] + "…" if len(val) > 70 else val
+
+    @staticmethod
+    def _result_summary(result):
+        """Short, newline-free note about a tool result (text, is_error)."""
+        r = (result or "").strip()
+        if r.startswith("ERROR"):
+            first = r.splitlines()[0]
+            return (first[:80] + "…" if len(first) > 80 else first), True
+        first = next((ln for ln in r.splitlines() if ln.strip()), "")
+        first = " ".join(first.split())
+        if not first:
+            return "(no output)", False
+        note = first[:80] + "…" if len(first) > 80 else first
+        if len(r) > len(first) + 10:
+            note += f"  ·  {len(r)} chars"
+        return note, False
+
+    def render_tool_call(self, name, args):
+        color = self._tool_color(name)
+        summ = self._tool_arg_summary(name, args)
+        self.write_log(Text.from_markup(
+            f"[{color}]⏺[/] [bold {color}]{name}[/][dim]({summ})[/]"))
 
     def render_tool_result(self, name, result):
-        prev = result if len(result) <= 1200 else result[:1200] + f"\n… (+{len(result)-1200} chars)"
-        err = prev.startswith("ERROR")
+        note, err = self._result_summary(result)
         style = "red" if err else "green"
-        self.write_log(Panel(Text(prev), title=f"[bold {style}]{'✗' if err else '✓'} {name}[/]",
-                             border_style=style, expand=False))
+        self.write_log(Text.from_markup(f"  [dim]⎿[/] [{style}]{note}[/]"))
 
     def update_ctx(self):
         if not self.tracker:

@@ -30,10 +30,19 @@ from mcp.server.transport_security import TransportSecuritySettings  # noqa: E40
 
 CONFIG_PATH = os.path.join(HERE, "tools_config.json")
 
+# web_search / web_fetch need TAVILY_API_KEY. Load it from a local key file
+# (NOT versioned: `tavily.key` next to this server) if it isn't already in the env.
+_TAVILY_KEYFILE = os.path.join(HERE, "tavily.key")
+if not os.environ.get("TAVILY_API_KEY") and os.path.exists(_TAVILY_KEYFILE):
+    try:
+        os.environ["TAVILY_API_KEY"] = open(_TAVILY_KEYFILE, encoding="utf-8").read().strip()
+    except Exception:
+        pass
+
 SIMPLE_TOOLS = [
     "read_file", "write_file", "list_dir", "get_current_directory", "grep",
     "find_files", "read_lines", "head", "tail", "count_lines", "stat_path",
-    "tree", "find_in_files", "edit_file",
+    "tree", "find_in_files", "edit_file", "web_search", "web_fetch",
 ]
 
 # descriptions for the tools without a docstring (improves the MCP schema and the backoffice)

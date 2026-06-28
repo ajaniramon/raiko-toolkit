@@ -4,6 +4,7 @@ tui_config.json
 mcp_server/tools_config.json
 bench/models.json
 sessions/
+tavily.key
 .env
 *.key
 *.pem
