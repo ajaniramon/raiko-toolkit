@@ -1268,12 +1268,15 @@ class MainScreen(Screen):
     #main { width: 3fr; padding: 0 1; }
     #chat { height: 1fr; scrollbar-size-vertical: 1; }
     #working { height: 1; padding: 0 1; }
-    UserMsg { margin-top: 1; }
-    AssistantBlock { margin-top: 1; }
+    UserMsg { height: auto; margin: 1 0 0 0; }
+    AssistantBlock { height: auto; }
     ThinkingBlock { height: auto; }
-    ThinkingBlock .tbody { color: #9b93b8; text-style: italic; border-left: solid #44475a; padding-left: 1; }
+    ThinkingBlock .thead { height: 1; }
+    ThinkingBlock .tbody { height: auto; color: #9b93b8; text-style: italic; border-left: solid #44475a; padding-left: 1; }
+    AssistantBlock > Static { height: auto; }
     ToolBlock { height: auto; }
-    Notice { color: #9b93b8; }
+    ToolBlock > Static { height: auto; }
+    Notice { height: auto; color: #9b93b8; }
     UsageSidebar { width: 40; border: round #00afaf; padding: 0 1; }
     UsageSidebar .sec { color: #00d7ff; text-style: bold; margin-top: 1; }
     Sparkline { height: 3; margin-top: 0; }
@@ -1735,11 +1738,15 @@ class AgentTUI(App):
         return self.screen.query_one(selector, typ)
 
     def _chat_mount(self, widget):
-        """Mount a widget into the #chat scroll and keep the latest in view."""
+        """Mount a widget into the #chat scroll and follow the bottom — but only
+        if the user was already at the bottom (so wheel-scrolling up isn't yanked
+        back). scroll_end runs after the refresh so the new widget is measured."""
         try:
             chat = self._q("#chat", VerticalScroll)
+            follow = chat.scroll_y >= chat.max_scroll_y - 2
             chat.mount(widget)
-            chat.scroll_end(animate=False)
+            if follow:
+                chat.call_after_refresh(chat.scroll_end, animate=False)
         except Exception:
             pass
 
@@ -1757,14 +1764,22 @@ class AgentTUI(App):
     def update_live(self):
         if not self._live:
             return
+        chat = None
+        follow = True
+        try:
+            chat = self._q("#chat", VerticalScroll)
+            follow = chat.scroll_y >= chat.max_scroll_y - 2
+        except Exception:
+            pass
         if self.cur_think:
             self._live.set_think(self.cur_think)
         if self.cur_content:
             self._live.set_content(self.cur_content)
-        try:
-            self._q("#chat", VerticalScroll).scroll_end(animate=False)
-        except Exception:
-            pass
+        if chat is not None and follow:
+            try:
+                chat.call_after_refresh(chat.scroll_end, animate=False)
+            except Exception:
+                pass
 
     def commit_live(self):
         if self._live:
