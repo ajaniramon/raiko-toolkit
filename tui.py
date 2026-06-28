@@ -1274,12 +1274,21 @@ class WorkingBar(Static):
 
     def on_mount(self):
         self._i = 0
+        self._was_busy = False
         self.display = False
         self.set_interval(0.1, self._tick)
 
     def _tick(self):
         app = self.app
-        if not getattr(app, "busy", False):
+        busy = bool(getattr(app, "busy", False))
+        if busy != self._was_busy:
+            # busy changed — refresh the footer so the Stop binding shows/hides
+            self._was_busy = busy
+            try:
+                self.screen.refresh_bindings()
+            except Exception:
+                pass
+        if not busy:
             if self.display:
                 self.display = False
             return
@@ -1438,6 +1447,13 @@ class MainScreen(Screen):
         if app.mcp_url:
             app.run_worker(app.load_mcp_tools, thread=True)
         self.query_one("#prompt", Composer).focus()
+
+    def check_action(self, action, parameters):
+        # Only surface the Stop binding while a turn is running. Returning False
+        # (not None) drops it from the footer entirely; None would just grey it.
+        if action == "interrupt":
+            return bool(getattr(self.app, "busy", False))
+        return True
 
     def action_interrupt(self):
         if self.app.busy:
