@@ -28,6 +28,9 @@ ENV/
 
 # ---- Benchmark outputs & logs (data; may contain transcripts/credentials) ----
 bench/results/
+# scratch sandboxes built by the fixtures during local runs/validation
+bench/sandbox/
+bench/hardsandbox/
 
 # ---- Editor / IDE / OS junk ----
 .vscode/

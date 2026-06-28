@@ -168,4 +168,9 @@ def build_tasks_hard(truth):
                                   "not found", "no tests", "there are no", "no hay", "empty", "couldn't find"),
         negative=True)
 
+    # extra generated families (log/metrics/events/cluster analysis at scale)
+    if "h2_ip_counts" in T:
+        from tasks_hard_extra import build_extra_hard
+        tasks.extend(build_extra_hard(T))
+
     return tasks
