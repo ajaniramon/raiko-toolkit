@@ -29,7 +29,7 @@ benchmark** that decides which local model is actually worth running.
 |---|---|
 | 🖥️ **Multi-provider TUI** | One wizard, 7 providers: `nano-gpt`, **local llama.cpp** (your GPU), **remote llama.cpp** (enter a URL), `OpenAI`, `Anthropic`, `xAI`, `OpenRouter`. |
 | 📊 **Live telemetry** | In local mode, real-time GPU-util sparkline + VRAM/CPU/RAM bars + temp/power/tok-s, straight from `nvidia-smi` + `psutil`. |
-| 🧩 **Streaming + tool theatre** | Thinking streamed live, tool calls rendered with colors, final answers as clean Markdown, tok/s on every turn. |
+| 🧩 **Clean widget chat** | opencode/Claude-Code-style: box-less message widgets, inline dim thinking (collapsible), compact colored tool bullets + inline diffs, and an animated "working" bar (spinner + wiggling wave + elapsed/tok·s) while the model runs. |
 | 🔐 **Permission gating** | Claude-Code-style allow/always/deny prompts for flagged operations (`--dangerously-skip-permissions` to opt out). |
 | 🛰️ **MCP tool server** | Serve the whole toolset over MCP (`/mcp`) with a web **backoffice** to enable/disable tools and author custom shell tools — no redeploy of the agent. |
 | 🏁 **Decisive benchmark** | 4 tiers, deterministic decoding, programmatic graders, resumable runs, and a leaderboard that tells you which model to burn your VRAM on. |
@@ -95,7 +95,8 @@ python tui.py --dangerously-skip-permissions
   (`auto_compact` in config, threshold ~85%); run it anytime with `/compact`.
 - **Settings (`F2`)**: open and edit `tui_config.json` in-app, with JSON validation.
 - **Slash commands**: `/clear` (reset the conversation) · `/compact` (summarize older
-  turns) · `/system` (prompt editor) · `/tools` (tool log) · `/help`.
+  turns) · `/system` (prompt editor) · `/tools` (tool log) · `/help`. Typing `/` pops a
+  filterable command menu above the input (↑/↓ to move, Tab to complete, Enter to run).
 - **MCP routing**: remote tools are auto-discovered and exposed with a `mac_` prefix.
 
 There's also a headless agent loop in **`agent.py`** (same providers via env vars) for
