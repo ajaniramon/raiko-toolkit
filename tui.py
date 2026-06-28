@@ -37,6 +37,7 @@ from rich.text import Text
 
 from textual.app import App, ComposeResult
 from textual.containers import Center, Horizontal, Middle, Vertical, VerticalScroll
+from textual.message import Message
 from textual.screen import ModalScreen, Screen
 from textual.widgets import (Button, Footer, Input, LoadingIndicator, OptionList,
                              RichLog, Sparkline, Static, TextArea)
@@ -1084,9 +1085,66 @@ class SystemPromptScreen(Screen):
             self.app.pop_screen()
 
 
+class Composer(TextArea):
+    """Multiline chat input. Enter sends; Shift+Enter / Ctrl+J inserts a newline.
+    ↑/↓ recall the prompt history when the cursor is on the first/last line.
+    Esc interrupts a running turn."""
+
+    class Submitted(Message):
+        def __init__(self, value):
+            self.value = value
+            super().__init__()
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self._hist_pos = None
+
+    def _load(self, text):
+        self.load_text(text)
+        self.move_cursor(self.document.end)
+
+    def _recall(self, direction):
+        h = self.app.prompt_history
+        if not h:
+            return
+        if direction < 0:
+            self._hist_pos = len(h) - 1 if self._hist_pos is None else max(0, self._hist_pos - 1)
+            self._load(h[self._hist_pos])
+        elif self._hist_pos is not None:
+            self._hist_pos += 1
+            if self._hist_pos >= len(h):
+                self._hist_pos = None
+                self._load("")
+            else:
+                self._load(h[self._hist_pos])
+
+    async def _on_key(self, event):
+        key = event.key
+        if key == "enter":
+            event.prevent_default(); event.stop()
+            self.post_message(self.Submitted(self.text))
+            return
+        if key in ("shift+enter", "alt+enter", "ctrl+j"):
+            event.prevent_default(); event.stop()
+            self.insert("\n")
+            return
+        if key == "escape" and getattr(self.app, "busy", False):
+            event.prevent_default(); event.stop()
+            self.app._cancel.set()
+            return
+        if key in ("up", "down") and self.app.prompt_history:
+            row = self.cursor_location[0]
+            if key == "up" and row == 0:
+                event.prevent_default(); event.stop(); self._recall(-1); return
+            if key == "down" and row == self.document.line_count - 1:
+                event.prevent_default(); event.stop(); self._recall(+1); return
+        await super()._on_key(event)
+
+
 class MainScreen(Screen):
     BINDINGS = [("f2", "settings", "⚙ Settings"), ("f3", "swap_model", "⇄ Model"),
-                ("f4", "tool_log", "🛠 Tools"), ("f6", "prompt", "📝 Prompt")]
+                ("f4", "tool_log", "🛠 Tools"), ("f6", "prompt", "📝 Prompt"),
+                ("escape", "interrupt", "⏹ Stop")]
     CSS = """
     #main { width: 3fr; border: round #5f5fd7; padding: 0 1; margin-bottom: 1; }
     #log { height: 1fr; background: $surface; scrollbar-size-vertical: 1; }
@@ -1105,7 +1163,7 @@ class MainScreen(Screen):
     #lbl_ram { height: 2; }
     #lbl_extra { height: 1; }
     #lbl_toks { height: 2; }
-    #prompt { dock: bottom; border: round #5f5fd7; margin: 1 1 1 1; }
+    #prompt { dock: bottom; height: 5; border: round #5f5fd7; margin: 1 1 1 1; }
     #titlebar { height: 1; background: #5f5fd7; color: white; text-style: bold; padding: 0 1; }
     #statusbar { height: 1; color: #00d7ff; padding: 0 1; }
     """
@@ -1119,7 +1177,7 @@ class MainScreen(Screen):
                 yield Static(id="live")
             if self.app.is_local:
                 yield UsageSidebar()
-        yield Input(placeholder="Ask JJ…  (Enter to send)", id="prompt")
+        yield Composer(id="prompt")
         yield Footer()
 
     def on_mount(self):
@@ -1141,7 +1199,11 @@ class MainScreen(Screen):
             app.poll_usage()
         if app.mcp_url:
             app.run_worker(app.load_mcp_tools, thread=True)
-        self.query_one("#prompt", Input).focus()
+        self.query_one("#prompt", Composer).focus()
+
+    def action_interrupt(self):
+        if self.app.busy:
+            self.app._cancel.set()
 
     def action_settings(self):
         self.app.push_screen(SettingsScreen())
@@ -1160,11 +1222,14 @@ class MainScreen(Screen):
             return
         self.app.push_screen(ModelScreen(self.app.provider, swap=True))
 
-    def on_input_submitted(self, event: Input.Submitted):
+    def on_composer_submitted(self, event: "Composer.Submitted"):
         text = event.value.strip()
         if not text or self.app.busy:
             return
-        self.query_one("#prompt", Input).value = ""
+        comp = self.query_one("#prompt", Composer)
+        comp._load("")
+        comp._hist_pos = None
+        self.app.prompt_history.append(text)
         if text.startswith("/"):
             self.handle_command(text)
             return
@@ -1236,6 +1301,9 @@ class AgentTUI(App):
         self._resume_messages = None    # carried into a (local) resume
         self.resumed = False            # MainScreen renders prior history when True
         self._prompt_chosen = False     # True once the prompt was set from the wizard
+        self._cancel = threading.Event()  # set to interrupt the running turn
+        self.prompt_history = []        # submitted prompts (↑/↓ recall)
+        self._pending_diff = None       # (path, unified_diff) for the next tool result
 
     def on_mount(self):
         self.title = "🤖 JJ agent"
@@ -1669,7 +1737,30 @@ class AgentTUI(App):
                         args["allow_unsafe"] = True
                     else:
                         return f"DENIED by user: refused to run flagged operation '{snip}'"
+        if name in ("write_file", "edit_file") and isinstance(args, dict) and args.get("path"):
+            return self._run_with_diff(name, args)
         return self._with_timeout(name, lambda: call_tool(name, args))
+
+    def _run_with_diff(self, name, args):
+        """Run a file-writing tool, capturing a before/after unified diff for the UI."""
+        import difflib
+        path = args.get("path")
+
+        def _read():
+            try:
+                return open(path, encoding="utf-8", errors="replace").read() if os.path.isfile(path) else ""
+            except Exception:
+                return ""
+
+        before = _read()
+        result = self._with_timeout(name, lambda: call_tool(name, args))
+        if not str(result).startswith("ERROR"):
+            after = _read()
+            if after != before:
+                self._pending_diff = (path, "".join(difflib.unified_diff(
+                    before.splitlines(keepends=True), after.splitlines(keepends=True),
+                    fromfile=f"{path} (before)", tofile=f"{path} (after)")))
+        return result
 
     # ---------- agent (in thread) ----------
     def agent_turn(self, text):
@@ -1677,6 +1768,7 @@ class AgentTUI(App):
         self._turn_tokens = 0
         self._stream_chars = 0
         self._turn_start = time.time()
+        self._cancel.clear()
         try:
             for _ in range(MAX_ITERATIONS):
                 msg = self.stream_one()
@@ -1685,7 +1777,7 @@ class AgentTUI(App):
                 # not added to history). Recover from the thinking as a last resort.
                 attempt = 0
                 while (self._think_leak_calls and not msg.get("tool_calls")
-                       and attempt < THINK_RETRIES):
+                       and attempt < THINK_RETRIES and not self._cancel.is_set()):
                     attempt += 1
                     self.call_from_thread(self.write_log, Text.from_markup(
                         f"[dim yellow]↻ tool call ended up in the thinking; retrying turn "
@@ -1699,15 +1791,23 @@ class AgentTUI(App):
                     self.call_from_thread(self.write_log, Text.from_markup(
                         "[dim yellow]↻ recovered the tool call from the thinking[/]"))
                 self.messages.append(msg)
+                if self._cancel.is_set():
+                    self.call_from_thread(self.write_log, Text.from_markup("[bold yellow]⏹ stopped[/]"))
+                    break
                 tcs = msg.get("tool_calls")
                 if not tcs:
                     break
                 for tc in tcs:
+                    if self._cancel.is_set():
+                        break
                     name, args = tc["function"]["name"], tc["function"]["arguments"]
                     self.call_from_thread(self.render_tool_call, name, args)
                     result = self.execute_tool(name, args)
                     self.call_from_thread(self.render_tool_result, name, result)
                     self.messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+                if self._cancel.is_set():
+                    self.call_from_thread(self.write_log, Text.from_markup("[bold yellow]⏹ stopped[/]"))
+                    break
             else:
                 self.call_from_thread(self.write_log, Panel("max iterations reached", border_style="red"))
         except Exception as e:
@@ -1756,6 +1856,12 @@ class AgentTUI(App):
             self.call_from_thread(self.update_live)
 
         for chunk in stream:
+            if self._cancel.is_set():
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+                break
             cd = chunk.model_dump(exclude_none=True)
             if "x_nanogpt_pricing" in cd or cd.get("usage"):
                 last_pricing = cd
@@ -1872,6 +1978,17 @@ class AgentTUI(App):
             f"[{color}]⏺[/] [bold {color}]{name}[/][dim]({summ})[/]"))
 
     def render_tool_result(self, name, result):
+        diff = getattr(self, "_pending_diff", None)
+        if diff and name in ("write_file", "edit_file"):
+            self._pending_diff = None
+            path, text = diff
+            lines = text.splitlines()
+            shown = lines[:60]
+            body = "\n".join(shown) + (f"\n… (+{len(lines) - 60} more diff lines)" if len(lines) > 60 else "")
+            self.write_log(Text.from_markup(f"  [dim]⎿[/] [green]edited[/] [cyan]{path}[/]"))
+            self.write_log(Syntax(body or "(no changes)", "diff", theme="monokai",
+                                  background_color="default"))
+            return
         note, err = self._result_summary(result)
         style = "red" if err else "green"
         self.write_log(Text.from_markup(f"  [dim]⎿[/] [{style}]{note}[/]"))
