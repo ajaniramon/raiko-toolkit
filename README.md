@@ -87,9 +87,15 @@ python tui.py --dangerously-skip-permissions
   session from the startup wizard (`Ctrl+P`), and with >1 preset a picker appears at
   session start. The fixed tool-calling rules are always appended so a custom persona
   can't break tool use.
+- **Multiline input + history**: a composer where **Enter** sends and **Shift+Enter** /
+  **Ctrl+J** insert newlines (paste code freely); **↑/↓** recall previous prompts.
+- **Interrupt (`Esc`)**: stop a running turn mid-stream — partial output is kept.
+- **Diff view**: `write_file` / `edit_file` render a colored before→after diff of the change.
+- **Compaction**: when the context fills up the older turns are auto-summarized
+  (`auto_compact` in config, threshold ~85%); run it anytime with `/compact`.
 - **Settings (`F2`)**: open and edit `tui_config.json` in-app, with JSON validation.
-- **Slash commands**: `/clear` (reset the conversation, keep the system prompt) · `/system`
-  (prompt editor) · `/tools` (tool log) · `/help`.
+- **Slash commands**: `/clear` (reset the conversation) · `/compact` (summarize older
+  turns) · `/system` (prompt editor) · `/tools` (tool log) · `/help`.
 - **MCP routing**: remote tools are auto-discovered and exposed with a `mac_` prefix.
 
 There's also a headless agent loop in **`agent.py`** (same providers via env vars) for
