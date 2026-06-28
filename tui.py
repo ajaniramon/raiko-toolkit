@@ -36,6 +36,7 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Center, Horizontal, Middle, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen, Screen
@@ -1093,6 +1094,10 @@ class Composer(TextArea):
     ↑/↓ recall the prompt history when the cursor is on the first/last line.
     Esc interrupts a running turn."""
 
+    # TextArea binds f6 to select_line, which would swallow the screen's
+    # "f6 = open prompt editor" while the input is focused. Forward it instead.
+    BINDINGS = [Binding("f6", "screen.prompt", "Prompt", show=False)]
+
     class Submitted(Message):
         def __init__(self, value):
             self.value = value
@@ -1121,8 +1126,39 @@ class Composer(TextArea):
             else:
                 self._load(h[self._hist_pos])
 
+    def _hint(self):
+        try:
+            return self.screen.query_one("#cmdhint", CommandHint)
+        except Exception:
+            return None
+
     async def _on_key(self, event):
         key = event.key
+        # Slash-command autocomplete: when the hint dropdown is open it captures the
+        # navigation/accept keys before they fall through to send / history / indent.
+        hint = self._hint()
+        if hint and hint.is_open:
+            if key in ("up", "down"):
+                event.prevent_default(); event.stop()
+                hint.move(-1 if key == "up" else 1)
+                return
+            if key == "tab":
+                event.prevent_default(); event.stop()
+                sel = hint.selected()
+                if sel:
+                    self._load(sel + " ")
+                    hint.reset()
+                return
+            if key == "escape":
+                event.prevent_default(); event.stop()
+                hint.reset()
+                return
+            if key == "enter":
+                event.prevent_default(); event.stop()
+                sel = hint.selected()
+                hint.reset()
+                self.post_message(self.Submitted(sel or self.text))
+                return
         if key == "enter":
             event.prevent_default(); event.stop()
             self.post_message(self.Submitted(self.text))
@@ -1260,6 +1296,72 @@ class WorkingBar(Static):
             f"[#b394ff]{wave}[/]  [dim]{elapsed:.0f}s · {tps:.0f} tok/s · Esc to stop[/]"))
 
 
+SLASH_COMMANDS = [
+    ("/clear", "clear the conversation (keeps the system prompt)"),
+    ("/compact", "summarize older turns to free up context"),
+    ("/system", "edit the system prompt (also F6)"),
+    ("/tools", "open the tool-call log (also F4)"),
+    ("/help", "list the available commands"),
+]
+
+
+class CommandHint(Static):
+    """A slash-command autocomplete dropdown shown above the composer. Filters as
+    you type `/…`; ↑/↓ moves the highlight, Tab completes, Enter runs it."""
+
+    def __init__(self, **kw):
+        super().__init__("", **kw)
+        self.matches = []   # list of (cmd, desc)
+        self.sel = 0
+
+    def update_for(self, text):
+        # Only while a single slash-token is being typed — any whitespace (incl. a
+        # trailing space after Tab-completing) means the command is done; hide.
+        t = text or ""
+        if t.startswith("/") and not any(ch.isspace() for ch in t):
+            q = t[1:].lower()
+            self.matches = [(c, d) for (c, d) in SLASH_COMMANDS if c[1:].startswith(q)]
+        else:
+            self.matches = []
+        self.sel = 0
+        if not self.matches:
+            self.display = False
+            return
+        self._render_rows()
+        self.display = True
+
+    def _render_rows(self):
+        t = Text()
+        for i, (c, d) in enumerate(self.matches):
+            on = i == self.sel
+            t.append(" › " if on else "   ", style="bold #5f8fff" if on else "#44475a")
+            t.append(f"{c:<9}", style="bold #8be9fd" if on else "#6f6f8f")
+            t.append(f"  {d}", style="#9b93b8" if on else "#6f6f8f")
+            if i != len(self.matches) - 1:
+                t.append("\n")
+        self.update(t)
+
+    def move(self, delta):
+        if not self.matches:
+            return
+        self.sel = (self.sel + delta) % len(self.matches)
+        self._render_rows()
+
+    def selected(self):
+        if self.matches and 0 <= self.sel < len(self.matches):
+            return self.matches[self.sel][0]
+        return None
+
+    def reset(self):
+        self.matches = []
+        self.sel = 0
+        self.display = False
+
+    @property
+    def is_open(self):
+        return bool(self.display and self.matches)
+
+
 class MainScreen(Screen):
     BINDINGS = [("f2", "settings", "⚙ Settings"), ("f3", "swap_model", "⇄ Model"),
                 ("f4", "tool_log", "🛠 Tools"), ("f6", "prompt", "📝 Prompt"),
@@ -1291,7 +1393,10 @@ class MainScreen(Screen):
     #lbl_ram { height: 2; }
     #lbl_extra { height: 1; }
     #lbl_toks { height: 2; }
-    #prompt { dock: bottom; height: 5; border: round #5f5fd7; margin: 0 1 1 1; }
+    #inputwrap { dock: bottom; height: auto; }
+    #prompt { height: 5; border: round #5f5fd7; margin: 0 1 1 1; }
+    #cmdhint { display: none; height: auto; max-height: 7; margin: 0 1 0 1;
+               padding: 0 1; background: #1b1830; color: #9b93b8; }
     #statusbar { height: 1; color: #00d7ff; padding: 0 1; background: #1b1830; }
     """
 
@@ -1303,8 +1408,18 @@ class MainScreen(Screen):
                 yield WorkingBar(id="working")
             if self.app.is_local:
                 yield UsageSidebar()
-        yield Composer(id="prompt")
+        with Vertical(id="inputwrap"):
+            yield CommandHint(id="cmdhint")
+            yield Composer(id="prompt")
         yield Footer()
+
+    def on_text_area_changed(self, event):
+        """Keep the slash-command hint in sync with what's typed in the composer."""
+        try:
+            hint = self.query_one("#cmdhint", CommandHint)
+            hint.update_for(self.query_one("#prompt", Composer).text)
+        except Exception:
+            pass
 
     def on_mount(self):
         app = self.app

@@ -95,7 +95,8 @@ python tui.py --dangerously-skip-permissions
   (`auto_compact` in config, threshold ~85%); run it anytime with `/compact`.
 - **Settings (`F2`)**: open and edit `tui_config.json` in-app, with JSON validation.
 - **Slash commands**: `/clear` (reset the conversation) · `/compact` (summarize older
-  turns) · `/system` (prompt editor) · `/tools` (tool log) · `/help`.
+  turns) · `/system` (prompt editor) · `/tools` (tool log) · `/help`. Typing `/` pops a
+  filterable command menu above the input (↑/↓ to move, Tab to complete, Enter to run).
 - **MCP routing**: remote tools are auto-discovered and exposed with a `mac_` prefix.
 
 There's also a headless agent loop in **`agent.py`** (same providers via env vars) for
