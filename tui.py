@@ -254,6 +254,15 @@ def load_config():
     jira_token = cfg.get("jira", {}).get("api_token") if isinstance(cfg.get("jira"), dict) else None
     if jira_token and not os.environ.get("JIRA_API_TOKEN"):
         os.environ["JIRA_API_TOKEN"] = jira_token
+    # Confluence reuses the same Atlassian token (account-scoped); it only needs the
+    # site base url + login email, which the confluence_* tools read from the env.
+    conf = cfg.get("confluence", {}) if isinstance(cfg.get("confluence"), dict) else {}
+    if conf.get("base_url") and not os.environ.get("CONFLUENCE_BASE_URL"):
+        os.environ["CONFLUENCE_BASE_URL"] = conf["base_url"]
+    if conf.get("email") and not os.environ.get("CONFLUENCE_EMAIL"):
+        os.environ["CONFLUENCE_EMAIL"] = conf["email"]
+    if conf.get("space") and not os.environ.get("CONFLUENCE_SPACE"):
+        os.environ["CONFLUENCE_SPACE"] = conf["space"]
     return cfg
 
 
@@ -2134,6 +2143,17 @@ class AgentTUI(App):
                 code = f"jira issue comment add {key} \"{body[:300]}\""
             if not self.ask_permission(name, snip, code):
                 return f"DENIED by user: refused Jira write '{snip}'"
+        if name in ("confluence_create", "confluence_comment") and not self.skip_permissions:
+            body = (args.get("body", "") or "")
+            if name == "confluence_create":
+                sp = args.get("space") or os.environ.get("CONFLUENCE_SPACE", "?")
+                snip = f"create page in {sp}: {args.get('title', '')}"
+                code = f"POST confluence page · space={sp} · title={args.get('title', '')}"
+            else:
+                snip = f"comment on page {args.get('page_id', '?')}: {body[:80]}" + ("…" if len(body) > 80 else "")
+                code = f"POST confluence comment · page={args.get('page_id', '')} · {body[:200]}"
+            if not self.ask_permission(name, snip, code):
+                return f"DENIED by user: refused Confluence write '{snip}'"
         if name in ("write_file", "edit_file") and isinstance(args, dict) and args.get("path"):
             return self._run_with_diff(name, args)
         return self._with_timeout(name, lambda: call_tool(name, args))

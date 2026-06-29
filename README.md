@@ -131,6 +131,13 @@ binary, so run `jira init` once (`--installation cloud --server <url> --login <e
 the `JIRA_API_TOKEN` env var. The tools auto-locate `jira` on the `PATH` or via `JIRA_CLI`.
 The two **write** tools (`jira_assign`, `jira_comment`) go through the permission prompt.
 
+**Confluence:** `confluence_search` — find pages by free text or raw CQL · `confluence_get`
+— fetch a page (by id or title) as readable text · `confluence_create` — publish a new
+page · `confluence_comment` — comment on a page. These hit the Confluence Cloud **REST API**
+directly (no extra binary), **reusing the same Atlassian token** as Jira; set
+`confluence.base_url` and `confluence.email` in `tui_config.json`. The two **write** tools
+(`confluence_create`, `confluence_comment`) go through the permission prompt.
+
 Execution tools run in a subprocess with **timeouts** and a **denylist** that blocks only
 genuinely destructive operations (`rm -rf`, `format`, `shutdown`, registry edits); normal
 subprocess/network use is allowed. Anything flagged triggers a permission prompt in the TUI.

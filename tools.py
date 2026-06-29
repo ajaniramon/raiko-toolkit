@@ -544,6 +544,166 @@ def jira_comment(key: str = "", body: str = "") -> str:
     return out or f"Comment added to {key.strip()}."
 
 
+# --------------------------- Confluence (REST API) ---------------------------
+# Confluence Cloud reuses the account-scoped Atlassian API token (the same one the
+# Jira tools use), so no extra binary/CLI is needed — we hit the REST API directly
+# with HTTP Basic auth (email:token).
+
+def _confluence_ctx():
+    base = (os.environ.get("CONFLUENCE_BASE_URL") or "").rstrip("/")
+    email = os.environ.get("CONFLUENCE_EMAIL") or ""
+    token = os.environ.get("JIRA_API_TOKEN") or os.environ.get("ATLASSIAN_API_TOKEN") or ""
+    if not (base and email and token):
+        return None, ("ERROR: Confluence is not configured — set confluence.base_url and "
+                      "confluence.email in tui_config.json (the Atlassian token is reused "
+                      "from jira.api_token / JIRA_API_TOKEN).")
+    return (base, email, token), None
+
+
+def _html_to_text(html_str: str) -> str:
+    import html as _html
+    t = re.sub(r"(?i)<br\s*/?>", "\n", html_str or "")
+    t = re.sub(r"(?i)</(p|div|h[1-6]|li|tr)>", "\n", t)
+    t = re.sub(r"(?i)<li[^>]*>", "• ", t)
+    t = re.sub(r"<[^>]+>", "", t)
+    t = _html.unescape(t)
+    return re.sub(r"\n{3,}", "\n\n", t).strip()
+
+
+def _xml_escape(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _text_to_storage(body: str) -> str:
+    """Wrap plain text into Confluence 'storage' (XHTML) paragraphs."""
+    paras = [p.strip() for p in (body or "").split("\n\n") if p.strip()]
+    return "".join(f"<p>{_xml_escape(p).replace(chr(10), '<br/>')}</p>" for p in paras) or "<p></p>"
+
+
+def confluence_search(query: str = "", cql: str = "", limit: int = 15, space: str = "") -> str:
+    """Search Confluence. Free text in `query` (words matched against page text) or a
+    raw `cql` expression. Returns a plain list of id · type · [space] · title."""
+    ctx, err = _confluence_ctx()
+    if err:
+        return err
+    base, email, token = ctx
+    import requests
+    try:
+        n = max(1, min(int(limit or 15), 50))
+    except (TypeError, ValueError):
+        n = 15
+    if cql:
+        q = cql
+    elif query:
+        words = [w for w in re.findall(r"\w+", query, re.UNICODE) if len(w) >= 4] \
+            or re.findall(r"\w+", query, re.UNICODE) or [query]
+        q = "type = page AND (" + " OR ".join(f'text ~ "{w}"' for w in words) + ")"
+        if space:
+            q = f'space = "{space}" AND ' + q
+    else:
+        return "ERROR: provide either `query` (free text) or `cql`."
+    try:
+        r = requests.get(f"{base}/rest/api/search", params={"cql": q, "limit": n},
+                         auth=(email, token), timeout=25)
+    except Exception as e:
+        return f"ERROR: cannot reach Confluence: {e}"
+    if r.status_code != 200:
+        return f"ERROR: Confluence returned {r.status_code}: {r.text[:200]}"
+    results = r.json().get("results", [])
+    if not results:
+        return f"No pages matched. (CQL: {q})"
+    lines = []
+    for it in results:
+        c = it.get("content", {}) or {}
+        cid = c.get("id", "?")
+        typ = c.get("type", "?")
+        title = it.get("title") or c.get("title") or "(untitled)"
+        container = (it.get("resultGlobalContainer", {}) or {}).get("title", "")
+        lines.append(f"{cid}\t{typ}\t[{container}]\t{title}")
+    out = "\n".join(lines)
+    return out[:4000] + "\n… (truncated)" if len(out) > 4000 else out
+
+
+def confluence_get(page_id: str = "", title: str = "", space: str = "") -> str:
+    """Fetch a Confluence page by `page_id` (or by `title`, optionally scoped to a
+    `space` key) and return its title, space, URL and body as readable text."""
+    ctx, err = _confluence_ctx()
+    if err:
+        return err
+    base, email, token = ctx
+    import requests
+    pid = (page_id or "").strip()
+    if not pid:
+        if not title.strip():
+            return "ERROR: provide 'page_id' or 'title' (optionally with 'space')."
+        cql = f'type = page AND title ~ "{title}"' + (f' AND space = "{space}"' if space else "")
+        try:
+            rr = requests.get(f"{base}/rest/api/search", params={"cql": cql, "limit": 1},
+                              auth=(email, token), timeout=25)
+        except Exception as e:
+            return f"ERROR: cannot reach Confluence: {e}"
+        res = rr.json().get("results", []) if rr.status_code == 200 else []
+        if not res:
+            return f"No page found with title ~ '{title}'."
+        pid = (res[0].get("content", {}) or {}).get("id", "")
+    try:
+        r = requests.get(f"{base}/rest/api/content/{pid}",
+                         params={"expand": "body.storage,space"}, auth=(email, token), timeout=25)
+    except Exception as e:
+        return f"ERROR: cannot reach Confluence: {e}"
+    if r.status_code != 200:
+        return f"ERROR: Confluence returned {r.status_code}: {r.text[:200]}"
+    d = r.json()
+    sp = (d.get("space", {}) or {}).get("key", "")
+    body = _html_to_text((d.get("body", {}).get("storage", {}) or {}).get("value", ""))
+    url = f"{base}/spaces/{sp}/pages/{pid}"
+    out = f"# {d.get('title', '')}\nID: {pid}  ·  Space: {sp}\nURL: {url}\n\n{body}"
+    return out[:6000] + "\n… (truncated)" if len(out) > 6000 else out
+
+
+def confluence_create(space: str = "", title: str = "", body: str = "") -> str:
+    """Create a new Confluence page in `space` (a space KEY) with `title` and `body`
+    (plain text; blank lines become paragraphs). Write operation — gated by the TUI."""
+    ctx, err = _confluence_ctx()
+    if err:
+        return err
+    base, email, token = ctx
+    space = (space or os.environ.get("CONFLUENCE_SPACE", "")).strip()  # default space (config)
+    if not (space and title.strip() and body.strip()):
+        return "ERROR: provide 'title', 'body', and a 'space' key (or set a default confluence.space)."
+    import requests
+    payload = {"type": "page", "title": title.strip(), "space": {"key": space},
+               "body": {"storage": {"value": _text_to_storage(body), "representation": "storage"}}}
+    try:
+        r = requests.post(f"{base}/rest/api/content", json=payload, auth=(email, token), timeout=25)
+    except Exception as e:
+        return f"ERROR: cannot reach Confluence: {e}"
+    if r.status_code not in (200, 201):
+        return f"ERROR: Confluence returned {r.status_code}: {r.text[:300]}"
+    pid = r.json().get("id", "?")
+    return f"Created page '{title.strip()}' (id {pid}) in {space.strip()}: {base}/spaces/{space.strip()}/pages/{pid}"
+
+
+def confluence_comment(page_id: str = "", body: str = "") -> str:
+    """Add a comment to a Confluence page by id. Write operation — gated by the TUI."""
+    ctx, err = _confluence_ctx()
+    if err:
+        return err
+    base, email, token = ctx
+    if not (page_id.strip() and body.strip()):
+        return "ERROR: provide 'page_id' and 'body'."
+    import requests
+    payload = {"type": "comment", "container": {"id": page_id.strip(), "type": "page"},
+               "body": {"storage": {"value": _text_to_storage(body), "representation": "storage"}}}
+    try:
+        r = requests.post(f"{base}/rest/api/content", json=payload, auth=(email, token), timeout=25)
+    except Exception as e:
+        return f"ERROR: cannot reach Confluence: {e}"
+    if r.status_code not in (200, 201):
+        return f"ERROR: Confluence returned {r.status_code}: {r.text[:300]}"
+    return f"Comment added to page {page_id.strip()}."
+
+
 TOOLS = [
     {
         "type": "function",
@@ -881,6 +1041,70 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "confluence_search",
+            "description": "Search Confluence pages by free text in 'query' (matched against page content) or a raw CQL expression in 'cql'. Returns a plain list of matching pages (id, type, space, title). Use this to find a page when you don't know its id.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Free-text search, e.g. 'release checklist'."},
+                    "cql": {"type": "string", "description": "Raw CQL, e.g. 'space = ENG AND title ~ \"runbook\"'. Overrides 'query'."},
+                    "limit": {"type": "integer", "description": "Max pages to return (1-50, default 15)."},
+                    "space": {"type": "string", "description": "Optional space key to scope a free-text query."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "confluence_get",
+            "description": "Fetch a Confluence page by 'page_id' (or by 'title', optionally scoped to a 'space' key) and return its title, space, URL and body as readable text.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "page_id": {"type": "string", "description": "The page id, e.g. '123456'."},
+                    "title": {"type": "string", "description": "Page title to look up if you don't have the id."},
+                    "space": {"type": "string", "description": "Optional space key to disambiguate a title lookup."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "confluence_create",
+            "description": "Create a NEW Confluence page. Defaults to the configured space if 'space' is omitted. This WRITES to Confluence (publishes a page).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "space": {"type": "string", "description": "Space KEY (e.g. 'SI'). Optional — defaults to the configured space."},
+                    "title": {"type": "string", "description": "The page title."},
+                    "body": {"type": "string", "description": "Page body as plain text; blank lines become paragraphs."},
+                },
+                "required": ["title", "body"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "confluence_comment",
+            "description": "Add a comment to a Confluence page by id. This WRITES to Confluence (posts a visible comment).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "page_id": {"type": "string", "description": "The page id, e.g. '123456'."},
+                    "body": {"type": "string", "description": "The comment text. Supports newlines."},
+                },
+                "required": ["page_id", "body"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "web_fetch",
             "description": "Fetch a URL and return its main page text (cleaned). Use to read a full page — e.g. a result returned by web_search, or a known link. Returns up to max_chars characters.",
             "parameters": {
@@ -922,6 +1146,10 @@ DISPATCH = {
     "jira_get": jira_get,
     "jira_assign": jira_assign,
     "jira_comment": jira_comment,
+    "confluence_search": confluence_search,
+    "confluence_get": confluence_get,
+    "confluence_create": confluence_create,
+    "confluence_comment": confluence_comment,
 }
 
 
