@@ -1,0 +1,618 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>raiko-toolkit — point an agent at anything</title>
+<meta name="description" content="Reimon AI Krazy Orchestrator: a local-first, multi-provider LLM agent toolkit. Your GGUF models on the GPU, a remote llama-server, or the big cloud APIs — in one polished terminal UI, with a portable tool layer, an MCP server, and a decisive tool-calling benchmark.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="raiko-toolkit — point an agent at anything">
+<meta property="og:description" content="A local-first, multi-provider LLM agent toolkit in a polished terminal UI: local llama.cpp on your GPU, remote, or cloud — with an MCP server and a decisive tool-calling benchmark.">
+<meta property="og:image" content="https://ajaniramon.github.io/raiko-toolkit/logo.png">
+<meta property="og:url" content="https://ajaniramon.github.io/raiko-toolkit/">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/png" href="data:image/png;base64,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">
+<style>
+  :root{
+    --bg:#0c0a12; --bg2:#100d1a; --panel:#16131f; --panel2:#1b1830;
+    --border:#2a2540; --line:#352e50;
+    --text:#ECECF5; --muted:#9b93b8; --dim:#6f6890;
+    --purple:#b394ff; --purple-deep:#7c6ff0; --cyan:#3fd9ff;
+    --red:#ff6b6b; --yellow:#e7b94e; --green:#5fd7a7; --magenta:#d782ff;
+    --mono:'JetBrains Mono',ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    --maxw:1140px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:var(--sans); font-size:16px; line-height:1.65;
+    -webkit-font-smoothing:antialiased;
+    background-image:
+      radial-gradient(60rem 40rem at 82% -8%, rgba(124,111,240,.16), transparent 60%),
+      radial-gradient(50rem 36rem at 2% 8%, rgba(63,217,255,.10), transparent 55%);
+    background-attachment:fixed;
+  }
+  a{color:inherit;text-decoration:none}
+  img{max-width:100%;display:block}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px}
+  .mono{font-family:var(--mono)}
+  .eyebrow{
+    font-family:var(--mono); font-size:.74rem; letter-spacing:.22em;
+    text-transform:uppercase; color:var(--cyan); margin:0 0 14px;
+  }
+  h1,h2,h3{text-wrap:balance;line-height:1.12;margin:0}
+  p{margin:0}
+  .muted{color:var(--muted)}
+
+  /* ---------- nav ---------- */
+  header.nav{
+    position:sticky;top:0;z-index:50;
+    backdrop-filter:blur(12px);
+    background:rgba(12,10,18,.72);
+    border-bottom:1px solid var(--border);
+  }
+  .nav-inner{display:flex;align-items:center;gap:28px;height:62px}
+  .brand{display:flex;align-items:center;gap:10px;font-family:var(--mono);font-weight:700;font-size:1.05rem;letter-spacing:.02em}
+  .brand .mark{height:30px;width:auto;flex:0 0 auto;filter:drop-shadow(0 0 10px rgba(124,111,240,.4))}
+  .brand b{color:var(--purple)}
+  .nav-links{display:flex;gap:24px;margin-left:auto;font-family:var(--mono);font-size:.85rem}
+  .nav-links a{color:var(--muted);transition:color .15s}
+  .nav-links a:hover{color:var(--text)}
+  .btn{
+    font-family:var(--mono);font-size:.85rem;font-weight:600;
+    padding:9px 16px;border-radius:9px;border:1px solid transparent;
+    display:inline-flex;align-items:center;gap:8px;cursor:pointer;transition:transform .12s,box-shadow .2s,background .2s,border-color .2s;white-space:nowrap;
+  }
+  .btn-primary{background:linear-gradient(180deg,var(--purple),var(--purple-deep));color:#160f2e;box-shadow:0 6px 22px rgba(124,111,240,.4)}
+  .btn-primary:hover{transform:translateY(-1px);box-shadow:0 10px 30px rgba(124,111,240,.55)}
+  .btn-ghost{border-color:var(--border);color:var(--text);background:rgba(255,255,255,.02)}
+  .btn-ghost:hover{border-color:var(--purple);color:var(--purple)}
+  .nav .btn{padding:8px 14px}
+
+  /* ---------- hero ---------- */
+  .hero{padding:74px 0 56px}
+  .hero-grid{display:grid;grid-template-columns:1.02fr 1.18fr;gap:48px;align-items:center}
+  .hero-mark{height:88px;width:auto;margin-bottom:20px;filter:drop-shadow(0 8px 26px rgba(124,111,240,.5))}
+  .hero h1{font-family:var(--mono);font-size:clamp(2.2rem,4.6vw,3.6rem);font-weight:800;letter-spacing:-.02em}
+  .hero h1 .ac{color:var(--purple)}
+  .hero h1 .cur{color:var(--cyan);font-weight:400}
+  .hero .lede{margin:22px 0 14px;font-size:1.12rem;color:#cdc7e0;max-width:33ch}
+  .hero .sub{color:var(--muted);font-size:.98rem;max-width:42ch}
+  .cta{display:flex;gap:12px;margin-top:30px;flex-wrap:wrap}
+  .cta .btn{padding:12px 20px;font-size:.92rem}
+  .metaline{display:flex;gap:18px;margin-top:26px;font-family:var(--mono);font-size:.76rem;color:var(--dim);flex-wrap:wrap}
+  .metaline b{color:var(--muted);font-weight:600}
+
+  /* ---------- terminal mock ---------- */
+  .term{
+    border:1px solid var(--border);border-radius:14px;overflow:hidden;
+    background:linear-gradient(180deg,#14111f,#100d19);
+    box-shadow:0 30px 80px -30px rgba(0,0,0,.8),0 0 0 1px rgba(124,111,240,.08),0 0 60px -20px rgba(124,111,240,.35);
+  }
+  .term-bar{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--border);background:rgba(255,255,255,.02)}
+  .term-bar .dot{width:11px;height:11px;border-radius:50%}
+  .dot.r{background:#ff5f57}.dot.y{background:#febc2e}.dot.g{background:#28c840}
+  .term-bar .ttl{margin-left:8px;font-family:var(--mono);font-size:.76rem;color:var(--dim)}
+  .term-bar .tag{margin-left:auto;font-family:var(--mono);font-size:.7rem;color:var(--purple);border:1px solid var(--border);padding:2px 8px;border-radius:6px}
+  .term-body{display:grid;grid-template-columns:1fr 168px;min-height:330px}
+  .term-main{padding:16px 18px;font-family:var(--mono);font-size:.84rem;line-height:1.7}
+  .term-side{border-left:1px solid var(--border);padding:14px 13px;background:rgba(0,0,0,.18)}
+  .ln{opacity:0;transform:translateY(4px);animation:rise .01s forwards}
+  .userbox{background:#2b2b3d;color:#ececf5;padding:3px 9px;border-radius:6px;display:inline-block;margin-bottom:2px}
+  .think{color:var(--dim);font-style:italic;border-left:2px solid var(--line);padding-left:9px;margin:6px 0}
+  .tool{color:var(--cyan)}
+  .tool .b{color:var(--cyan)}
+  .res{color:var(--green)}
+  .res .c{color:var(--dim)}
+  .ans{color:#ded7f2;margin-top:6px}
+  .ans .li{color:var(--purple)}
+  .cursor{display:inline-block;width:8px;height:1.05em;background:var(--cyan);vertical-align:-2px;margin-left:1px;animation:blink 1.1s steps(1) infinite}
+  .workbar{margin-top:12px;display:flex;align-items:center;gap:9px;color:var(--muted);font-size:.78rem}
+  .wave{color:var(--purple);letter-spacing:1px}
+  .side-sec{font-family:var(--mono);font-size:.66rem;letter-spacing:.12em;text-transform:uppercase;color:var(--cyan);margin:0 0 7px}
+  .side-sec:not(:first-child){margin-top:15px}
+  .meter{font-family:var(--mono);font-size:.72rem;color:var(--muted);margin-bottom:3px;display:flex;justify-content:space-between}
+  .bar{height:5px;border-radius:3px;background:#241f38;overflow:hidden;margin-bottom:9px}
+  .bar i{display:block;height:100%;border-radius:3px}
+  canvas#spark{width:100%;height:34px;display:block}
+
+  @keyframes rise{to{opacity:1;transform:none}}
+  @keyframes blink{50%{opacity:0}}
+
+  /* ---------- section frame ---------- */
+  section{padding:64px 0;border-top:1px solid var(--border)}
+  .sec-head{max-width:640px;margin-bottom:40px}
+  .sec-head h2{font-family:var(--mono);font-size:clamp(1.5rem,3vw,2.1rem);font-weight:800;letter-spacing:-.01em}
+  .sec-head p{color:var(--muted);margin-top:14px;font-size:1.02rem}
+
+  /* provider strip */
+  .providers{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;align-items:center}
+  .chip{
+    font-family:var(--mono);font-size:.84rem;color:var(--muted);
+    border:1px solid var(--border);border-radius:999px;padding:8px 15px;
+    display:inline-flex;align-items:center;gap:9px;background:rgba(255,255,255,.015);transition:border-color .15s,color .15s;
+  }
+  .chip:hover{border-color:var(--purple);color:var(--text)}
+  .chip .d{width:8px;height:8px;border-radius:50%}
+  .strip-label{text-align:center;font-family:var(--mono);font-size:.72rem;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);margin-bottom:22px}
+
+  /* feature grid */
+  .features{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+  .card{
+    border:1px solid var(--border);border-radius:14px;padding:22px;
+    background:linear-gradient(180deg,rgba(255,255,255,.022),rgba(255,255,255,0));
+    transition:transform .16s,border-color .16s,box-shadow .16s;position:relative;overflow:hidden;
+  }
+  .card:hover{transform:translateY(-3px);border-color:var(--line);box-shadow:0 18px 40px -24px rgba(124,111,240,.6)}
+  .card .ic{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;margin-bottom:15px;font-family:var(--mono);font-weight:700;font-size:1rem;border:1px solid var(--border)}
+  .card h3{font-family:var(--mono);font-size:1.02rem;margin-bottom:9px}
+  .card p{color:var(--muted);font-size:.92rem}
+  .card code{font-family:var(--mono);font-size:.85em;color:var(--cyan);background:rgba(63,217,255,.08);padding:1px 5px;border-radius:5px}
+
+  /* architecture */
+  .arch{
+    border:1px solid var(--border);border-radius:16px;background:var(--panel);
+    padding:30px;overflow-x:auto;
+  }
+  .arch-flow{display:flex;align-items:stretch;gap:0;min-width:760px}
+  .col{display:flex;flex-direction:column;gap:12px;justify-content:center;flex:1}
+  .node{
+    font-family:var(--mono);font-size:.82rem;border:1px solid var(--border);border-radius:11px;
+    padding:12px 14px;background:var(--panel2);position:relative;
+  }
+  .node .t{font-weight:700;display:block}
+  .node .s{color:var(--dim);font-size:.72rem}
+  .node.you{border-color:var(--cyan);box-shadow:inset 0 0 0 1px rgba(63,217,255,.12)}
+  .node.prov{border-color:var(--purple);box-shadow:0 0 26px -8px rgba(124,111,240,.6)}
+  .node.acc{border-color:#3a5b4e}
+  .node.acc .t{color:var(--green)}
+  .node.mcp{border-color:#4a3a5e}.node.mcp .t{color:var(--magenta)}
+  .node.tool .t{color:var(--cyan)}
+  .arrowcol{display:flex;flex-direction:column;justify-content:center;align-items:center;flex:0 0 46px;color:var(--line)}
+  .arrowcol span{font-family:var(--mono);color:var(--dim);font-size:1.1rem}
+
+  /* tools */
+  .toolgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:18px}
+  .toolcat{border:1px solid var(--border);border-radius:14px;padding:20px 22px;background:var(--panel)}
+  .toolcat h3{font-family:var(--mono);font-size:.92rem;display:flex;align-items:center;gap:9px;margin-bottom:14px}
+  .toolcat h3 .d{width:9px;height:9px;border-radius:50%}
+  .toollist{display:flex;flex-wrap:wrap;gap:7px}
+  .toollist code{font-family:var(--mono);font-size:.78rem;color:#cfc8e6;border:1px solid var(--border);background:rgba(255,255,255,.02);padding:3px 8px;border-radius:6px}
+  .toolcat p{color:var(--muted);font-size:.85rem;margin-top:13px}
+
+  /* split feature (MCP) */
+  .split{display:grid;grid-template-columns:1.1fr 1fr;gap:34px;align-items:center}
+  .codeblock{
+    border:1px solid var(--border);border-radius:13px;overflow:hidden;background:#0f0c18;
+  }
+  .codeblock .cb-bar{display:flex;gap:7px;padding:10px 13px;border-bottom:1px solid var(--border);align-items:center}
+  .codeblock .cb-bar .ttl{margin-left:6px;font-family:var(--mono);font-size:.72rem;color:var(--dim)}
+  .codeblock .cb-bar .copy{margin-left:auto;font-family:var(--mono);font-size:.7rem;color:var(--muted);border:1px solid var(--border);border-radius:6px;padding:3px 9px;cursor:pointer;transition:.15s}
+  .codeblock .cb-bar .copy:hover{color:var(--cyan);border-color:var(--cyan)}
+  pre{margin:0;padding:16px 18px;overflow-x:auto;font-family:var(--mono);font-size:.83rem;line-height:1.7}
+  pre .c{color:var(--dim)} pre .p{color:var(--purple)} pre .y{color:var(--cyan)} pre .g{color:var(--green)}
+  .feat-list{list-style:none;padding:0;margin:18px 0 0;display:flex;flex-direction:column;gap:13px}
+  .feat-list li{display:flex;gap:12px;align-items:flex-start;color:var(--muted);font-size:.95rem}
+  .feat-list .mk{color:var(--magenta);font-family:var(--mono);margin-top:1px}
+
+  /* benchmark */
+  .bench-grid{display:grid;grid-template-columns:1.25fr 1fr;gap:34px;align-items:center}
+  .figure{border:1px solid var(--border);border-radius:13px;overflow:hidden;background:#fff}
+  .figure img{width:100%}
+  .figure .cap{font-family:var(--mono);font-size:.72rem;color:var(--dim);padding:9px 13px;background:var(--panel);border-top:1px solid var(--border)}
+  .verdict{border-left:3px solid var(--purple);padding:6px 0 6px 20px}
+  .verdict .big{font-family:var(--mono);font-size:1.25rem;font-weight:700;color:var(--text)}
+  .verdict .big b{color:var(--purple)}
+  .verdict p{color:var(--muted);margin-top:12px;font-size:.95rem}
+  .tierstats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:24px}
+  .stat{border:1px solid var(--border);border-radius:11px;padding:14px;text-align:center;background:var(--panel)}
+  .stat .n{font-family:var(--mono);font-size:1.5rem;font-weight:800;color:var(--cyan);font-variant-numeric:tabular-nums}
+  .stat .l{font-family:var(--mono);font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-top:5px}
+
+  /* install */
+  .install-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start}
+  .install-grid h3{font-family:var(--mono);font-size:1rem;margin-bottom:6px;display:flex;align-items:center;gap:9px}
+  .install-grid .lead{color:var(--muted);font-size:.9rem;margin-bottom:14px}
+  .pill{font-family:var(--mono);font-size:.66rem;border:1px solid var(--border);border-radius:6px;padding:2px 7px;color:var(--green)}
+
+  /* footer */
+  footer{border-top:1px solid var(--border);padding:40px 0 56px;color:var(--dim)}
+  .foot-inner{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;align-items:center;font-family:var(--mono);font-size:.8rem}
+  .foot-inner a{color:var(--muted)} .foot-inner a:hover{color:var(--purple)}
+
+  .reveal{opacity:0;transform:translateY(18px);transition:opacity .6s ease,transform .6s ease}
+  .reveal.in{opacity:1;transform:none}
+
+  @media (max-width:900px){
+    .hero-grid,.split,.bench-grid,.install-grid{grid-template-columns:1fr}
+    .features{grid-template-columns:1fr 1fr}
+    .toolgrid{grid-template-columns:1fr}
+    .nav-links{display:none}
+    .tierstats{grid-template-columns:1fr 1fr}
+  }
+  @media (max-width:560px){
+    .features{grid-template-columns:1fr}
+    .term-body{grid-template-columns:1fr}
+    .term-side{display:none}
+  }
+  @media (prefers-reduced-motion:reduce){
+    .ln{opacity:1;transform:none;animation:none}
+    .reveal{opacity:1;transform:none;transition:none}
+    .cursor{animation:none}
+    html{scroll-behavior:auto}
+  }
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="#top"><img class="mark" src="raiko-mark.png" alt="">raiko<b>·</b>toolkit</a>
+    <nav class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#tools">Tools</a>
+      <a href="#benchmark">Benchmark</a>
+      <a href="#install">Install</a>
+    </nav>
+    <a class="btn btn-ghost" href="https://github.com/ajaniramon/raiko-toolkit">GitHub ↗</a>
+    <a class="btn btn-primary" href="https://github.com/ajaniramon/raiko-toolkit/releases">Download</a>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- HERO -->
+  <section class="hero" style="border-top:none">
+    <div class="wrap hero-grid">
+      <div>
+        <img class="hero-mark" src="raiko-mark.png" alt="raiko-toolkit emblem">
+        <p class="eyebrow">Reimon AI Krazy Orchestrator</p>
+        <h1>Point an agent<br>at <span class="ac">anything</span><span class="cur">_</span></h1>
+        <p class="lede">A local-first, multi-provider LLM agent toolkit — wrapped in a terminal UI that actually feels good.</p>
+        <p class="sub">Your own GGUF models on the GPU via <span class="mono">llama.cpp</span>, a remote llama-server, or the big cloud APIs. One tool layer, an MCP server, and a benchmark that decides which local model is worth your VRAM.</p>
+        <div class="cta">
+          <a class="btn btn-primary" href="https://github.com/ajaniramon/raiko-toolkit/releases">Download for your OS</a>
+          <a class="btn btn-ghost" href="#install">Install with Python</a>
+        </div>
+        <div class="metaline">
+          <span><b>7</b> providers</span>
+          <span><b>local</b> GPU + cloud</span>
+          <span><b>MCP</b> server + backoffice</span>
+          <span>Windows · macOS · Linux</span>
+        </div>
+      </div>
+
+      <!-- terminal mock -->
+      <div class="term reveal" id="term">
+        <div class="term-bar">
+          <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+          <span class="ttl">raiko — local · qwen35-9b</span>
+          <span class="tag">⏺ live</span>
+        </div>
+        <div class="term-body">
+          <div class="term-main" id="tmain">
+            <div class="ln" data-d="0"><span class="userbox">how many .py files are in this repo, and total lines?</span></div>
+            <div class="ln think" data-d="1">💭 I'll find the .py files with find_files, then count their lines.</div>
+            <div class="ln tool" data-d="2"><span class="b">⏺</span> <b>find_files</b><span style="color:var(--dim)">(*.py)</span></div>
+            <div class="ln res" data-d="3">&nbsp;&nbsp;⎿ 27 files <span class="c">· 8,310 lines</span></div>
+            <div class="ln tool" data-d="4"><span class="b">⏺</span> <b>count_lines</b><span style="color:var(--dim)">(tui.py, tools.py, …)</span></div>
+            <div class="ln res" data-d="5">&nbsp;&nbsp;⎿ done <span class="c">· 6 files read</span></div>
+            <div class="ln ans" data-d="6">There are <b>27</b> Python files totalling <b>8,310</b> lines.<br><span class="li">•</span> tui.py is the largest at ~2.8k lines.</div>
+            <div class="workbar ln" data-d="7">
+              <span class="wave" id="wave">▁▂▃▅▇▅▃▂</span>
+              <span>generating · 12.4 tok/s · 1.8s</span>
+            </div>
+          </div>
+          <div class="term-side">
+            <p class="side-sec">GPU · util</p>
+            <canvas id="spark" width="280" height="68"></canvas>
+            <p class="side-sec">VRAM</p>
+            <div class="meter"><span>7.4 / 24 GB</span><span>31%</span></div>
+            <div class="bar"><i style="width:31%;background:linear-gradient(90deg,var(--purple),var(--cyan))"></i></div>
+            <p class="side-sec">Context</p>
+            <div class="meter"><span>3.1k / 131k</span><span>2%</span></div>
+            <div class="bar"><i style="width:6%;background:var(--cyan)"></i></div>
+            <p class="side-sec">Temp · power</p>
+            <div class="meter"><span>61°C</span><span>148 W</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PROVIDERS -->
+  <section style="padding:46px 0">
+    <div class="wrap">
+      <p class="strip-label">one wizard · seven providers</p>
+      <div class="providers">
+        <span class="chip"><span class="d" style="background:var(--cyan)"></span>nano-gpt</span>
+        <span class="chip"><span class="d" style="background:var(--red)"></span>llama.cpp · local GPU</span>
+        <span class="chip"><span class="d" style="background:var(--purple)"></span>llama.cpp · remote</span>
+        <span class="chip"><span class="d" style="background:var(--green)"></span>OpenAI</span>
+        <span class="chip"><span class="d" style="background:var(--yellow)"></span>Anthropic</span>
+        <span class="chip"><span class="d" style="background:var(--magenta)"></span>xAI</span>
+        <span class="chip"><span class="d" style="background:#6f8fff"></span>OpenRouter</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section id="features">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <p class="eyebrow">What's in the box</p>
+        <h2>A terminal agent that doesn't cut corners.</h2>
+        <p>Everything you'd want from a serious agent client — and a few things you didn't know you wanted — without leaving the terminal.</p>
+      </div>
+      <div class="features">
+        <div class="card reveal"><div class="ic" style="color:var(--cyan)">⌘</div><h3>Multi-provider TUI</h3><p>One wizard, seven providers: local <code>llama.cpp</code> on your GPU, a remote llama-server, or <code>OpenAI</code>, <code>Anthropic</code>, <code>xAI</code>, <code>OpenRouter</code>, <code>nano-gpt</code>. Back-navigation, last-used highlighting, per-provider favorites.</p></div>
+        <div class="card reveal"><div class="ic" style="color:var(--red)">▟</div><h3>Live GPU telemetry</h3><p>In local mode: a real-time GPU-util sparkline, VRAM / CPU / RAM bars, temperature, power and tok/s — straight from <code>nvidia-smi</code> and <code>psutil</code>.</p></div>
+        <div class="card reveal"><div class="ic" style="color:var(--purple)">⏺</div><h3>Clean widget chat</h3><p>Claude-Code-style: a gray user bubble, inline collapsible thinking, compact colored tool bullets with inline diffs, and an animated working bar while the model runs.</p></div>
+        <div class="card reveal"><div class="ic" style="color:var(--green)">⚿</div><h3>Permission gating</h3><p>Allow / always / deny prompts for any flagged operation — writes, exec, secrets. Opt out per-run with <code>--dangerously-skip-permissions</code>.</p></div>
+        <div class="card reveal"><div class="ic" style="color:var(--yellow)">✦</div><h3>Atlassian, built in</h3><p>Search, read and — behind a prompt — write <b>Jira</b> issues and <b>Confluence</b> pages (incl. search by author and paginated reads), all sharing one Atlassian token.</p></div>
+        <div class="card reveal"><div class="ic" style="color:var(--magenta)">⬡</div><h3>MCP tool server</h3><p>Serve the whole toolset over MCP with a web <b>backoffice</b> to enable/disable tools and author custom shell tools — no redeploy of the agent.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ARCHITECTURE -->
+  <section id="architecture">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <p class="eyebrow">How it fits together</p>
+        <h2>One agent core, every backend.</h2>
+        <p>The TUI and a headless agent both speak the OpenAI-compatible protocol, so the same tool layer drives any provider — local or cloud — and reaches the host through MCP.</p>
+      </div>
+      <div class="arch reveal">
+        <div class="arch-flow">
+          <div class="col">
+            <div class="node you"><span class="t">you</span><span class="s">terminal</span></div>
+            <div class="node"><span class="t">Textual TUI</span><span class="s">tui.py</span></div>
+            <div class="node"><span class="t">headless agent</span><span class="s">agent.py</span></div>
+          </div>
+          <div class="arrowcol"><span>→</span></div>
+          <div class="col">
+            <div class="node prov"><span class="t">provider</span><span class="s">OpenAI-compatible</span></div>
+          </div>
+          <div class="arrowcol"><span>→</span></div>
+          <div class="col">
+            <div class="node"><span class="t">nano-gpt</span></div>
+            <div class="node"><span class="t">llama.cpp</span><span class="s">local GPU</span></div>
+            <div class="node"><span class="t">llama.cpp</span><span class="s">remote URL</span></div>
+            <div class="node"><span class="t">OpenAI · Anthropic</span><span class="s">xAI · OpenRouter</span></div>
+          </div>
+          <div class="arrowcol"><span>↘</span></div>
+          <div class="col">
+            <div class="node tool"><span class="t">tools.py</span><span class="s">read-only + exec</span></div>
+            <div class="node acc"><span class="t">Jira · Confluence</span><span class="s">Atlassian token</span></div>
+            <div class="node mcp"><span class="t">MCP server</span><span class="s">+ web backoffice</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TOOLS -->
+  <section id="tools">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <p class="eyebrow">The tool layer</p>
+        <h2>Portable, stdlib-only, shared everywhere.</h2>
+        <p>The same tools back the TUI, the headless agent and the MCP server. Reads are free; writes and execution go through the permission prompt.</p>
+      </div>
+      <div class="toolgrid">
+        <div class="toolcat reveal">
+          <h3><span class="d" style="background:var(--cyan)"></span>Read-only</h3>
+          <div class="toollist">
+            <code>read_file</code><code>list_dir</code><code>grep</code><code>find_files</code><code>read_lines</code><code>head</code><code>tail</code><code>count_lines</code><code>stat_path</code><code>tree</code><code>find_in_files</code>
+          </div>
+          <p>Explore a codebase or filesystem with zero side effects.</p>
+        </div>
+        <div class="toolcat reveal">
+          <h3><span class="d" style="background:var(--yellow)"></span>Write &amp; execute · gated</h3>
+          <div class="toollist">
+            <code>write_file</code><code>edit_file</code><code>run_python</code><code>run_powershell</code><code>run_bash</code><code>vault_get_secret</code>
+          </div>
+          <p>Subprocess sandbox with timeouts and a denylist for genuinely destructive ops. Every flagged call prompts you first.</p>
+        </div>
+        <div class="toolcat reveal">
+          <h3><span class="d" style="background:var(--green)"></span>Web</h3>
+          <div class="toollist"><code>web_search</code><code>web_fetch</code></div>
+          <p>Tavily-ranked results with a synthesized answer, plus full-page extraction.</p>
+        </div>
+        <div class="toolcat reveal">
+          <h3><span class="d" style="background:var(--magenta)"></span>Jira &amp; Confluence</h3>
+          <div class="toollist"><code>jira_search</code><code>jira_get</code><code>jira_assign</code><code>jira_comment</code><code>confluence_search</code><code>confluence_user</code><code>confluence_get</code><code>confluence_create</code><code>confluence_comment</code></div>
+          <p>Search Confluence by author, see creators &amp; editors, and read long pages with pagination — all on one Atlassian token.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- MCP -->
+  <section>
+    <div class="wrap split">
+      <div class="reveal">
+        <div class="codeblock">
+          <div class="cb-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="ttl">serve the toolset over MCP</span><span class="copy" data-copy="python mcp_server/server.py --http --port 8765">copy</span></div>
+<pre><span class="c"># one command — MCP endpoint + web backoffice</span>
+<span class="p">python</span> mcp_server/server.py <span class="y">--http</span> <span class="y">--port</span> <span class="g">8765</span>
+
+<span class="c">#   MCP endpoint  →  http://&lt;host&gt;:8765/mcp</span>
+<span class="c">#   Backoffice    →  http://&lt;host&gt;:8765/</span></pre>
+        </div>
+      </div>
+      <div class="reveal">
+        <p class="eyebrow">MCP server + backoffice</p>
+        <h2 style="font-family:var(--mono);font-size:1.7rem;font-weight:800">Manage your tools live.</h2>
+        <ul class="feat-list">
+          <li><span class="mk">▸</span>Expose the whole toolset over the Model Context Protocol (streamable-HTTP).</li>
+          <li><span class="mk">▸</span><b style="color:var(--text)">Enable or disable</b> any tool and see the exact description the model receives.</li>
+          <li><span class="mk">▸</span>Author <b style="color:var(--text)">custom shell tools</b> — name + description + a command with <code style="font-family:var(--mono);color:var(--cyan)">{args}</code> — saved and hot-restarted, no agent redeploy.</li>
+          <li><span class="mk">▸</span>Point the TUI at it; remote tools are auto-discovered with a <code style="font-family:var(--mono);color:var(--cyan)">mac_</code> prefix.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- BENCHMARK -->
+  <section id="benchmark">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <p class="eyebrow">bench/</p>
+        <h2>A benchmark that actually decides.</h2>
+        <p>A decisive, reproducible tool-calling benchmark for local GGUF models: deterministic decoding, programmatic graders (no vibes), resumable runs, and a weighted leaderboard that tells you which model to burn your VRAM on.</p>
+      </div>
+      <div class="bench-grid">
+        <div class="figure reveal">
+          <img src="assets/leaderboard.png" alt="Overall leaderboard for the basic read-only tool tier">
+          <div class="cap">Overall leaderboard — basic tier (read-only tool tasks)</div>
+        </div>
+        <div class="verdict reveal">
+          <p class="big"><b>Ornith-1.0-9B</b> (Q4_K_M) is the overall #1.</p>
+          <p>A 9B model that tops the basic tier (96.9), stays top-tier on advanced (97.5), and runs away with hardcore — <b style="color:var(--text)">94.3</b>, the best score the benchmark has ever recorded — all while being fast and token-efficient. Uniquely, thinking doesn't hurt it.</p>
+          <p style="color:var(--dim);font-size:.85rem">The key finding: enabling a model's own "thinking" is neutral-to-helpful for a few, but <i>hurts most others</i> — sometimes by 20–30 points.</p>
+        </div>
+      </div>
+      <div class="tierstats reveal">
+        <div class="stat"><div class="n">202</div><div class="l">basic</div></div>
+        <div class="stat"><div class="n">214</div><div class="l">advanced</div></div>
+        <div class="stat"><div class="n">201</div><div class="l">hardcore</div></div>
+        <div class="stat"><div class="n">203</div><div class="l">circuit</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- INSTALL -->
+  <section id="install">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <p class="eyebrow">Get started</p>
+        <h2>Two ways in.</h2>
+        <p>Grab a standalone bundle — no Python needed — or install from source with pipx. First launch with no config drops you straight into the setup wizard.</p>
+      </div>
+      <div class="install-grid">
+        <div class="reveal">
+          <h3><span class="pill">no python</span> Download a release</h3>
+          <p class="lead">Bundles for Windows, macOS and Linux are attached to every release.</p>
+          <div class="codeblock">
+            <div class="cb-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="ttl">unpack &amp; run</span><span class="copy" data-copy="tar -xzf raiko-linux.tar.gz && ./raiko">copy</span></div>
+<pre><span class="c"># Windows: unzip raiko-windows.zip, then</span>
+raiko\raiko.exe
+
+<span class="c"># macOS / Linux:</span>
+<span class="p">tar</span> -xzf raiko-linux.tar.gz <span class="y">&amp;&amp;</span> ./raiko</pre>
+          </div>
+        </div>
+        <div class="reveal">
+          <h3><span class="pill">devs</span> Install with Python</h3>
+          <p class="lead">A console script named <code style="font-family:var(--mono);color:var(--cyan)">raiko</code> lands on your PATH.</p>
+          <div class="codeblock">
+            <div class="cb-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="ttl">pipx</span><span class="copy" data-copy="pipx install git+https://github.com/ajaniramon/raiko-toolkit">copy</span></div>
+<pre><span class="p">pipx</span> install git+https://github.com/ajaniramon/raiko-toolkit
+<span class="c"># then:</span> raiko
+
+<span class="c"># or, in a clone:</span>
+<span class="p">pip</span> install -e .   <span class="c">→  raiko</span></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap foot-inner">
+    <span>raiko-toolkit · <span style="color:var(--muted)">Reimon AI Krazy Orchestrator</span></span>
+    <span>
+      <a href="https://github.com/ajaniramon/raiko-toolkit">GitHub</a> ·
+      <a href="https://github.com/ajaniramon/raiko-toolkit/releases">Releases</a> ·
+      <a href="https://github.com/ggml-org/llama.cpp">llama.cpp</a>
+    </span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // ---- scroll reveal ----
+  var revs = [].slice.call(document.querySelectorAll('.reveal'));
+  if (reduce || !('IntersectionObserver' in window)) {
+    revs.forEach(function(el){el.classList.add('in');});
+  } else {
+    var io = new IntersectionObserver(function(es){
+      es.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target);} });
+    }, {threshold:.14});
+    revs.forEach(function(el){io.observe(el);});
+  }
+
+  // ---- terminal line reveal ----
+  var lines = [].slice.call(document.querySelectorAll('#tmain .ln'));
+  if (reduce) {
+    lines.forEach(function(l){l.style.opacity=1;l.style.transform='none';});
+  } else {
+    lines.forEach(function(l){
+      var d = parseInt(l.getAttribute('data-d')||'0',10);
+      l.style.animationDelay = (0.35 + d*0.55) + 's';
+      l.style.animationDuration = '0.5s';
+    });
+    // append a blinking cursor to the answer once it's shown
+    var ans = lines[6];
+    setTimeout(function(){ if(ans){var c=document.createElement('span');c.className='cursor';ans.appendChild(c);} }, (0.35+6*0.55+0.5)*1000);
+  }
+
+  // ---- working-bar wave ----
+  var wave = document.getElementById('wave');
+  if (wave && !reduce){
+    var frames=['▁▂▃▅▇▅▃▂','▂▃▅▇▅▃▂▁','▃▅▇▅▃▂▁▂','▅▇▅▃▂▁▂▃','▇▅▃▂▁▂▃▅','▅▃▂▁▂▃▅▇'];
+    var fi=0; setInterval(function(){fi=(fi+1)%frames.length; wave.textContent=frames[fi];}, 120);
+  }
+
+  // ---- GPU sparkline ----
+  var cv = document.getElementById('spark');
+  if (cv && cv.getContext){
+    var ctx = cv.getContext('2d');
+    var W=cv.width, H=cv.height, N=48;
+    var data=[]; for(var i=0;i<N;i++) data.push(20+Math.random()*30);
+    function draw(){
+      ctx.clearRect(0,0,W,H);
+      // grid
+      ctx.strokeStyle='rgba(255,255,255,.05)'; ctx.lineWidth=1;
+      for(var g=0;g<=2;g++){var y=H*g/2+0.5;ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+      var grad=ctx.createLinearGradient(0,0,W,0); grad.addColorStop(0,'#7c6ff0'); grad.addColorStop(1,'#3fd9ff');
+      // area
+      ctx.beginPath(); ctx.moveTo(0,H);
+      data.forEach(function(v,i){var x=i/(N-1)*W; var y=H-(v/100)*H; ctx.lineTo(x,y);});
+      ctx.lineTo(W,H); ctx.closePath();
+      var fill=ctx.createLinearGradient(0,0,0,H); fill.addColorStop(0,'rgba(124,111,240,.35)'); fill.addColorStop(1,'rgba(124,111,240,0)');
+      ctx.fillStyle=fill; ctx.fill();
+      // line
+      ctx.beginPath();
+      data.forEach(function(v,i){var x=i/(N-1)*W; var y=H-(v/100)*H; i?ctx.lineTo(x,y):ctx.moveTo(x,y);});
+      ctx.strokeStyle=grad; ctx.lineWidth=2; ctx.stroke();
+      // endpoint dot
+      var lx=W, ly=H-(data[N-1]/100)*H;
+      ctx.fillStyle='#3fd9ff'; ctx.beginPath(); ctx.arc(lx-2,ly,2.5,0,7); ctx.fill();
+    }
+    draw();
+    if(!reduce){ setInterval(function(){ data.shift(); var last=data[data.length-1]; var v=last+(Math.random()*24-12); v=Math.max(8,Math.min(78,v)); data.push(v); draw(); }, 700); }
+  }
+
+  // ---- copy buttons ----
+  [].slice.call(document.querySelectorAll('.copy')).forEach(function(b){
+    b.addEventListener('click', function(){
+      var t=b.getAttribute('data-copy')||'';
+      navigator.clipboard && navigator.clipboard.writeText(t);
+      var o=b.textContent; b.textContent='copied ✓'; b.style.color='#5fd7a7';
+      setTimeout(function(){b.textContent=o;b.style.color='';},1300);
+    });
+  });
+})();
+</script>
+</body>
+</html>

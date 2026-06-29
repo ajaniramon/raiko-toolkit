@@ -9,7 +9,7 @@
 ![Local](https://img.shields.io/badge/local-llama.cpp-ff5f5f)
 ![Tools](https://img.shields.io/badge/tools-MCP-46c2f5?logo=modelcontextprotocol&logoColor=white)
 ![Providers](https://img.shields.io/badge/providers-7-e7b94e)
-![Platform](https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS-9b93b8)
+![Platform](https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-9b93b8)
 
 </div>
 
@@ -42,19 +42,19 @@ benchmark** that decides which local model is actually worth running.
 
 ```mermaid
 flowchart LR
-  you([you]) --> tui["🖥️ Textual TUI<br/>(tui.py)"]
-  cli["⌨️ headless agent<br/>(agent.py)"]
+  you([you]) --> tui["Textual TUI<br>tui.py"]
+  cli["headless agent<br>agent.py"]
   tui -->|OpenAI-compatible| P{provider}
   cli -->|OpenAI-compatible| P
   P --> nano[nano-gpt]
-  P --> local["llama.cpp<br/>local GPU"]
-  P --> remote["llama.cpp<br/>remote URL"]
-  P --> cloud["OpenAI · Anthropic<br/>xAI · OpenRouter"]
-  tui --> T["🧰 tools.py<br/>read-only + exec tools"]
-  T --> A["🪐 Jira · Confluence<br/>(Atlassian token)"]
-  tui -->|mac_* prefix| M["🛰️ MCP server<br/>+ web backoffice"]
-  M --> T2["tools on the host<br/>(file · shell · python)"]
-  B["🏁 benchmark<br/>(bench/)"] --> local
+  P --> local["llama.cpp<br>local GPU"]
+  P --> remote["llama.cpp<br>remote URL"]
+  P --> cloud["OpenAI / Anthropic<br>xAI / OpenRouter"]
+  tui --> T["tools.py<br>read-only + exec tools"]
+  T --> A["Jira / Confluence<br>Atlassian token"]
+  tui -->|"mac_ prefix"| M["MCP server<br>+ web backoffice"]
+  M --> T2["tools on the host<br>file / shell / python"]
+  B["benchmark<br>bench/"] --> local
 ```
 
 ---
