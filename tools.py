@@ -475,10 +475,16 @@ def jira_search(query: str = "", jql: str = "", limit: int = 15, project: str = 
     if jql:
         jql_expr = jql
     elif query:
-        safe = query.replace('"', '\\"')
-        jql_expr = f'text ~ "{safe}"'
+        # In JQL, `text ~ "a b c"` requires ALL terms (so a natural phrase with one
+        # absent word matches nothing). Split into words and OR them for a forgiving
+        # search that ranks the relevant issue into the list.
+        words = [w for w in re.findall(r"\w+", query, re.UNICODE) if len(w) >= 4]
+        if not words:
+            words = re.findall(r"\w+", query, re.UNICODE) or [query]
+        clauses = " OR ".join(f'text ~ "{w}"' for w in words)
+        jql_expr = f"({clauses})"
         if project:
-            jql_expr = f'project = {project} AND {jql_expr}'
+            jql_expr = f"project = {project} AND {jql_expr}"
         # NOTE: don't append ORDER BY here — the CLI applies its own --order-by
         # (created, DESC) and a second ORDER BY clause makes the JQL invalid.
     else:
