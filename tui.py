@@ -154,7 +154,31 @@ def strip_tool_call_text(content):
     c = _TC_FUNC.sub("", c)
     return c.strip()
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tui_config.json")
+def _app_home():
+    """Writable base dir for user data (config + sessions).
+
+    A frozen PyInstaller bundle runs from a read-only / relocatable directory, so
+    __file__ points inside the bundle — not a safe place to persist anything (the
+    user never finds it and a reinstall wipes it). Write under ~/.raiko instead, the
+    same home the optional-dependency installers already use. Source/dev runs keep
+    using the repo directory so an existing tui_config.json is still picked up.
+    Override either with the RAIKO_HOME env var.
+    """
+    env = os.environ.get("RAIKO_HOME")
+    if env:
+        base = env
+    elif getattr(sys, "frozen", False):
+        base = os.path.join(os.path.expanduser("~"), ".raiko")
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    try:
+        os.makedirs(base, exist_ok=True)
+    except Exception:
+        pass
+    return base
+
+
+CONFIG_PATH = os.path.join(_app_home(), "tui_config.json")
 MAX_ITERATIONS = 8
 # How many times to retry a turn when the model leaks its tool call into the
 # thinking and emits no real tool_call (qwen sometimes "thinks" the call and stops).
@@ -270,16 +294,20 @@ def load_config():
 
 
 def save_config(cfg):
+    """Persist config to CONFIG_PATH. Returns True on success, False on failure so
+    callers can surface it (a silent failure is how a 'saved' config vanishes)."""
     try:
-        json.dump(cfg, open(CONFIG_PATH, "w", encoding="utf-8"), indent=2)
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+        return True
     except Exception:
-        pass
+        return False
 
 
 # ------------------------------ session storage ------------------------------
 # One JSON file per saved conversation under sessions/ (gitignored). A session
 # stores its provider + model so it can be restored exactly.
-SESSIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions")
+SESSIONS_DIR = os.path.join(_app_home(), "sessions")
 
 
 def _sessions_dir():
@@ -942,6 +970,16 @@ class ConfigureScreen(ModalScreen):
                 with Horizontal(classes="crow"):
                     yield Static("llama-server (local GPU)", classes="clabel")
                     yield Button("Download for my machine", id="dl_llama", variant="primary")
+                # llama.cpp models folder -> models.json `models_base` (walked for .gguf)
+                try:
+                    import models as _m
+                    _models_base = (_m._load_config() or {}).get("models_base", "")
+                except Exception:
+                    _models_base = ""
+                with Horizontal(classes="crow"):
+                    yield Static("llama.cpp models directory", classes="clabel")
+                    yield Input(value=_models_base, id="llama_models_dir",
+                                placeholder="folder with your .gguf models")
                 # ---- config fields ----
                 for header, fields in self.SECTIONS:
                     yield Static(header, classes="csec")
@@ -1034,13 +1072,25 @@ class ConfigureScreen(ModalScreen):
             if val == "":
                 continue
             _cfg_set(self.app.cfg, path, val)
-        save_config(self.app.cfg)
+        ok = save_config(self.app.cfg)
         self.app.cfg = load_config()   # re-export env (tokens, confluence, tavily)
-        self._status("[green]✓ Saved to tui_config.json.[/] Running jira init / checks…")
+        if not ok:
+            self._status(f"[red]✗ Could not write {CONFIG_PATH}[/]")
+            return
+        # llama.cpp models folder lives in models.json (read by bench/models.py), not
+        # tui_config.json — persist it there when set.
+        mdir = self.query_one("#llama_models_dir", Input).value.strip()
+        if mdir:
+            try:
+                import installers
+                installers.set_models_base_in_models_json(mdir)
+            except Exception:
+                pass
+        self._status(f"[green]✓ Saved to {CONFIG_PATH}.[/] Running jira init / checks…")
         self.run_worker(self._post_save, thread=True)
 
     def _post_save(self):
-        msgs = ["[green]✓ Saved to tui_config.json[/]"]
+        msgs = [f"[green]✓ Saved to {CONFIG_PATH}[/]"]
         j = self.app.cfg.get("jira", {})
         if j.get("api_token") and j.get("server") and j.get("login") and j.get("project"):
             import shutil as _sh

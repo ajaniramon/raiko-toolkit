@@ -136,22 +136,46 @@ def install_vault(log=print):
     return path, f"vault → {path}"
 
 
-def set_llama_path_in_models_json(path: str, repo_root: str = None):
-    """Point bench/models.json's llama_server at a freshly installed binary."""
+def _models_json_path(repo_root: str = None) -> str:
+    """The exact models.json path models.py reads (frozen-aware: ~/.raiko/models.json
+    in a bundle, repo bench/models.json from source)."""
+    if repo_root:
+        return os.path.join(repo_root, "bench", "models.json")
+    try:
+        import models
+        return models.CONFIG_PATH
+    except Exception:
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench", "models.json")
+
+
+def update_models_json(repo_root: str = None, **values) -> str:
+    """Merge the given keys into models.json (creating it if needed) and return its
+    path. Used by the wizard to persist the llama-server path and the models folder."""
     import json
-    root = repo_root or os.path.dirname(os.path.abspath(__file__))
-    p = os.path.join(root, "bench", "models.json")
+    p = _models_json_path(repo_root)
     try:
         cfg = json.load(open(p, encoding="utf-8")) if os.path.isfile(p) else {}
     except Exception:
         cfg = {}
-    cfg["llama_server"] = path
+    cfg.update({k: v for k, v in values.items() if v is not None})
+    cfg.setdefault("llama_server", "llama-server")
     cfg.setdefault("host", "127.0.0.1")
     cfg.setdefault("port", 25565)
     cfg.setdefault("models_base", "")
     cfg.setdefault("models", [])
     os.makedirs(os.path.dirname(p), exist_ok=True)
     json.dump(cfg, open(p, "w", encoding="utf-8"), indent=2)
+    return p
+
+
+def set_llama_path_in_models_json(path: str, repo_root: str = None):
+    """Point models.json's llama_server at a freshly installed binary."""
+    update_models_json(repo_root, llama_server=path)
+
+
+def set_models_base_in_models_json(base: str, repo_root: str = None):
+    """Point models.json's models_base at the folder that holds the user's .gguf files."""
+    update_models_json(repo_root, models_base=base)
 
 
 def install_llama_server(log=print):

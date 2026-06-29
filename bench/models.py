@@ -21,9 +21,30 @@ LLAMA_SERVER and MODELS_BASE environment variables.
 
 import json
 import os
+import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(HERE, "models.json")
+
+
+def _config_path():
+    """Where models.json lives. A frozen PyInstaller bundle runs from a read-only /
+    relocatable dir, so __file__ is not writable — use ~/.raiko (the app's user home,
+    overridable with RAIKO_HOME). Source runs keep using the repo's bench/models.json."""
+    env = os.environ.get("RAIKO_HOME")
+    if env:
+        base = env
+    elif getattr(sys, "frozen", False):
+        base = os.path.join(os.path.expanduser("~"), ".raiko")
+    else:
+        base = HERE
+    try:
+        os.makedirs(base, exist_ok=True)
+    except Exception:
+        pass
+    return os.path.join(base, "models.json")
+
+
+CONFIG_PATH = _config_path()
 
 
 def _load_config():
