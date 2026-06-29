@@ -701,14 +701,28 @@ def confluence_user(query: str = "") -> str:
     return "\n".join(f"{aid}\t{name}" for aid, name in users)
 
 
-def confluence_get(page_id: str = "", title: str = "", space: str = "") -> str:
+def confluence_get(page_id: str = "", title: str = "", space: str = "",
+                   max_chars: int = 12000, start: int = 0) -> str:
     """Fetch a Confluence page by `page_id` (or by `title`, optionally scoped to a
-    `space` key) and return its title, space, URL and body as readable text."""
+    `space` key) and return its title, space, URL and body as readable text.
+
+    Long pages are paginated, not silently cut: at most `max_chars` of body are
+    returned starting at character offset `start`. When more remains, the footer says
+    exactly how many chars were shown out of the total and the `start` to pass on the
+    next call to continue — so the whole page is reachable across calls."""
     ctx, err = _confluence_ctx()
     if err:
         return err
     base, email, token = ctx
     import requests
+    try:
+        max_chars = max(500, min(int(max_chars or 12000), 40000))
+    except (TypeError, ValueError):
+        max_chars = 12000
+    try:
+        start = max(0, int(start or 0))
+    except (TypeError, ValueError):
+        start = 0
     pid = (page_id or "").strip()
     if not pid:
         if not title.strip():
@@ -724,18 +738,34 @@ def confluence_get(page_id: str = "", title: str = "", space: str = "") -> str:
             return f"No page found with title ~ '{title}'."
         pid = (res[0].get("content", {}) or {}).get("id", "")
     try:
+        # body.view is rendered HTML (macros expanded) — far cleaner to read than
+        # body.storage, which carries raw <ac:…> macro markup. Keep storage as a
+        # fallback for the rare page where view comes back empty.
         r = requests.get(f"{base}/rest/api/content/{pid}",
-                         params={"expand": "body.storage,space"}, auth=(email, token), timeout=25)
+                         params={"expand": "body.view,body.storage,space"},
+                         auth=(email, token), timeout=25)
     except Exception as e:
         return f"ERROR: cannot reach Confluence: {e}"
     if r.status_code != 200:
         return f"ERROR: Confluence returned {r.status_code}: {r.text[:200]}"
     d = r.json()
     sp = (d.get("space", {}) or {}).get("key", "")
-    body = _html_to_text((d.get("body", {}).get("storage", {}) or {}).get("value", ""))
+    bodies = d.get("body", {}) or {}
+    raw = (bodies.get("view", {}) or {}).get("value", "") \
+        or (bodies.get("storage", {}) or {}).get("value", "")
+    body = _html_to_text(raw)
     url = f"{base}/spaces/{sp}/pages/{pid}"
-    out = f"# {d.get('title', '')}\nID: {pid}  ·  Space: {sp}\nURL: {url}\n\n{body}"
-    return out[:6000] + "\n… (truncated)" if len(out) > 6000 else out
+    header = f"# {d.get('title', '')}\nID: {pid}  ·  Space: {sp}\nURL: {url}\n\n"
+    total = len(body)
+    chunk = body[start:start + max_chars]
+    out = header + chunk
+    shown = start + len(chunk)
+    if shown < total:
+        out += (f"\n\n… [showing chars {start}–{shown} of {total}. "
+                f"Call confluence_get again with start={shown} to continue.]")
+    elif start:
+        out += f"\n\n[end of page — {total} chars total]"
+    return out
 
 
 def confluence_create(space: str = "", title: str = "", body: str = "") -> str:
@@ -1151,13 +1181,15 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "confluence_get",
-            "description": "Fetch a Confluence page by 'page_id' (or by 'title', optionally scoped to a 'space' key) and return its title, space, URL and body as readable text.",
+            "description": "Fetch a Confluence page by 'page_id' (or by 'title', optionally scoped to a 'space' key) and return its title, space, URL and body as readable text. Long pages are paginated: at most 'max_chars' of body are returned from offset 'start', and the footer tells you how many chars remain and the 'start' to pass next. To read a whole long page, keep calling with the 'start' from the previous footer until it says end of page — do NOT guess or invent the missing content.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "page_id": {"type": "string", "description": "The page id, e.g. '123456'."},
                     "title": {"type": "string", "description": "Page title to look up if you don't have the id."},
                     "space": {"type": "string", "description": "Optional space key to disambiguate a title lookup."},
+                    "max_chars": {"type": "integer", "description": "Max body chars to return per call (500-40000, default 12000)."},
+                    "start": {"type": "integer", "description": "Body character offset to start from (default 0). Use the value from the previous call's footer to continue a long page."},
                 },
                 "required": [],
             },
