@@ -31,6 +31,7 @@ benchmark** that decides which local model is actually worth running.
 | 📊 **Live telemetry** | In local mode, real-time GPU-util sparkline + VRAM/CPU/RAM bars + temp/power/tok-s, straight from `nvidia-smi` + `psutil`. |
 | 🧩 **Clean widget chat** | opencode/Claude-Code-style: box-less message widgets, inline dim thinking (collapsible), compact colored tool bullets + inline diffs, and an animated "working" bar (spinner + wiggling wave + elapsed/tok·s) while the model runs. |
 | 🔐 **Permission gating** | Claude-Code-style allow/always/deny prompts for flagged operations (`--dangerously-skip-permissions` to opt out). |
+| 🪐 **Atlassian integration** | Search, read and — behind a permission prompt — write **Jira** issues (`jira_search`/`jira_get`/`jira_assign`/`jira_comment`) and **Confluence** pages (`confluence_search`/`confluence_get`/`confluence_create`/`confluence_comment`), all sharing one Atlassian API token. |
 | 🛰️ **MCP tool server** | Serve the whole toolset over MCP (`/mcp`) with a web **backoffice** to enable/disable tools and author custom shell tools — no redeploy of the agent. |
 | 🏁 **Decisive benchmark** | 4 tiers, deterministic decoding, programmatic graders, resumable runs, and a leaderboard that tells you which model to burn your VRAM on. |
 | ⚙️ **Zero hardcoded secrets** | Every key/path/host lives in gitignored local config; the repo ships with safe placeholders and `*.example.json` templates. |
@@ -50,6 +51,7 @@ flowchart LR
   P --> remote["llama.cpp<br/>remote URL"]
   P --> cloud["OpenAI · Anthropic<br/>xAI · OpenRouter"]
   tui --> T["🧰 tools.py<br/>read-only + exec tools"]
+  T --> A["🪐 Jira · Confluence<br/>(Atlassian token)"]
   tui -->|mac_* prefix| M["🛰️ MCP server<br/>+ web backoffice"]
   M --> T2["tools on the host<br/>(file · shell · python)"]
   B["🏁 benchmark<br/>(bench/)"] --> local
