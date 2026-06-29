@@ -96,9 +96,15 @@ python tui.py --dangerously-skip-permissions
 - **Compaction**: when the context fills up the older turns are auto-summarized
   (`auto_compact` in config, threshold ~85%); run it anytime with `/compact`.
 - **Settings (`F2`)**: open and edit `tui_config.json` in-app, with JSON validation.
+- **Setup wizard (`/configure`, `--configure`, or first run)**: a guided screen for
+  provider keys, Jira/Confluence and MCP, with live **Validate** and a safe **Save** (a
+  blank field never clears an existing value). It also has **optional one-click downloads**:
+  the Jira CLI + Vault binaries, and **llama-server auto-matched to your machine** (detects
+  OS/arch + CUDA and grabs the right llama.cpp build) — or just skip them.
 - **Slash commands**: `/clear` (reset the conversation) · `/compact` (summarize older
-  turns) · `/system` (prompt editor) · `/tools` (tool log) · `/help`. Typing `/` pops a
-  filterable command menu above the input (↑/↓ to move, Tab to complete, Enter to run).
+  turns) · `/system` (prompt editor) · `/tools` (tool log) · `/configure` (setup wizard) ·
+  `/help`. Typing `/` pops a filterable command menu above the input (↑/↓ to move, Tab to
+  complete, Enter to run).
 - **MCP routing**: remote tools are auto-discovered and exposed with a `mac_` prefix.
 
 There's also a headless agent loop in **`agent.py`** (same providers via env vars) for

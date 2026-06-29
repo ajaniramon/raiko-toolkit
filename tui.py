@@ -251,9 +251,12 @@ def load_config():
     if cfg.get("tavily_api_key") and not os.environ.get("TAVILY_API_KEY"):
         os.environ["TAVILY_API_KEY"] = cfg["tavily_api_key"]
     # same for the Jira CLI token, so the jira_search/jira_get tools work in-session
-    jira_token = cfg.get("jira", {}).get("api_token") if isinstance(cfg.get("jira"), dict) else None
+    jira_cfg = cfg.get("jira", {}) if isinstance(cfg.get("jira"), dict) else {}
+    jira_token = jira_cfg.get("api_token")
     if jira_token and not os.environ.get("JIRA_API_TOKEN"):
         os.environ["JIRA_API_TOKEN"] = jira_token
+    if jira_cfg.get("cli_path") and not os.environ.get("JIRA_CLI"):
+        os.environ["JIRA_CLI"] = jira_cfg["cli_path"]
     # Confluence reuses the same Atlassian token (account-scoped); it only needs the
     # site base url + login email, which the confluence_* tools read from the env.
     conf = cfg.get("confluence", {}) if isinstance(cfg.get("confluence"), dict) else {}
@@ -926,9 +929,20 @@ class ConfigureScreen(ModalScreen):
         self._fields = [f for _, fs in self.SECTIONS for f in fs]
 
     def compose(self) -> ComposeResult:
+        import installers
         with Vertical(id="cbox"):
             yield Static("🛠  Configure raiko", id="ctitle")
             with VerticalScroll(id="cform"):
+                # ---- optional dependency downloads ----
+                yield Static("Optional downloads — click to fetch (skip = do nothing)", classes="csec")
+                yield Static(Text.from_markup(f"[dim]detected: {installers.describe()}[/]"), id="cdetect")
+                with Horizontal(classes="crow"):
+                    yield Static("Jira + Vault CLIs", classes="clabel")
+                    yield Button("Download", id="dl_clis", variant="primary")
+                with Horizontal(classes="crow"):
+                    yield Static("llama-server (local GPU)", classes="clabel")
+                    yield Button("Download for my machine", id="dl_llama", variant="primary")
+                # ---- config fields ----
                 for header, fields in self.SECTIONS:
                     yield Static(header, classes="csec")
                     for fid, label, pw, path in fields:
@@ -963,7 +977,46 @@ class ConfigureScreen(ModalScreen):
 
     def on_button_pressed(self, e: Button.Pressed):
         {"validate": self.action_validate, "save": self.action_save,
-         "close": self.action_close}[e.button.id]()
+         "close": self.action_close, "dl_clis": self.action_dl_clis,
+         "dl_llama": self.action_dl_llama}[e.button.id]()
+
+    def action_dl_clis(self):
+        self._status("[cyan]Downloading Jira CLI + Vault… (this can take a minute)[/]")
+        self.run_worker(self._dl_clis_worker, thread=True)
+
+    def _dl_clis_worker(self):
+        import installers
+        log = lambda m: self.app.call_from_thread(self._status, f"[dim]{m}[/]")
+        out = []
+        for name, fn in [("jira", installers.install_jira_cli), ("vault", installers.install_vault)]:
+            try:
+                path, msg = fn(log=log)
+            except Exception as ex:
+                path, msg = None, f"{name}: {type(ex).__name__}: {ex}"
+            out.append(("[green]✓[/] " if path else "[red]✗[/] ") + msg)
+            if path and name == "jira":
+                _cfg_set(self.app.cfg, ("jira", "cli_path"), path)
+                save_config(self.app.cfg)
+                os.environ["JIRA_CLI"] = path
+        self.app.call_from_thread(self._status, "  ".join(out))
+
+    def action_dl_llama(self):
+        self._status("[cyan]Downloading llama-server for your machine… (large, please wait)[/]")
+        self.run_worker(self._dl_llama_worker, thread=True)
+
+    def _dl_llama_worker(self):
+        import installers
+        log = lambda m: self.app.call_from_thread(self._status, f"[dim]{m}[/]")
+        try:
+            path, msg = installers.install_llama_server(log=log)
+        except Exception as ex:
+            path, msg = None, f"{type(ex).__name__}: {ex}"
+        if path:
+            try:
+                installers.set_llama_path_in_models_json(path)
+            except Exception:
+                pass
+        self.app.call_from_thread(self._status, ("[green]✓[/] " if path else "[red]✗[/] ") + msg)
 
     def _status(self, markup):
         try:
