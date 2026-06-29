@@ -849,6 +849,213 @@ class SettingsScreen(ModalScreen):
             pass
 
 
+def _cfg_get(cfg, path):
+    cur = cfg
+    for k in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(k)
+    return cur
+
+
+def _cfg_set(cfg, path, val):
+    cur = cfg
+    for k in path[:-1]:
+        nxt = cur.get(k)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[k] = nxt
+        cur = nxt
+    cur[path[-1]] = val
+
+
+class ConfigureScreen(ModalScreen):
+    """Guided setup wizard: fill provider keys + Jira/Confluence/MCP, validate the
+    credentials live, and save everything to tui_config.json (merging, not clobbering).
+    Reachable via `python tui.py --configure`, the `/configure` command, or on first run."""
+
+    CSS = """
+    ConfigureScreen { align: center middle; }
+    #cbox { width: 96; height: 90%; border: round #5f5fd7; padding: 1 2; background: $surface; }
+    #ctitle { text-style: bold; color: #b394ff; }
+    #cform { height: 1fr; }
+    .csec { text-style: bold; color: #00d7ff; margin-top: 1; }
+    .crow { height: 3; }
+    .clabel { width: 34; content-align: left middle; color: #b7b7c8; }
+    .crow Input { width: 1fr; }
+    #cstatus { height: auto; max-height: 8; margin-top: 1; color: #9b93b8; border-top: solid #44475a; }
+    #cbtns { height: 3; align: right middle; }
+    #cbtns Button { margin-left: 2; }
+    """
+    BINDINGS = [("escape", "close", "Close"), ("ctrl+s", "save", "Save"), ("ctrl+t", "validate", "Validate")]
+
+    # (input id, label, password, cfg path)
+    SECTIONS = [
+        ("Providers — API keys (leave blank to skip)", [
+            ("k_nano", "nano-gpt key", True, ("nano", "api_key")),
+            ("k_openai", "OpenAI key", True, ("openai", "api_key")),
+            ("k_anthropic", "Anthropic key", True, ("anthropic", "api_key")),
+            ("k_xai", "xAI key", True, ("xai", "api_key")),
+            ("k_openrouter", "OpenRouter key", True, ("openrouter", "api_key")),
+            ("remote_url", "Remote llama.cpp base_url", False, ("remote", "base_url")),
+        ]),
+        ("Web search", [
+            ("tavily", "Tavily API key", True, ("tavily_api_key",)),
+        ]),
+        ("Jira (Atlassian)", [
+            ("jira_token", "API token (shared with Confluence)", True, ("jira", "api_token")),
+            ("jira_server", "Server URL (e.g. https://x.atlassian.net)", False, ("jira", "server")),
+            ("jira_login", "Login email", False, ("jira", "login")),
+            ("jira_project", "Default project key", False, ("jira", "project")),
+        ]),
+        ("Confluence", [
+            ("conf_base", "Base URL (…/wiki)", False, ("confluence", "base_url")),
+            ("conf_email", "Login email", False, ("confluence", "email")),
+            ("conf_space", "Default space key", False, ("confluence", "space")),
+        ]),
+        ("MCP tool server", [
+            ("mcp_enabled", "Enabled (yes/no)", False, ("mcp", "enabled")),
+            ("mcp_url", "URL", False, ("mcp", "url")),
+            ("mcp_prefix", "Tool prefix", False, ("mcp", "prefix")),
+        ]),
+    ]
+
+    def __init__(self, startup=False):
+        super().__init__()
+        self.startup = startup
+        self._fields = [f for _, fs in self.SECTIONS for f in fs]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="cbox"):
+            yield Static("🛠  Configure raiko", id="ctitle")
+            with VerticalScroll(id="cform"):
+                for header, fields in self.SECTIONS:
+                    yield Static(header, classes="csec")
+                    for fid, label, pw, path in fields:
+                        cur = _cfg_get(self.app.cfg, path)
+                        if isinstance(cur, bool):
+                            cur = "yes" if cur else "no"
+                        with Horizontal(classes="crow"):
+                            yield Static(label, classes="clabel")
+                            yield Input(value="" if cur is None else str(cur),
+                                        password=pw, id=fid)
+            yield Static(Text.from_markup("[dim]Ctrl+S save · Ctrl+T validate · Esc close[/]"), id="cstatus")
+            with Horizontal(id="cbtns"):
+                yield Button("Validate", id="validate", variant="primary")
+                yield Button("Save", id="save", variant="success")
+                yield Button("Close", id="close", variant="error")
+
+    def _collect(self):
+        """Return a dict {path: value} from the current input boxes (typed)."""
+        out = {}
+        for fid, label, pw, path in self._fields:
+            val = self.query_one(f"#{fid}", Input).value.strip()
+            if path == ("mcp", "enabled"):
+                out[path] = val.lower() in ("yes", "y", "true", "1", "on")
+            else:
+                out[path] = val
+        return out
+
+    def action_close(self):
+        self.app.pop_screen()
+        if self.startup:
+            self.app._route_startup()
+
+    def on_button_pressed(self, e: Button.Pressed):
+        {"validate": self.action_validate, "save": self.action_save,
+         "close": self.action_close}[e.button.id]()
+
+    def _status(self, markup):
+        try:
+            self.query_one("#cstatus", Static).update(Text.from_markup(markup))
+        except Exception:
+            pass
+
+    def action_save(self):
+        values = self._collect()
+        for path, val in values.items():
+            if path == ("mcp", "enabled"):
+                _cfg_set(self.app.cfg, path, val)   # real yes/no toggle
+                continue
+            # a blank box NEVER clears an existing value — only non-empty input updates
+            if val == "":
+                continue
+            _cfg_set(self.app.cfg, path, val)
+        save_config(self.app.cfg)
+        self.app.cfg = load_config()   # re-export env (tokens, confluence, tavily)
+        self._status("[green]✓ Saved to tui_config.json.[/] Running jira init / checks…")
+        self.run_worker(self._post_save, thread=True)
+
+    def _post_save(self):
+        msgs = ["[green]✓ Saved to tui_config.json[/]"]
+        j = self.app.cfg.get("jira", {})
+        if j.get("api_token") and j.get("server") and j.get("login") and j.get("project"):
+            import shutil as _sh
+            jbin = os.environ.get("JIRA_CLI") or _sh.which("jira") or r"C:\utils\jira\bin\jira.exe"
+            if os.path.isfile(jbin) or _sh.which(jbin):
+                try:
+                    import subprocess
+                    p = subprocess.run([jbin, "init", "--installation", "cloud",
+                                        "--server", j["server"], "--login", j["login"],
+                                        "--project", j["project"], "--auth-type", "basic", "--force"],
+                                       capture_output=True, text=True, encoding="utf-8",
+                                       errors="replace", timeout=60, stdin=subprocess.DEVNULL)
+                    ok = "configuration generated" in (p.stdout + p.stderr).lower()
+                    msgs.append("[green]✓ jira init done[/]" if ok
+                                else "[yellow]jira init needs a board — run it once manually[/]")
+                except Exception as e:
+                    msgs.append(f"[yellow]jira init skipped: {type(e).__name__}[/]")
+            else:
+                msgs.append("[yellow]jira CLI not found (install it / set JIRA_CLI)[/]")
+        self.app.call_from_thread(self._status, "  ·  ".join(msgs))
+
+    def action_validate(self):
+        self._status("[cyan]Validating credentials…[/]")
+        values = self._collect()
+        self.run_worker(lambda: self._validate_worker(values), thread=True)
+
+    def _validate_worker(self, values):
+        lines = []
+        # cloud provider keys → models.list()
+        for prov, fid in [("nano", "k_nano"), ("openai", "k_openai"), ("anthropic", "k_anthropic"),
+                          ("xai", "k_xai"), ("openrouter", "k_openrouter")]:
+            key = values.get((prov, "api_key"), "")
+            if not key:
+                continue
+            base = self.app.cfg.get(prov, {}).get("base_url", "")
+            try:
+                OpenAI(base_url=base, api_key=key).models.list()
+                lines.append(f"[green]✓[/] {prov}")
+            except Exception as e:
+                lines.append(f"[red]✗[/] {prov} ({type(e).__name__})")
+        # jira token via `jira me`
+        token = values.get(("jira", "api_token"), "")
+        if token:
+            os.environ["JIRA_API_TOKEN"] = token
+            try:
+                import tools
+                ok, out = tools._run_jira(["me"])
+                lines.append(f"[green]✓[/] jira ({out.strip().splitlines()[-1][:40]})" if ok and "@" in out
+                             else "[yellow]?[/] jira token set (run jira init to use it)")
+            except Exception:
+                lines.append("[yellow]?[/] jira token set")
+        # confluence via user/current
+        cbase = values.get(("confluence", "base_url"), "").rstrip("/")
+        cmail = values.get(("confluence", "email"), "")
+        if cbase and cmail and token:
+            try:
+                import requests
+                r = requests.get(f"{cbase}/rest/api/user/current", auth=(cmail, token), timeout=15)
+                lines.append("[green]✓[/] confluence" if r.status_code == 200
+                             else f"[red]✗[/] confluence ({r.status_code})")
+            except Exception as e:
+                lines.append(f"[red]✗[/] confluence ({type(e).__name__})")
+        if values.get(("tavily_api_key",)):
+            lines.append("[green]✓[/] tavily (set)")
+        self.app.call_from_thread(self._status,
+                              "  ".join(lines) if lines else "[yellow]Nothing to validate — fill some fields.[/]")
+
+
 class StartScreen(Screen):
     """First screen when saved sessions exist: continue one or start fresh."""
 
@@ -1323,6 +1530,7 @@ SLASH_COMMANDS = [
     ("/compact", "summarize older turns to free up context"),
     ("/system", "edit the system prompt (also F6)"),
     ("/tools", "open the tool-call log (also F4)"),
+    ("/configure", "setup wizard: keys · Jira · Confluence · MCP"),
     ("/help", "list the available commands"),
 ]
 
@@ -1513,13 +1721,16 @@ class MainScreen(Screen):
             self.app.push_screen(SystemPromptScreen())
         elif cmd == "tools":
             self.app.push_screen(ToolLogScreen())
+        elif cmd in ("configure", "config", "setup"):
+            self.app.push_screen(ConfigureScreen())
         elif cmd == "help":
             self.app.write_log(Panel(Text.from_markup(
                 "[bold]Commands[/]\n"
-                "  [cyan]/clear[/]    clear the conversation context (keeps the system prompt)\n"
-                "  [cyan]/compact[/]  summarize older turns to free up context\n"
-                "  [cyan]/system[/]   edit the system prompt (also F6)\n"
-                "  [cyan]/tools[/]    open the tool-call log (also F4)\n"
+                "  [cyan]/clear[/]      clear the conversation context (keeps the system prompt)\n"
+                "  [cyan]/compact[/]    summarize older turns to free up context\n"
+                "  [cyan]/system[/]     edit the system prompt (also F6)\n"
+                "  [cyan]/tools[/]      open the tool-call log (also F4)\n"
+                "  [cyan]/configure[/]  setup wizard (keys · Jira · Confluence · MCP)\n"
                 "[dim]Footer: F2 settings · F3 swap model · F4 tools · F6 prompt · Esc stop[/]"),
                 title="[bold magenta]help[/]", border_style="magenta", expand=False))
         else:
@@ -1535,12 +1746,13 @@ class AgentTUI(App):
     BINDINGS = [("ctrl+c", "quit", "Quit"), ("ctrl+l", "clear_log", "Clear")]
 
     def __init__(self, cfg, cli_provider=None, cli_model=None, cli_demo=False,
-                 skip_permissions=False):
+                 skip_permissions=False, cli_configure=False):
         super().__init__()
         self.cfg = cfg
         self.cli_provider = cli_provider
         self.cli_model = cli_model
         self.cli_demo = cli_demo
+        self.cli_configure = cli_configure
         self.skip_permissions = skip_permissions
         self.provider = None
         self.model = None
@@ -1586,6 +1798,13 @@ class AgentTUI(App):
             self.push_screen(MainScreen())
             self.set_timer(0.6, self._demo_fill)
             return
+        if getattr(self, "cli_configure", False):
+            self.push_screen(ConfigureScreen(startup=True))
+            return
+        self._route_startup()
+
+    def _route_startup(self):
+        """Normal startup routing (also re-run after the configure wizard closes)."""
         if self.cli_provider and self.cli_model:
             self.provider = self.cli_provider
             self.choose_model(self.cli_model)
@@ -2485,11 +2704,13 @@ def main():
     ap.add_argument("--provider", choices=["nano", "local"])
     ap.add_argument("--model")
     ap.add_argument("--demo", action="store_true", help="example screen (no model needed)")
+    ap.add_argument("--configure", action="store_true", help="open the setup wizard on startup")
     ap.add_argument("--dangerously-skip-permissions", action="store_true",
                     dest="skip_perms", help="auto-allow flagged operations (no prompts)")
     args = ap.parse_args()
     AgentTUI(load_config(), cli_provider=args.provider, cli_model=args.model,
-             cli_demo=args.demo, skip_permissions=args.skip_perms).run()
+             cli_demo=args.demo, skip_permissions=args.skip_perms,
+             cli_configure=args.configure).run()
 
 
 if __name__ == "__main__":
