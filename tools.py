@@ -513,6 +513,37 @@ def jira_get(key: str) -> str:
     return out or f"(no details returned for {key})"
 
 
+def jira_assign(key: str = "", assignee: str = "") -> str:
+    """Assign a Jira issue to a user. `assignee` is an email or an EXACT display
+    name; use 'me' for yourself, 'default' for the project default, or 'x' to
+    unassign. (Write operation — the TUI asks for permission first.)"""
+    if not key.strip() or not assignee.strip():
+        return "ERROR: provide both 'key' (e.g. 'PROJ-1') and 'assignee'."
+    who = assignee.strip()
+    if who.lower() in ("me", "self", "myself"):
+        ok, mine = _run_jira(["me"])
+        if not ok:
+            return mine
+        who = (mine.strip().splitlines() or [""])[-1].strip()
+        if not who:
+            return "ERROR: could not resolve the current user via `jira me`."
+    ok, out = _run_jira(["issue", "assign", key.strip(), who])
+    if not ok:
+        return out
+    return out or f"Assigned {key.strip()} to {who}."
+
+
+def jira_comment(key: str = "", body: str = "") -> str:
+    """Add a comment to a Jira issue. (Write operation — the TUI asks for
+    permission first.)"""
+    if not key.strip() or not body.strip():
+        return "ERROR: provide both 'key' (e.g. 'PROJ-1') and 'body'."
+    ok, out = _run_jira(["issue", "comment", "add", key.strip(), body, "--no-input"])
+    if not ok:
+        return out
+    return out or f"Comment added to {key.strip()}."
+
+
 TOOLS = [
     {
         "type": "function",
@@ -820,6 +851,36 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "jira_assign",
+            "description": "Assign a Jira issue to a user. The assignee is an email or an EXACT display name; use 'me' for yourself, 'default' for the project default, or 'x' to unassign. This MODIFIES the issue.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "The issue key, e.g. 'PROJ-1234'."},
+                    "assignee": {"type": "string", "description": "Email, exact display name, 'me', 'default', or 'x' (unassign)."},
+                },
+                "required": ["key", "assignee"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "jira_comment",
+            "description": "Add a comment to a Jira issue. This MODIFIES the issue (posts a visible comment).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "The issue key, e.g. 'PROJ-1234'."},
+                    "body": {"type": "string", "description": "The comment text. Supports newlines."},
+                },
+                "required": ["key", "body"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "web_fetch",
             "description": "Fetch a URL and return its main page text (cleaned). Use to read a full page — e.g. a result returned by web_search, or a known link. Returns up to max_chars characters.",
             "parameters": {
@@ -859,6 +920,8 @@ DISPATCH = {
     "web_fetch": web_fetch,
     "jira_search": jira_search,
     "jira_get": jira_get,
+    "jira_assign": jira_assign,
+    "jira_comment": jira_comment,
 }
 
 

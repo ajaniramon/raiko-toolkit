@@ -2123,6 +2123,17 @@ class AgentTUI(App):
                         args["allow_unsafe"] = True
                     else:
                         return f"DENIED by user: refused to run flagged operation '{snip}'"
+        if name in ("jira_assign", "jira_comment") and not self.skip_permissions:
+            key = args.get("key", "?")
+            if name == "jira_assign":
+                snip = f"assign {key} → {args.get('assignee', '?')}"
+                code = f"jira issue assign {key} {args.get('assignee', '')}"
+            else:
+                body = (args.get("body", "") or "")
+                snip = f"comment on {key}: {body[:80]}" + ("…" if len(body) > 80 else "")
+                code = f"jira issue comment add {key} \"{body[:300]}\""
+            if not self.ask_permission(name, snip, code):
+                return f"DENIED by user: refused Jira write '{snip}'"
         if name in ("write_file", "edit_file") and isinstance(args, dict) and args.get("path"):
             return self._run_with_diff(name, args)
         return self._with_timeout(name, lambda: call_tool(name, args))

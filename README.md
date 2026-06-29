@@ -124,10 +124,12 @@ a page's full text (Tavily Extract). Set `tavily_api_key` in `tui_config.json` (
 `TAVILY_API_KEY` env var); both are also exposed over the MCP server.
 
 **Jira:** `jira_search` — find issues by free text or raw JQL · `jira_get` — fetch one
-issue by key. Both shell out to the [`ankitpokhrel/jira-cli`](https://github.com/ankitpokhrel/jira-cli)
+issue by key · `jira_assign` — (re)assign an issue · `jira_comment` — post a comment. All
+shell out to the [`ankitpokhrel/jira-cli`](https://github.com/ankitpokhrel/jira-cli)
 binary, so run `jira init` once (`--installation cloud --server <url> --login <email>
---project <KEY>`) and export your `JIRA_API_TOKEN`. The tools auto-locate `jira` on the
-`PATH` or via the `JIRA_CLI` env var.
+--project <KEY>`) and set the token in `tui_config.json` (`jira.api_token`, gitignored) or
+the `JIRA_API_TOKEN` env var. The tools auto-locate `jira` on the `PATH` or via `JIRA_CLI`.
+The two **write** tools (`jira_assign`, `jira_comment`) go through the permission prompt.
 
 Execution tools run in a subprocess with **timeouts** and a **denylist** that blocks only
 genuinely destructive operations (`rm -rf`, `format`, `shutdown`, registry edits); normal
