@@ -580,9 +580,33 @@ def _text_to_storage(body: str) -> str:
     return "".join(f"<p>{_xml_escape(p).replace(chr(10), '<br/>')}</p>" for p in paras) or "<p></p>"
 
 
-def confluence_search(query: str = "", cql: str = "", limit: int = 15, space: str = "") -> str:
-    """Search Confluence. Free text in `query` (words matched against page text) or a
-    raw `cql` expression. Returns a plain list of id · type · [space] · title."""
+def _confluence_user_ids(base, email, token, name, limit=5):
+    """Resolve a person's name (or part of it) to their Atlassian accountId(s).
+    Returns a list of (accountId, displayName). CQL `creator`/`contributor` need an
+    accountId — a display name is not accepted — so author searches go through here.
+    Uses /rest/api/search/user, the only endpoint that still honours user fields."""
+    import requests
+    try:
+        r = requests.get(f"{base}/rest/api/search/user",
+                         params={"cql": f'user.fullname ~ "{name}"', "limit": limit},
+                         auth=(email, token), timeout=20)
+        if r.status_code != 200:
+            return []
+        out = []
+        for it in r.json().get("results", []):
+            u = it.get("user") or {}
+            if u.get("accountId"):
+                out.append((u["accountId"], u.get("displayName") or "?"))
+        return out
+    except Exception:
+        return []
+
+
+def confluence_search(query: str = "", cql: str = "", limit: int = 15,
+                      space: str = "", author: str = "") -> str:
+    """Search Confluence pages. Free text in `query`, an `author` name to restrict to
+    that person's pages, an optional `space` key, or a raw `cql` expression. Each result
+    shows id · type · [space] · title · creator (date) · last editor (date)."""
     ctx, err = _confluence_ctx()
     if err:
         return err
@@ -592,36 +616,89 @@ def confluence_search(query: str = "", cql: str = "", limit: int = 15, space: st
         n = max(1, min(int(limit or 15), 50))
     except (TypeError, ValueError):
         n = 15
+
     if cql:
         q = cql
-    elif query:
-        words = [w for w in re.findall(r"\w+", query, re.UNICODE) if len(w) >= 4] \
-            or re.findall(r"\w+", query, re.UNICODE) or [query]
-        q = "type = page AND (" + " OR ".join(f'text ~ "{w}"' for w in words) + ")"
-        if space:
-            q = f'space = "{space}" AND ' + q
     else:
-        return "ERROR: provide either `query` (free text) or `cql`."
+        parts = ["type = page"]
+        if query:
+            words = [w for w in re.findall(r"\w+", query, re.UNICODE) if len(w) >= 4] \
+                or re.findall(r"\w+", query, re.UNICODE) or [query]
+            parts.append("(" + " OR ".join(f'text ~ "{w}"' for w in words) + ")")
+        if space:
+            parts.append(f'space = "{space}"')
+        if author:
+            users = _confluence_user_ids(base, email, token, author)
+            if not users:
+                return (f"No Confluence user matched '{author}'. Use confluence_user to "
+                        f"find the exact name / accountId, then retry.")
+            ids = ", ".join(f'"{aid}"' for aid, _ in users)
+            parts.append(f"creator in ({ids})")
+        if len(parts) == 1:   # only "type = page" — nothing to actually search on
+            return "ERROR: provide `query`, `author`, `space`, or a raw `cql`."
+        q = " AND ".join(parts)
+
+    # Content search (/rest/api/content/search) still honours `creator`/`contributor`
+    # — unlike /rest/api/search — and lets us expand the author + dates.
     try:
-        r = requests.get(f"{base}/rest/api/search", params={"cql": q, "limit": n},
+        r = requests.get(f"{base}/rest/api/content/search",
+                         params={"cql": q, "limit": n, "expand": "history,version,space"},
                          auth=(email, token), timeout=25)
     except Exception as e:
         return f"ERROR: cannot reach Confluence: {e}"
     if r.status_code != 200:
-        return f"ERROR: Confluence returned {r.status_code}: {r.text[:200]}"
+        return f"ERROR: Confluence returned {r.status_code}: {r.text[:200]}  (CQL: {q})"
     results = r.json().get("results", [])
     if not results:
         return f"No pages matched. (CQL: {q})"
-    lines = []
-    for it in results:
-        c = it.get("content", {}) or {}
+    lines = [f"# CQL: {q}"]
+    for c in results:
         cid = c.get("id", "?")
         typ = c.get("type", "?")
-        title = it.get("title") or c.get("title") or "(untitled)"
-        container = (it.get("resultGlobalContainer", {}) or {}).get("title", "")
-        lines.append(f"{cid}\t{typ}\t[{container}]\t{title}")
+        title = c.get("title") or "(untitled)"
+        sp = (c.get("space") or {}).get("key", "")
+        hist = c.get("history") or {}
+        creator = ((hist.get("createdBy") or {}).get("displayName")) or "?"
+        created = (hist.get("createdDate") or "")[:10]
+        ver = c.get("version") or {}
+        editor = ((ver.get("by") or {}).get("displayName")) or "?"
+        edited = (ver.get("when") or "")[:10]
+        lines.append(f"{cid}\t{typ}\t[{sp}]\t{title}\tby {creator} ({created})"
+                     f" · last edit {editor} ({edited})")
     out = "\n".join(lines)
     return out[:4000] + "\n… (truncated)" if len(out) > 4000 else out
+
+
+def confluence_user(query: str = "") -> str:
+    """Resolve a Confluence/Atlassian person by name (or part of it) to their accountId.
+    Returns accountId · display name · email (when visible). Use this to get the
+    accountId for an author search when a name alone isn't matching."""
+    ctx, err = _confluence_ctx()
+    if err:
+        return err
+    base, email, token = ctx
+    if not query:
+        return "ERROR: provide a name (or part of it) in 'query'."
+    users = _confluence_user_ids(base, email, token, query, limit=10)
+    if not users:
+        return f"No user matched '{query}'."
+    # _confluence_user_ids drops email; re-query once to surface it when visible
+    import requests
+    try:
+        r = requests.get(f"{base}/rest/api/search/user",
+                         params={"cql": f'user.fullname ~ "{query}"', "limit": 10},
+                         auth=(email, token), timeout=20)
+        rows = r.json().get("results", []) if r.status_code == 200 else []
+    except Exception:
+        rows = []
+    if rows:
+        lines = []
+        for it in rows:
+            u = it.get("user") or {}
+            if u.get("accountId"):
+                lines.append(f'{u["accountId"]}\t{u.get("displayName","?")}\t{u.get("email","") or ""}')
+        return "\n".join(lines) if lines else f"No user matched '{query}'."
+    return "\n".join(f"{aid}\t{name}" for aid, name in users)
 
 
 def confluence_get(page_id: str = "", title: str = "", space: str = "") -> str:
@@ -1042,16 +1119,31 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "confluence_search",
-            "description": "Search Confluence pages by free text in 'query' (matched against page content) or a raw CQL expression in 'cql'. Returns a plain list of matching pages (id, type, space, title). Use this to find a page when you don't know its id.",
+            "description": "Search Confluence pages by free text in 'query', and/or by 'author' (a person's name — restricts results to pages that person created), optionally scoped to a 'space' key. Or pass a raw CQL expression in 'cql'. Each result line includes the page id, type, space, title, creator (+date) and last editor (+date), so you can tell who wrote a page. To find pages someone authored, pass their name in 'author' (it is resolved to an accountId automatically); if the name doesn't match, use confluence_user first.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Free-text search, e.g. 'release checklist'."},
-                    "cql": {"type": "string", "description": "Raw CQL, e.g. 'space = ENG AND title ~ \"runbook\"'. Overrides 'query'."},
+                    "author": {"type": "string", "description": "A person's name (or part of it). Restricts to pages CREATED by that person. Resolved to an accountId via the user directory."},
+                    "cql": {"type": "string", "description": "Raw CQL, e.g. 'space = ENG AND title ~ \"runbook\"'. Overrides query/author/space."},
                     "limit": {"type": "integer", "description": "Max pages to return (1-50, default 15)."},
-                    "space": {"type": "string", "description": "Optional space key to scope a free-text query."},
+                    "space": {"type": "string", "description": "Optional space key to scope the search."},
                 },
                 "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "confluence_user",
+            "description": "Resolve a Confluence/Atlassian person by name (or part of it) to their accountId. Returns accountId, display name and email (when visible). Use this when an author search by name isn't matching, to get the exact accountId.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "A person's name or part of it, e.g. 'Ramon'."},
+                },
+                "required": ["query"],
             },
         },
     },
@@ -1147,6 +1239,7 @@ DISPATCH = {
     "jira_assign": jira_assign,
     "jira_comment": jira_comment,
     "confluence_search": confluence_search,
+    "confluence_user": confluence_user,
     "confluence_get": confluence_get,
     "confluence_create": confluence_create,
     "confluence_comment": confluence_comment,
