@@ -436,6 +436,75 @@ def web_fetch(url: str, max_chars: int = 8000) -> str:
     return content or "(no content extracted)"
 
 
+def _jira_bin() -> str:
+    """Locate the Jira CLI binary (ankitpokhrel/jira-cli)."""
+    import shutil
+    return (os.environ.get("JIRA_CLI")
+            or shutil.which("jira")
+            or r"C:\utils\jira\bin\jira.exe")
+
+
+def _run_jira(args: list) -> tuple:
+    """Run the jira CLI with the given args. Returns (ok, output)."""
+    bin_path = _jira_bin()
+    if not (os.path.isfile(bin_path) or __import__("shutil").which(bin_path)):
+        return False, ("ERROR: Jira CLI not found. Install ankitpokhrel/jira-cli "
+                       "and/or set the JIRA_CLI environment variable to its path.")
+    try:
+        proc = subprocess.run([bin_path] + args, capture_output=True, text=True, timeout=40)
+    except subprocess.TimeoutExpired:
+        return False, "ERROR: jira command timed out (40s)"
+    except Exception as e:
+        return False, f"ERROR: {type(e).__name__}: {e}"
+    out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    out = re.sub(r"\x1b\[[0-9;]*m", "", out)  # strip ANSI colour codes
+    if proc.returncode != 0 and not proc.stdout:
+        return False, f"ERROR: jira exited {proc.returncode}: {out[:500] or '(no output)'}"
+    return True, out
+
+
+def jira_search(query: str = "", jql: str = "", limit: int = 15, project: str = "") -> str:
+    """Search Jira issues. Pass free text in `query` (matched against summary,
+    description and comments) or a raw `jql` expression for full control. Returns a
+    plain table of key · status · summary, newest first."""
+    try:
+        n = max(1, min(int(limit or 15), 50))
+    except (TypeError, ValueError):
+        n = 15
+    if jql:
+        jql_expr = jql
+    elif query:
+        safe = query.replace('"', '\\"')
+        jql_expr = f'text ~ "{safe}"'
+        if project:
+            jql_expr = f'project = {project} AND {jql_expr}'
+        jql_expr += " ORDER BY created DESC"
+    else:
+        return "ERROR: provide either `query` (free text) or `jql`."
+    ok, out = _run_jira(["issue", "list", "--jql", jql_expr, "--plain", "--no-headers",
+                         "--columns", "key,status,summary", "--paginate", f"0:{n}"])
+    if not ok:
+        return out
+    if not out:
+        return f"No issues matched. (JQL: {jql_expr})"
+    if len(out) > 4000:
+        out = out[:4000] + "\n… (truncated)"
+    return out
+
+
+def jira_get(key: str) -> str:
+    """Fetch a single Jira issue by its key (e.g. 'PROJ-1234') and return its
+    details (summary, status, assignee, description) in plain text."""
+    if not key or not key.strip():
+        return "ERROR: provide an issue key, e.g. 'PROJ-1234'."
+    ok, out = _run_jira(["issue", "view", key.strip(), "--plain"])
+    if not ok:
+        return out
+    if len(out) > 6000:
+        out = out[:6000] + "\n… (truncated)"
+    return out or f"(no details returned for {key})"
+
+
 TOOLS = [
     {
         "type": "function",
@@ -714,6 +783,35 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "jira_search",
+            "description": "Search Jira issues. Give free text in 'query' (matched against summary, description and comments) or a raw JQL expression in 'jql' for full control. Returns a plain list of matching issues (key, status, summary), newest first. Use this to find an issue when you don't know its key.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Free-text search, e.g. 'progressives lose decimals'."},
+                    "jql": {"type": "string", "description": "Raw JQL, e.g. 'project = ABC AND status = Open'. Overrides 'query'."},
+                    "limit": {"type": "integer", "description": "Max issues to return (1-50, default 15)."},
+                    "project": {"type": "string", "description": "Optional project key to scope a free-text query."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "jira_get",
+            "description": "Fetch a single Jira issue by its key (e.g. 'PROJ-1234') and return its full details: summary, status, assignee, reporter and description.",
+            "parameters": {
+                "type": "object",
+                "properties": {"key": {"type": "string", "description": "The issue key, e.g. 'PROJ-1234'."}},
+                "required": ["key"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "web_fetch",
             "description": "Fetch a URL and return its main page text (cleaned). Use to read a full page — e.g. a result returned by web_search, or a known link. Returns up to max_chars characters.",
             "parameters": {
@@ -751,6 +849,8 @@ DISPATCH = {
     "vault_get_secret": vault_get_secret,
     "web_search": web_search,
     "web_fetch": web_fetch,
+    "jira_search": jira_search,
+    "jira_get": jira_get,
 }
 
 

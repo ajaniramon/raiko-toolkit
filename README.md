@@ -123,6 +123,12 @@ A portable, stdlib-only tool layer shared by the TUI, the agent, and the MCP ser
 a page's full text (Tavily Extract). Set `tavily_api_key` in `tui_config.json` (or the
 `TAVILY_API_KEY` env var); both are also exposed over the MCP server.
 
+**Jira:** `jira_search` — find issues by free text or raw JQL · `jira_get` — fetch one
+issue by key. Both shell out to the [`ankitpokhrel/jira-cli`](https://github.com/ankitpokhrel/jira-cli)
+binary, so run `jira init` once (`--installation cloud --server <url> --login <email>
+--project <KEY>`) and export your `JIRA_API_TOKEN`. The tools auto-locate `jira` on the
+`PATH` or via the `JIRA_CLI` env var.
+
 Execution tools run in a subprocess with **timeouts** and a **denylist** that blocks only
 genuinely destructive operations (`rm -rf`, `format`, `shutdown`, registry edits); normal
 subprocess/network use is allowed. Anything flagged triggers a permission prompt in the TUI.
