@@ -250,6 +250,10 @@ def load_config():
     # make the web_search tool's key available to tools.py without leaking it in source
     if cfg.get("tavily_api_key") and not os.environ.get("TAVILY_API_KEY"):
         os.environ["TAVILY_API_KEY"] = cfg["tavily_api_key"]
+    # same for the Jira CLI token, so the jira_search/jira_get tools work in-session
+    jira_token = cfg.get("jira", {}).get("api_token") if isinstance(cfg.get("jira"), dict) else None
+    if jira_token and not os.environ.get("JIRA_API_TOKEN"):
+        os.environ["JIRA_API_TOKEN"] = jira_token
     return cfg
 
 
@@ -2119,6 +2123,17 @@ class AgentTUI(App):
                         args["allow_unsafe"] = True
                     else:
                         return f"DENIED by user: refused to run flagged operation '{snip}'"
+        if name in ("jira_assign", "jira_comment") and not self.skip_permissions:
+            key = args.get("key", "?")
+            if name == "jira_assign":
+                snip = f"assign {key} → {args.get('assignee', '?')}"
+                code = f"jira issue assign {key} {args.get('assignee', '')}"
+            else:
+                body = (args.get("body", "") or "")
+                snip = f"comment on {key}: {body[:80]}" + ("…" if len(body) > 80 else "")
+                code = f"jira issue comment add {key} \"{body[:300]}\""
+            if not self.ask_permission(name, snip, code):
+                return f"DENIED by user: refused Jira write '{snip}'"
         if name in ("write_file", "edit_file") and isinstance(args, dict) and args.get("path"):
             return self._run_with_diff(name, args)
         return self._with_timeout(name, lambda: call_tool(name, args))
