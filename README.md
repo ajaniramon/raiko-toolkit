@@ -236,7 +236,34 @@ python bench/make_charts.py          # needs matplotlib
 
 ---
 
-## 🚀 Quickstart
+## 📦 Install
+
+**Download a release (no Python needed).** Grab the bundle for your OS from the
+[Releases](https://github.com/ajaniramon/raiko-toolkit/releases) page, unpack it and run:
+
+```bash
+# Windows: unzip raiko-windows.zip, then
+raiko\raiko.exe
+# macOS: tar -xzf raiko-macos.tar.gz, then
+./raiko
+```
+
+First launch with no config drops you straight into the **setup wizard** (or run
+`raiko --configure` any time) to enter your keys, Jira/Confluence and MCP.
+
+**Or install with Python** (devs):
+
+```bash
+pipx install git+https://github.com/ajaniramon/raiko-toolkit   # then: raiko
+# or, in a clone:  pip install -e .   →  raiko
+```
+
+> Cloud-only installs don't need llama.cpp; **local GPU mode** uses `bench/models.json`
+> and a [`llama-server`](https://github.com/ggml-org/llama.cpp) built with tool support.
+> Cutting a release: push a tag `vX.Y.Z` and the `release` workflow builds the Windows +
+> macOS bundles and attaches them automatically.
+
+## 🚀 Quickstart (from source)
 
 ```bash
 git clone <your-fork-url> raiko-toolkit && cd raiko-toolkit
@@ -247,7 +274,7 @@ pip install -r requirements.txt
 copy tui_config.example.json tui_config.json          # add your API keys
 copy bench\models.example.json bench\models.json       # add your .gguf paths
 
-python tui.py
+python tui.py            # or: python tui.py --configure
 ```
 
 > **Local llama.cpp** needs [`llama-server`](https://github.com/ggml-org/llama.cpp) built
