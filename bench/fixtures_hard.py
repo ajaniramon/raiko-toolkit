@@ -181,7 +181,11 @@ def build_sandbox(base_dir: str) -> dict:
         p = root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
-    return {"root": str(root), "truth": _truth(root)}
+    import fixtures_hard_extra
+    extra = fixtures_hard_extra.merge_into(root)
+    truth = _truth(root)
+    truth.update(extra)
+    return {"root": str(root), "truth": truth}
 
 
 def _truth(root: Path) -> dict:

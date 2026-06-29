@@ -157,6 +157,12 @@ decoding (`temperature=0, seed=42`), **programmatic graders** (no vibes), **resu
 runs (per-task JSONL + fsync), thinking **ON/OFF** per model, and a weighted leaderboard
 (`70% correctness · 20% tool-selection · 10% efficiency − penalties`).
 
+Each tier now ships **≥200 tasks** (basic 202 · advanced 214 · hardcore 201 · circuit 203).
+The basic/advanced/hardcore graders are correct-by-construction — every expected answer is
+computed from the same fixture data the sandbox is built from. The circuit tier is mostly
+**local Vault retrieval** (200 seeded KV secrets read back) plus a few **real Mac SSH
+copies**, which stay few on purpose since they hit live infra.
+
 ```bash
 python bench/run_bench.py            # basic tier (read-only tools)
 python bench/run_adv.py              # advanced: write/edit/python/powershell
@@ -167,7 +173,9 @@ python bench/run_hard.py             # hardcore: real dev/sysadmin incidents
 It serves one model at a time (auto `--jinja`, kills between runs so VRAM never stacks),
 and any model is one line in `bench/models.json`.
 
-### Overall leaderboard — basic tier (104 read-only tool tasks)
+### Overall leaderboard — basic tier (read-only tool tasks)
+
+> The charts below predate the expansion to ≥200 tasks/tier; rerun the suite to refresh them.
 
 ![Leaderboard](assets/leaderboard.png)
 

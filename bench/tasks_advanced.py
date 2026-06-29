@@ -119,4 +119,8 @@ def build_tasks_adv():
         "Append a new line with the text 'ERROR new failure' to the end of logs/app.log.",
         EDIT, lambda a, r: "error new failure" in (rf(r, "logs/app.log") or "").lower())
 
+    # extra generated families (write/edit/python/powershell at scale)
+    from tasks_advanced_extra import build_extra_adv
+    tasks.extend(build_extra_adv())
+
     return tasks

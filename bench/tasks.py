@@ -323,4 +323,9 @@ def build_tasks(truth: dict) -> list:
             "Using the model-listing tool, is there a folder named 'checkpoints' in F:\\models? Answer yes or no.",
             ["list_models"], lambda a: yes(a) if "checkpoints" in T["model_entries"] else no(a))
 
+    # extra generated families (employees/products/services/extra logs & modules)
+    if "x_line_counts" in T:
+        from tasks_extra import build_extra_basic
+        tasks.extend(build_extra_basic(T))
+
     return tasks

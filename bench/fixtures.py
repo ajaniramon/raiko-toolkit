@@ -16,6 +16,8 @@ import re
 import shutil
 from pathlib import Path
 
+import fixtures_extra
+
 # ---------------------------------------------------------------------------
 # Source data (both the files and the real aggregates come from here)
 # ---------------------------------------------------------------------------
@@ -214,7 +216,11 @@ def build_sandbox(base_dir: str) -> dict:
         p.write_text(content, encoding="utf-8")
     for d in EMPTY_DIRS:
         (root / d).mkdir(parents=True, exist_ok=True)
-    return {"root": str(root), "truth": _compute_truth(root)}
+    # lay down the extra BASIC-tier content and merge its ground truth
+    extra = fixtures_extra.merge_into(root)
+    truth = _compute_truth(root)
+    truth.update(extra)
+    return {"root": str(root), "truth": truth}
 
 
 def _count_in_file(path: Path, pattern: str) -> int:
@@ -268,10 +274,11 @@ def _compute_truth(root: Path) -> dict:
     # logs
     err_app = _count_in_file(root / "logs/app.log", r"\bERROR\b")
     warn_app = _count_in_file(root / "logs/app.log", r"\bWARN\b")
-    err_total = sum(_count_in_file(root / "logs" / n, r"\bERROR\b")
-                    for n in ["app.log", "server.log", "debug.log"])
-    warn_total = sum(_count_in_file(root / "logs" / n, r"\bWARN\b")
-                     for n in ["app.log", "server.log", "debug.log"])
+    # scan EVERY log in logs/ so these stay correct as more logs are added
+    logs_dir_files = sorted((root / "logs").glob("*.log"))
+    err_total = sum(_count_in_file(p, r"\bERROR\b") for p in logs_dir_files)
+    warn_total = sum(_count_in_file(p, r"\bWARN\b") for p in logs_dir_files)
+    log_most_errors = max(logs_dir_files, key=lambda p: _count_in_file(p, r"\bERROR\b")).name
 
     # per-file line counts used by the tasks
     line_counts = {rel: len((root / rel).read_text(encoding="utf-8").splitlines())
@@ -331,7 +338,7 @@ def _compute_truth(root: Path) -> dict:
         "inv_max_qty_item": inv_max, "inv_total_qty": inv_total_qty,
         # logs
         "err_app": err_app, "warn_app": warn_app, "err_total": err_total,
-        "warn_total": warn_total, "log_most_errors": "app.log",
+        "warn_total": warn_total, "log_most_errors": log_most_errors,
         # markers / lines
         "notes_markers": NOTES_MARKERS, "omega_line": OMEGA_LINE,
         "line_counts": line_counts, "word_counts": word_counts,

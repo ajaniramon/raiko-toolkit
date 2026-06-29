@@ -226,6 +226,12 @@ def main():
     all_runs = []
     try:
         vaultsvc.seed_secret("secret/data/mac", SECRET, log=console.print)
+        # seed the deterministic vault-only retrieval secrets (quietly)
+        from tasks_circuit import extra_vault_secrets
+        extra = extra_vault_secrets()
+        for path, data in extra.items():
+            vaultsvc.seed_secret(path, data, log=lambda *_: None)
+        console.print(f"[vault] seeded {len(extra)} extra retrieval secrets")
         os.environ["VAULT_ADDR"] = vaultsvc.ADDR
         os.environ["VAULT_TOKEN"] = vaultsvc.TOKEN
 
