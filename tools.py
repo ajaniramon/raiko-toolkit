@@ -451,7 +451,8 @@ def _run_jira(args: list) -> tuple:
         return False, ("ERROR: Jira CLI not found. Install ankitpokhrel/jira-cli "
                        "and/or set the JIRA_CLI environment variable to its path.")
     try:
-        proc = subprocess.run([bin_path] + args, capture_output=True, text=True, timeout=40)
+        proc = subprocess.run([bin_path] + args, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=40)
     except subprocess.TimeoutExpired:
         return False, "ERROR: jira command timed out (40s)"
     except Exception as e:
@@ -478,7 +479,8 @@ def jira_search(query: str = "", jql: str = "", limit: int = 15, project: str = 
         jql_expr = f'text ~ "{safe}"'
         if project:
             jql_expr = f'project = {project} AND {jql_expr}'
-        jql_expr += " ORDER BY created DESC"
+        # NOTE: don't append ORDER BY here — the CLI applies its own --order-by
+        # (created, DESC) and a second ORDER BY clause makes the JQL invalid.
     else:
         return "ERROR: provide either `query` (free text) or `jql`."
     ok, out = _run_jira(["issue", "list", "--jql", jql_expr, "--plain", "--no-headers",
