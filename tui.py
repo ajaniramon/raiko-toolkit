@@ -1512,13 +1512,36 @@ class Notice(Static):
     """A one-off, box-less line in the chat (connect line, errors, status notes)."""
 
 
+# Assistant Markdown with small colored bullets (Claude-Code-ish) instead of Rich's
+# default uncoloured "•" / mixed glyphs.
+from rich.markdown import ListItem as _RichListItem
+from rich._loop import loop_first as _loop_first
+from rich.segment import Segment as _Seg
+from rich.style import Style as _Sty
+
+_BULLET_STYLE = _Sty(color="#b48eff", bold=True)
+
+
+class _ColorBulletItem(_RichListItem):
+    def render_bullet(self, console, options):
+        render_options = options.update(width=options.max_width - 3)
+        lines = console.render_lines(self.elements, render_options, style=self.style)
+        bullet, padding, nl = _Seg(" • ", _BULLET_STYLE), _Seg("   ", _BULLET_STYLE), _Seg("\n")
+        for first, line in _loop_first(lines):
+            yield bullet if first else padding
+            yield from line
+            yield nl
+
+
+class ChatMarkdown(Markdown):
+    """Rich Markdown whose unordered-list bullets are small colored circles."""
+    elements = {**Markdown.elements, "list_item_open": _ColorBulletItem}
+
+
 class UserMsg(Static):
+    """The user's message — a gray rounded block with white text (Claude-Code style)."""
     def __init__(self, text):
-        t = Text()
-        t.append("› ", style="bold #5f8fff")
-        t.append("you\n", style="bold #5f8fff")
-        t.append(text)
-        super().__init__(t)
+        super().__init__(Text(text))
 
 
 class ThinkingBlock(Vertical):
@@ -1571,7 +1594,7 @@ class AssistantBlock(Vertical):
 
     def finalize(self, md):
         if md:
-            self.body.update(Markdown(md))
+            self.body.update(ChatMarkdown(md))
         else:
             self.body.display = False
 
@@ -1703,8 +1726,8 @@ class MainScreen(Screen):
     #main { width: 3fr; padding: 0 1; }
     #chat { height: 1fr; scrollbar-size-vertical: 1; }
     #working { height: 1; padding: 0 1; }
-    UserMsg { height: auto; margin: 1 0 0 0; }
-    AssistantBlock { height: auto; }
+    UserMsg { height: auto; background: #2b2b3d; color: #ececf5; padding: 0 1; margin: 1 0 1 0; }
+    AssistantBlock { height: auto; margin: 0 0 1 0; }
     ThinkingBlock { height: auto; }
     ThinkingBlock .thead { height: 1; }
     ThinkingBlock .tbody { height: auto; color: #9b93b8; text-style: italic; border-left: solid #44475a; padding-left: 1; }
@@ -2357,7 +2380,7 @@ class AgentTUI(App):
         self.write_log(Panel(Text.from_markup(
             f"[bold green]✦ context {tag}[/] — {before_n} → {after_n} messages "
             f"(older turns summarized)"), border_style="green", expand=False))
-        self.write_log(Panel(Markdown(self.messages[1]["content"]),
+        self.write_log(Panel(ChatMarkdown(self.messages[1]["content"]),
                              title="[bold magenta]summary[/]", border_style="magenta"))
         self.update_ctx()
         self.save_session()
