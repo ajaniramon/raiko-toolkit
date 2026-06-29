@@ -21,6 +21,8 @@ jobs:
             artifact: raiko-windows
           - os: macos-latest
             artifact: raiko-macos
+          - os: ubuntu-latest
+            artifact: raiko-linux
     steps:
       - uses: actions/checkout@v4
 
@@ -40,8 +42,8 @@ jobs:
         if: runner.os == 'Windows'
         run: Compress-Archive -Path dist/raiko/* -DestinationPath ${{ matrix.artifact }}.zip
 
-      - name: Package (macOS)
-        if: runner.os == 'macOS'
+      - name: Package (macOS / Linux)
+        if: runner.os == 'macOS' || runner.os == 'Linux'
         run: tar -czf ${{ matrix.artifact }}.tar.gz -C dist/raiko .
 
       - name: Upload artifact
