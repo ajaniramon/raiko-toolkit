@@ -159,8 +159,16 @@ def install_llama_server(log=print):
     Returns (path_or_None, message)."""
     d = detect()
     ot = {"windows": "win", "macos": "macos", "linux": "ubuntu"}[d["os"]]
+    # Windows ships .zip; Linux/macOS ship .tar.gz. The CPU build is tagged "cpu"
+    # only on Windows — on Linux/macOS the generic build is the plain
+    # llama-…-bin-<os>-<arch> asset (no accelerator token).
+    ext = ".zip" if d["os"] == "windows" else ".tar.gz"
+    # Niche accelerator variants we can't assume the machine has; "cudart-…" is the
+    # CUDA runtime, not the server, so require the asset to start with "llama-".
+    EXCLUDE = ("rocm", "sycl", "openvino", "vulkan", "s390x", "musa", "hip")
     assets = [(n, u) for n, u in _gh_latest_assets("ggml-org/llama.cpp")
-              if f"-bin-{ot}-" in n and n.endswith(".zip")]
+              if f"-bin-{ot}-" in n and n.endswith(ext) and n.startswith("llama-")
+              and d["arch"] in n and not any(x in n for x in EXCLUDE)]
 
     def cuda_of(name):
         m = re.search(r"cuda-([0-9]+\.[0-9]+)", name)
@@ -173,7 +181,10 @@ def install_llama_server(log=print):
         if usable:
             chosen = max(usable, key=lambda c: cuda_of(c[0]))
     if not chosen:
-        cpu = [(n, u) for n, u in assets if "cpu" in n and (d["arch"] in n or "x64" in n)]
+        # CPU / generic build: prefer an explicit "cpu" tag (Windows), else the
+        # plain non-CUDA asset (Linux/macOS).
+        cpu = [(n, u) for n, u in assets if "cuda" not in n]
+        cpu.sort(key=lambda c: (0 if "cpu" in c[0] else 1, len(c[0])))
         chosen = cpu[0] if cpu else None
     if not chosen:
         return None, f"no llama-server build for {d['os']}/{d['arch']}"
