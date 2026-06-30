@@ -207,22 +207,30 @@ DEFAULT_CONFIG = {
                   "model": "claude-opus-4-8", "ctx_window": 200000,
                   "models": ["claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
                              "claude-sonnet-4-6", "claude-haiku-4-5", "claude-fable-5"]},
+    # Google Gemini via its OpenAI-compatible endpoint (same openai SDK)
+    "gemini": {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+               "api_key": "", "model": "gemini-2.5-flash", "ctx_window": 1048576,
+               "reasoning_effort": "low",   # off | low | medium | high (2.5 thinking budget)
+               "models": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite",
+                          "gemini-2.0-flash", "gemini-2.0-flash-lite"]},
     # remote llama.cpp: the URL is requested on selection and remembered here
     "remote": {"base_url": "", "api_key": "sk-noop", "model": "", "ctx_window": 16000},
     # MCP url: overridden in tui_config.json (not versioned) with your real host
     "mcp": {"enabled": True, "url": "http://localhost:8765/mcp", "prefix": "mac_"},
     "tavily_api_key": "",   # for the web_search tool (free key at tavily.com)
     "auto_compact": True,   # auto-summarize older turns when the context fills up
+    "max_iterations": 8,    # max tool-call rounds per turn (agent loop cap)
     # named system-prompt presets (persona text; "" = built-in default persona).
     # TOOL_RULES are always appended. Edit/add here or via the F6 editor in-app.
     "system_prompts": {"default": ""},
     "active_system_prompt": "default",   # used for NEW sessions
     "last": {"provider": None, "model": None},   # last used (default on startup)
-    "favorites": {"nano": [], "xai": [], "openrouter": [], "openai": [], "anthropic": [], "remote": []},
+    "favorites": {"nano": [], "xai": [], "openrouter": [], "openai": [], "anthropic": [],
+                  "gemini": [], "remote": []},
 }
 
 # OpenAI-compatible providers served via API (GPU sidebar OFF; model's ctx)
-CLOUD = {"nano", "xai", "openrouter", "openai", "anthropic", "remote"}
+CLOUD = {"nano", "xai", "openrouter", "openai", "anthropic", "gemini", "remote"}
 
 # The persona is user-configurable (via presets); TOOL_RULES are mechanical rules
 # that are ALWAYS appended so a custom persona can't break tool-calling.
@@ -424,6 +432,7 @@ class ProviderScreen(Screen):
         ("remote", "🌐  llama.cpp   (remote · enter a URL)"),
         ("openai", "⚙  OpenAI      (GPT · cloud)"),
         ("anthropic", "✺  Anthropic   (Claude · cloud)"),
+        ("gemini", "♊  Gemini      (Google · cloud)"),
         ("xai", "✦  xAI         (Grok · cloud)"),
         ("openrouter", "🔀  OpenRouter  (cloud · many models)"),
     ]
@@ -473,7 +482,7 @@ class ApiKeyScreen(Screen):
     BINDINGS = [("escape", "back", "Back")]
 
     LABELS = {"xai": "xAI", "openai": "OpenAI", "anthropic": "Anthropic",
-              "openrouter": "OpenRouter", "nano": "nano-gpt"}
+              "openrouter": "OpenRouter", "nano": "nano-gpt", "gemini": "Google Gemini"}
 
     def __init__(self, provider):
         super().__init__()
@@ -926,6 +935,7 @@ class ConfigureScreen(ModalScreen):
             ("k_nano", "nano-gpt key", True, ("nano", "api_key")),
             ("k_openai", "OpenAI key", True, ("openai", "api_key")),
             ("k_anthropic", "Anthropic key", True, ("anthropic", "api_key")),
+            ("k_gemini", "Google Gemini key", True, ("gemini", "api_key")),
             ("k_xai", "xAI key", True, ("xai", "api_key")),
             ("k_openrouter", "OpenRouter key", True, ("openrouter", "api_key")),
             ("remote_url", "Remote llama.cpp base_url", False, ("remote", "base_url")),
@@ -948,6 +958,10 @@ class ConfigureScreen(ModalScreen):
             ("mcp_enabled", "Enabled (yes/no)", False, ("mcp", "enabled")),
             ("mcp_url", "URL", False, ("mcp", "url")),
             ("mcp_prefix", "Tool prefix", False, ("mcp", "prefix")),
+        ]),
+        ("Behavior", [
+            ("gem_effort", "Gemini reasoning (off/low/medium/high)", False, ("gemini", "reasoning_effort")),
+            ("max_iters", "Max tool iterations per turn", False, ("max_iterations",)),
         ]),
     ]
 
@@ -1071,6 +1085,11 @@ class ConfigureScreen(ModalScreen):
             # a blank box NEVER clears an existing value — only non-empty input updates
             if val == "":
                 continue
+            if path == ("max_iterations",):
+                try:
+                    val = max(1, int(val))
+                except ValueError:
+                    continue
             _cfg_set(self.app.cfg, path, val)
         ok = save_config(self.app.cfg)
         self.app.cfg = load_config()   # re-export env (tokens, confluence, tavily)
@@ -1121,7 +1140,7 @@ class ConfigureScreen(ModalScreen):
         lines = []
         # cloud provider keys → models.list()
         for prov, fid in [("nano", "k_nano"), ("openai", "k_openai"), ("anthropic", "k_anthropic"),
-                          ("xai", "k_xai"), ("openrouter", "k_openrouter")]:
+                          ("gemini", "k_gemini"), ("xai", "k_xai"), ("openrouter", "k_openrouter")]:
             key = values.get((prov, "api_key"), "")
             if not key:
                 continue
@@ -2538,7 +2557,8 @@ class AgentTUI(App):
         self._turn_start = time.time()
         self._cancel.clear()
         try:
-            for _ in range(MAX_ITERATIONS):
+            max_iters = int(self.cfg.get("max_iterations", MAX_ITERATIONS) or MAX_ITERATIONS)
+            for _ in range(max_iters):
                 msg = self.stream_one()
                 # If the model leaked the tool call into its thinking and produced
                 # no real tool_call, retry the whole turn (the discarded attempt is
@@ -2604,6 +2624,15 @@ class AgentTUI(App):
             params["extra_body"] = {"chat_template_kwargs": {"enable_thinking": self.enable_thinking}}
         elif self.provider == "nano":
             params["extra_body"] = {"reasoning": {"enabled": True}, "include_reasoning": True}
+        elif self.provider == "gemini":
+            # Gemini 2.5 "thinks". Map a reasoning toggle to a thinking budget and ask for
+            # the thought summaries (they stream as content flagged extra_content.google.thought).
+            eff = str((self.cfg.get("gemini", {}) or {}).get("reasoning_effort", "low")).lower()
+            budget = {"off": 0, "none": 0, "low": 512, "medium": 4096, "high": -1}.get(eff, 512)
+            tc = {"thinking_budget": budget}
+            if budget != 0:
+                tc["include_thoughts"] = True
+            params["extra_body"] = {"extra_body": {"google": {"thinking_config": tc}}}
         # xai / openrouter / openai / anthropic / remote: standard OpenAI-compatible,
         # without proprietary extra_body (Anthropic via its OpenAI-compat layer)
         stream = self.client.chat.completions.create(**params)
@@ -2645,8 +2674,15 @@ class AgentTUI(App):
             if rc:
                 emit("thinking", rc)
             if delta.content:
-                for mode, t in splitter.feed(delta.content):
-                    emit(mode, t)
+                # Gemini streams its thought summaries as content tagged
+                # extra_content.google.thought — route those to the thinking block.
+                ddict = (cd.get("choices") or [{}])[0].get("delta", {})
+                is_thought = bool((ddict.get("extra_content") or {}).get("google", {}).get("thought"))
+                if is_thought:
+                    emit("thinking", delta.content.replace("<thought>", "").replace("</thought>", ""))
+                else:
+                    for mode, t in splitter.feed(delta.content):
+                        emit(mode, t)
             if delta.tool_calls:
                 for tcd in delta.tool_calls:
                     slot = tool_calls.setdefault(tcd.index, {"id": "", "name": "", "arguments": ""})

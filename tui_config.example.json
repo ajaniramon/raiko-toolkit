@@ -21,14 +21,23 @@
     "ctx_window": 200000,
     "models": ["claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5", "claude-fable-5"]
   },
+  "gemini": {
+    "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+    "api_key": "",
+    "model": "gemini-2.5-flash",
+    "ctx_window": 1048576,
+    "reasoning_effort": "low",
+    "models": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.0-flash-lite"]
+  },
   "remote": { "base_url": "", "api_key": "sk-noop", "model": "", "ctx_window": 16000 },
   "mcp": { "enabled": false, "url": "http://localhost:8765/mcp", "prefix": "mac_" },
   "tavily_api_key": "",
+  "max_iterations": 8,
   "jira": { "api_token": "" },
   "confluence": { "base_url": "https://your-site.atlassian.net/wiki", "email": "", "space": "" },
   "auto_compact": true,
   "system_prompts": { "default": "", "coder": "You are a precise senior software engineer." },
   "active_system_prompt": "default",
   "last": { "provider": null, "model": null },
-  "favorites": { "nano": [], "xai": [], "openrouter": [], "openai": [], "anthropic": [], "remote": [] }
+  "favorites": { "nano": [], "xai": [], "openrouter": [], "openai": [], "anthropic": [], "gemini": [], "remote": [] }
 }
