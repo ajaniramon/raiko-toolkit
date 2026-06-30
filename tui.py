@@ -50,8 +50,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "ben
 import serve  # noqa: E402  (bench/serve.py)
 import models as registry  # noqa: E402  (bench/models.py)
 from tools import TOOLS, call_tool, danger_match  # noqa: E402
+import context  # noqa: E402  (token estimation helpers)
 from context import ContextTracker  # noqa: E402
 import mcp_client  # noqa: E402  (MCP client for remote tools)
+import pricing  # noqa: E402  (USD cost estimation)
 
 
 # ---- parsing of tool-calls emitted as TEXT (fallback) ----
@@ -224,6 +226,8 @@ DEFAULT_CONFIG = {
     "tavily_api_key": "",   # for the web_search tool (free key at tavily.com)
     "auto_compact": True,   # auto-summarize older turns when the context fills up
     "max_iterations": 8,    # max tool-call rounds per turn (agent loop cap)
+    "budget_usd": 0,        # session spend cap in USD (0 = off); blocks new turns when hit
+    "pricing": {},          # override/extend the model price table: {"model-substr": [in$/1M, out$/1M]}
     # named system-prompt presets (persona text; "" = built-in default persona).
     # TOOL_RULES are always appended. Edit/add here or via the F6 editor in-app.
     "system_prompts": {"default": ""},
@@ -982,6 +986,7 @@ class ConfigureScreen(ModalScreen):
         ("Behavior", [
             ("gem_effort", "Gemini reasoning (off/low/medium/high)", False, ("gemini", "reasoning_effort")),
             ("max_iters", "Max tool iterations per turn", False, ("max_iterations",)),
+            ("budget_usd", "Session budget USD (0 = off)", False, ("budget_usd",)),
         ]),
     ]
 
@@ -1108,6 +1113,11 @@ class ConfigureScreen(ModalScreen):
             if path == ("max_iterations",):
                 try:
                     val = max(1, int(val))
+                except ValueError:
+                    continue
+            elif path == ("budget_usd",):
+                try:
+                    val = max(0.0, float(val))
                 except ValueError:
                     continue
             _cfg_set(self.app.cfg, path, val)
@@ -1873,6 +1883,13 @@ class MainScreen(Screen):
         if text.startswith("/"):
             self.handle_command(text)
             return
+        if self.app.over_budget():
+            self.app.write_log(Panel(Text.from_markup(
+                f"[bold yellow]Budget reached[/] — session "
+                f"{pricing.fmt_usd(self.app.session_cost)} ≥ {pricing.fmt_usd(self.app.cfg.get('budget_usd'))}. "
+                f"Raise [cyan]budget_usd[/] in settings (F2) or /clear to reset the tally."),
+                border_style="yellow", expand=False))
+            return
         self.app.busy = True
         self.app.run_worker(lambda: self.app.agent_turn(text), thread=True, exclusive=True)
 
@@ -1941,6 +1958,11 @@ class AgentTUI(App):
         self._log_lines = []
         self._turn_tokens = 0
         self._turn_start = 0.0
+        # cost accounting (session totals + current turn)
+        self.session_cost = 0.0
+        self.session_input = 0
+        self.session_output = 0
+        self._turn_cost = 0.0
         self.session_id = None          # set on first save; reused on resume
         self._resume_messages = None    # carried into a (local) resume
         self.resumed = False            # MainScreen renders prior history when True
@@ -2331,6 +2353,8 @@ class AgentTUI(App):
                    else {"role": "system", "content": build_system_prompt(self._active_persona())})
         self.messages = [sys_msg]
         self.session_id = None          # the cleared chat becomes a new session
+        self.session_cost = 0.0         # reset the spend tally with the conversation
+        self.session_input = self.session_output = 0
         self.action_clear_log()
         self.write_log(Panel(Text("Context cleared — fresh conversation (system prompt kept).",
                                   style="bold green"), border_style="green", expand=False))
@@ -2591,6 +2615,7 @@ class AgentTUI(App):
         self.call_from_thread(self._chat_mount, UserMsg(text))
         self.messages.append({"role": "user", "content": text})
         self._turn_tokens = 0
+        self._turn_cost = 0.0
         self._stream_chars = 0
         self._turn_start = time.time()
         self._cancel.clear()
@@ -2649,9 +2674,16 @@ class AgentTUI(App):
             self.busy = False
             elapsed = time.time() - self._turn_start
             tps = self._turn_tokens / elapsed if elapsed > 0 else 0
+            cost = "" if self.provider in ("local", "remote", "vllm") else \
+                f" · {pricing.fmt_usd(self._turn_cost)} (session {pricing.fmt_usd(self.session_cost)})"
             self.call_from_thread(self.write_log, Text.from_markup(
-                f"[dim]⚡ {tps:.1f} tok/s · {self._turn_tokens} output tokens · {elapsed:.1f}s[/]"))
+                f"[dim]⚡ {tps:.1f} tok/s · {self._turn_tokens} output tokens · {elapsed:.1f}s{cost}[/]"))
             self.call_from_thread(self.update_ctx)
+            if self.over_budget():
+                self.call_from_thread(self.write_log, Text.from_markup(
+                    f"[bold yellow]⚠ budget reached[/] — session {pricing.fmt_usd(self.session_cost)} ≥ "
+                    f"{pricing.fmt_usd(self.cfg.get('budget_usd'))}. New turns are blocked until you raise "
+                    f"[cyan]budget_usd[/] (F2) or /clear."))
             self.save_session()   # persist the conversation after every turn
 
     def stream_one(self):
@@ -2733,9 +2765,15 @@ class AgentTUI(App):
                             slot["arguments"] += tcd.function.arguments
         for mode, t in splitter.flush():
             emit(mode, t)
+        in_t = out_t = 0
         if last_pricing:
             self.tracker.update_from_chunk_dict(last_pricing)
-            self._turn_tokens += self.tracker.last_output
+            in_t, out_t = self.tracker.last_input or 0, self.tracker.last_output or 0
+        if out_t == 0:   # provider returned no exact usage → estimate locally (tiktoken)
+            in_t = in_t or context.estimate_messages(self.messages)
+            out_t = context._ntok(self.cur_think + self.cur_content)
+        self._turn_tokens += out_t
+        self._account_cost(in_t, out_t, last_pricing or {})
 
         # fallback: the model emitted the tool-call as plain text -> recover it
         if not tool_calls:
@@ -2845,6 +2883,44 @@ class AgentTUI(App):
         else:
             self.write_log(res)
 
+    def _account_cost(self, in_t, out_t, chunk_dict):
+        """Add one API call's tokens + USD cost to the turn/session totals. Each call
+        is billed its full prompt+completion; provider-reported cost (nano-gpt /
+        OpenRouter) wins, else we estimate from the price table. Self-hosted = free."""
+        self.session_input += in_t
+        self.session_output += out_t
+        if self.provider in ("local", "remote", "vllm"):
+            return  # self-hosted: no API cost
+        rep = None
+        np = chunk_dict.get("x_nanogpt_pricing") or {}
+        for k in ("cost", "totalCost", "totalCostUsd"):
+            if isinstance(np.get(k), (int, float)):
+                rep = float(np[k]); break
+        u = chunk_dict.get("usage") or {}
+        if rep is None and isinstance(u.get("cost"), (int, float)):
+            rep = float(u["cost"])   # OpenRouter
+        if rep is None:
+            rep = pricing.cost_usd(self.model, in_t, out_t, self.cfg.get("pricing"))
+        c = rep or 0.0
+        self._turn_cost += c
+        self.session_cost += c
+
+    def over_budget(self):
+        cap = self.cfg.get("budget_usd") or 0
+        return cap > 0 and self.session_cost >= cap
+
+    def _cost_label(self):
+        """Statusbar suffix: session cost (and budget, if set). Empty for self-hosted."""
+        if self.provider in ("local", "remote", "vllm"):
+            return ""
+        cap = self.cfg.get("budget_usd") or 0
+        cost = pricing.fmt_usd(self.session_cost)
+        if cap > 0:
+            pct = 100 * self.session_cost / cap
+            col = "red" if pct >= 100 else ("yellow" if pct >= 80 else "green")
+            return f"  · [{col}]{cost}/{pricing.fmt_usd(cap)} ({pct:.0f}%)[/]"
+        return f"  · [#9b93b8]{cost} session[/]"
+
     def update_ctx(self):
         if not self.tracker:
             return
@@ -2858,6 +2934,7 @@ class AgentTUI(App):
                    f"ctx [b]{used/1000:.1f}k[/]/{limit/1000:.0f}k used · "
                    f"[green]{remaining/1000:.1f}k left[/] ({pct:.0f}%)"
                    + ("  · [green]LOCAL[/]" if self.is_local else ""))
+            txt += self._cost_label()
             self._q("#statusbar", Static).update(Text.from_markup(txt))
         except Exception:
             pass
