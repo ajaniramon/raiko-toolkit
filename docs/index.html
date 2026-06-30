@@ -135,7 +135,9 @@
     display:inline-flex;align-items:center;gap:9px;background:rgba(255,255,255,.015);transition:border-color .15s,color .15s;
   }
   .chip:hover{border-color:var(--purple);color:var(--text)}
+  .chip:hover svg{opacity:1}
   .chip .d{width:8px;height:8px;border-radius:50%}
+  .chip svg{width:16px;height:16px;fill:currentColor;opacity:.8;flex:0 0 auto;transition:opacity .15s}
   .strip-label{text-align:center;font-family:var(--mono);font-size:.72rem;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);margin-bottom:22px}
 
   /* feature grid */
@@ -278,7 +280,7 @@
           <a class="btn btn-ghost" href="#install">Install with Python</a>
         </div>
         <div class="metaline">
-          <span><b>7</b> providers</span>
+          <span><b>8</b> providers</span>
           <span><b>local</b> GPU + cloud</span>
           <span><b>MCP</b> server + backoffice</span>
           <span>Windows · macOS · Linux</span>
@@ -326,15 +328,16 @@
   <!-- PROVIDERS -->
   <section style="padding:46px 0">
     <div class="wrap">
-      <p class="strip-label">one wizard · seven providers</p>
+      <p class="strip-label">one wizard · eight providers</p>
       <div class="providers">
-        <span class="chip"><span class="d" style="background:var(--cyan)"></span>nano-gpt</span>
-        <span class="chip"><span class="d" style="background:var(--red)"></span>llama.cpp · local GPU</span>
-        <span class="chip"><span class="d" style="background:var(--purple)"></span>llama.cpp · remote</span>
-        <span class="chip"><span class="d" style="background:var(--green)"></span>OpenAI</span>
-        <span class="chip"><span class="d" style="background:var(--yellow)"></span>Anthropic</span>
-        <span class="chip"><span class="d" style="background:var(--magenta)"></span>xAI</span>
-        <span class="chip"><span class="d" style="background:#6f8fff"></span>OpenRouter</span>
+        <span class="chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 21l1-7H7l6-11-1 7h5z"/></svg>nano-gpt</span>
+        <span class="chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 3H3v12h18V3zM9 19v2h6v-2h2v-2H7v2z"/></svg>llama.cpp · local GPU</span>
+        <span class="chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 18H6a4 4 0 010-8 5.5 5.5 0 0110.6-1.6A3.5 3.5 0 0119 18z"/></svg>llama.cpp · remote</span>
+        <span class="chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/></svg>OpenAI</span>
+        <span class="chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/></svg>Anthropic</span>
+        <span class="chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81"/></svg>Gemini</span>
+        <span class="chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.234 10.162 22.977 0h-2.072l-7.591 8.824L7.251 0H.258l9.168 13.343L.258 24H2.33l8.016-9.318L16.749 24h6.993zm-2.837 3.299-.929-1.329L3.076 1.56h3.182l5.965 8.532.929 1.329 7.754 11.09h-3.182z"/></svg>xAI</span>
+        <span class="chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.778 1.844v1.919q-.569-.026-1.138-.032-.708-.008-1.415.037c-1.93.126-4.023.728-6.149 2.237-2.911 2.066-2.731 1.95-4.14 2.75-.396.223-1.342.574-2.185.798-.841.225-1.753.333-1.751.333v4.229s.768.108 1.61.333c.842.224 1.789.575 2.185.799 1.41.798 1.228.683 4.14 2.75 2.126 1.509 4.22 2.11 6.148 2.236.88.058 1.716.041 2.555.005v1.918l7.222-4.168-7.222-4.17v2.176c-.86.038-1.611.065-2.278.021-1.364-.09-2.417-.357-3.979-1.465-2.244-1.593-2.866-2.027-3.68-2.508.889-.518 1.449-.906 3.822-2.59 1.56-1.109 2.614-1.377 3.978-1.466.667-.044 1.418-.017 2.278.02v2.176L24 6.014Z"/></svg>OpenRouter</span>
       </div>
     </div>
   </section>
@@ -348,7 +351,7 @@
         <p>Everything you'd want from a serious agent client — and a few things you didn't know you wanted — without leaving the terminal.</p>
       </div>
       <div class="features">
-        <div class="card reveal"><div class="ic" style="color:var(--cyan)">⌘</div><h3>Multi-provider TUI</h3><p>One wizard, seven providers: local <code>llama.cpp</code> on your GPU, a remote llama-server, or <code>OpenAI</code>, <code>Anthropic</code>, <code>xAI</code>, <code>OpenRouter</code>, <code>nano-gpt</code>. Back-navigation, last-used highlighting, per-provider favorites.</p></div>
+        <div class="card reveal"><div class="ic" style="color:var(--cyan)">⌘</div><h3>Multi-provider TUI</h3><p>One wizard, eight providers: local <code>llama.cpp</code> on your GPU, a remote llama-server, or <code>OpenAI</code>, <code>Anthropic</code>, <code>Gemini</code>, <code>xAI</code>, <code>OpenRouter</code>, <code>nano-gpt</code>. Back-navigation, last-used highlighting, per-provider favorites.</p></div>
         <div class="card reveal"><div class="ic" style="color:var(--red)">▟</div><h3>Live GPU telemetry</h3><p>In local mode: a real-time GPU-util sparkline, VRAM / CPU / RAM bars, temperature, power and tok/s — straight from <code>nvidia-smi</code> and <code>psutil</code>.</p></div>
         <div class="card reveal"><div class="ic" style="color:var(--purple)">⏺</div><h3>Clean widget chat</h3><p>Claude-Code-style: a gray user bubble, inline collapsible thinking, compact colored tool bullets with inline diffs, and an animated working bar while the model runs.</p></div>
         <div class="card reveal"><div class="ic" style="color:var(--green)">⚿</div><h3>Permission gating</h3><p>Allow / always / deny prompts for any flagged operation — writes, exec, secrets. Opt out per-run with <code>--dangerously-skip-permissions</code>.</p></div>
@@ -382,7 +385,7 @@
             <div class="node"><span class="t">nano-gpt</span></div>
             <div class="node"><span class="t">llama.cpp</span><span class="s">local GPU</span></div>
             <div class="node"><span class="t">llama.cpp</span><span class="s">remote URL</span></div>
-            <div class="node"><span class="t">OpenAI · Anthropic</span><span class="s">xAI · OpenRouter</span></div>
+            <div class="node"><span class="t">OpenAI · Anthropic · Gemini</span><span class="s">xAI · OpenRouter</span></div>
           </div>
           <div class="arrowcol"><span>↘</span></div>
           <div class="col">
@@ -606,7 +609,10 @@ raiko\raiko.exe
   // ---- copy buttons ----
   [].slice.call(document.querySelectorAll('.copy')).forEach(function(b){
     b.addEventListener('click', function(){
-      var t=b.getAttribute('data-copy')||'';
+      // copy exactly what's shown in this block's <pre> (WYSIWYG), not a stale attr
+      var block=b.closest('.codeblock');
+      var pre=block&&block.querySelector('pre');
+      var t=(pre?pre.innerText:(b.getAttribute('data-copy')||'')).replace(/\s+$/,'');
       navigator.clipboard && navigator.clipboard.writeText(t);
       var o=b.textContent; b.textContent='copied ✓'; b.style.color='#5fd7a7';
       setTimeout(function(){b.textContent=o;b.style.color='';},1300);
