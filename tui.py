@@ -228,6 +228,9 @@ DEFAULT_CONFIG = {
     "max_iterations": 8,    # max tool-call rounds per turn (agent loop cap)
     "budget_usd": 0,        # session spend cap in USD (0 = off); blocks new turns when hit
     "pricing": {},          # override/extend the model price table: {"model-substr": [in$/1M, out$/1M]}
+    # tool permissions: `allow`/`deny` are tool names (Always-allow persists here);
+    # `workspace` confines write_file/edit_file (empty = the launch directory).
+    "permissions": {"allow": [], "deny": [], "workspace": ""},
     # named system-prompt presets (persona text; "" = built-in default persona).
     # TOOL_RULES are always appended. Edit/add here or via the F6 editor in-app.
     "system_prompts": {"default": ""},
@@ -737,8 +740,8 @@ class LoadingScreen(Screen):
 
 class PermissionScreen(ModalScreen):
     """Asks for permission (Claude Code style) when a tool wants to run something
-    flagged as dangerous. Returns True (allow) / False (deny) on dismiss.
-    'Always allow' enables skip_permissions in the app."""
+    flagged. Dismisses with 'once' / 'always' / 'deny'. 'Always' persists THIS tool
+    to the config allowlist (not a global skip)."""
 
     CSS = """
     PermissionScreen { align: center middle; background: $background 60%; }
@@ -767,7 +770,7 @@ class PermissionScreen(ModalScreen):
             yield Static(self.code[:1500], id="pcode")
             with Horizontal(id="pbtns"):
                 yield Button("Allow once (y)", id="allow", variant="success")
-                yield Button("Always allow (a)", id="always", variant="warning")
+                yield Button(f"Always allow {self.tool} (a)", id="always", variant="warning")
                 yield Button("Deny (n)", id="deny", variant="error")
 
     def on_button_pressed(self, e: Button.Pressed):
@@ -775,14 +778,13 @@ class PermissionScreen(ModalScreen):
          "deny": self.action_deny}[e.button.id]()
 
     def action_allow(self):
-        self.dismiss(True)
+        self.dismiss("once")
 
     def action_always(self):
-        self.app.skip_permissions = True
-        self.dismiss(True)
+        self.dismiss("always")
 
     def action_deny(self):
-        self.dismiss(False)
+        self.dismiss("deny")
 
 
 class CtxScreen(Screen):
@@ -987,6 +989,7 @@ class ConfigureScreen(ModalScreen):
             ("gem_effort", "Gemini reasoning (off/low/medium/high)", False, ("gemini", "reasoning_effort")),
             ("max_iters", "Max tool iterations per turn", False, ("max_iterations",)),
             ("budget_usd", "Session budget USD (0 = off)", False, ("budget_usd",)),
+            ("workspace", "Workspace dir (write/edit confined; blank = launch dir)", False, ("permissions", "workspace")),
         ]),
     ]
 
@@ -1709,6 +1712,7 @@ SLASH_COMMANDS = [
     ("/edit", "edit & resend your last message"),
     ("/export", "save the conversation to Markdown"),
     ("/configure", "setup wizard: keys · Jira · Confluence · MCP"),
+    ("/permissions", "show tool allow/deny + workspace boundary"),
     ("/help", "list the available commands"),
 ]
 
@@ -1908,6 +1912,8 @@ class MainScreen(Screen):
             self.app.push_screen(ToolLogScreen())
         elif cmd in ("configure", "config", "setup"):
             self.app.push_screen(ConfigureScreen())
+        elif cmd in ("permissions", "perms", "trust"):
+            self.app.show_permissions()
         elif cmd in ("retry", "regen", "regenerate"):
             self.app.retry_last()
         elif cmd in ("edit", "rewind"):
@@ -1924,6 +1930,7 @@ class MainScreen(Screen):
                 "  [cyan]/system[/]     edit the system prompt (also F6)\n"
                 "  [cyan]/tools[/]      open the tool-call log (also F4)\n"
                 "  [cyan]/configure[/]  setup wizard (keys · Jira · Confluence · MCP)\n"
+                "  [cyan]/permissions[/] tool allow/deny + workspace boundary\n"
                 "[dim]Footer: F2 settings · F3 swap model · F4 tools · F6 prompt · Esc stop[/]"),
                 title="[bold magenta]help[/]", border_style="magenta", expand=False))
         else:
@@ -2592,16 +2599,62 @@ class AgentTUI(App):
 
     # ---------- permissions + tool execution ----------
     def ask_permission(self, tool, snippet, code):
-        """Blocks the worker thread until the user decides in the modal."""
+        """Blocks the worker thread until the user decides. Returns 'once'/'always'/'deny'."""
         box = {}
         ev = threading.Event()
 
         def show():
             self.push_screen(PermissionScreen(tool, snippet, code),
-                             lambda v: (box.__setitem__("v", bool(v)), ev.set()))
+                             lambda v: (box.__setitem__("v", v or "deny"), ev.set()))
         self.call_from_thread(show)
         ev.wait()
-        return box.get("v", False)
+        return box.get("v", "deny")
+
+    def _permit(self, tool, snippet, code):
+        """Gate a flagged operation. Honors the global skip, the persistent
+        allow/deny lists in config, then prompts. 'Always' persists `tool` to the
+        allowlist. Returns True to proceed, False if denied."""
+        if self.skip_permissions:
+            return True
+        perms = self.cfg.setdefault("permissions", {})
+        if tool in (perms.get("deny") or []):
+            return False
+        if tool in (perms.get("allow") or []):
+            return True
+        decision = self.ask_permission(tool, snippet, code)
+        if decision == "always":
+            allow = perms.setdefault("allow", [])
+            if tool not in allow:
+                allow.append(tool)
+                save_config(self.cfg)
+            return True
+        return decision == "once"
+
+    def _workspace(self):
+        ws = (self.cfg.get("permissions", {}) or {}).get("workspace") or ""
+        return os.path.abspath(ws) if ws else os.getcwd()
+
+    def _in_workspace(self, path):
+        """True if `path` resolves inside the workspace root (writes are confined there)."""
+        try:
+            root = self._workspace()
+            return os.path.commonpath([root, os.path.abspath(path)]) == root
+        except (ValueError, OSError):
+            return False   # different drive / bad path → treat as outside
+
+    def show_permissions(self):
+        """/permissions — show the allow/deny lists + workspace boundary."""
+        p = self.cfg.get("permissions", {}) or {}
+        allow = ", ".join(p.get("allow") or []) or "(none)"
+        deny = ", ".join(p.get("deny") or []) or "(none)"
+        skip = " · [red]--dangerously-skip-permissions ON[/]" if self.skip_permissions else ""
+        self.write_log(Panel(Text.from_markup(
+            f"[bold]Permissions[/]{skip}\n"
+            f"  [green]always-allow[/]: {allow}\n"
+            f"  [red]deny[/]: {deny}\n"
+            f"  [cyan]workspace[/] (write/edit confined here): {self._workspace()}\n"
+            f"[dim]Edit in tui_config.json → permissions (F2). 'Always allow' in a prompt adds a tool here.[/]"),
+            title="[bold cyan]🔐 permissions[/]", border_style="cyan", expand=False))
 
     def _with_timeout(self, name, fn):
         """Run a (blocking) tool call with a hard ceiling so a hung tool or an
@@ -2642,11 +2695,10 @@ class AgentTUI(App):
             else:
                 snip = danger_match(code)
                 if snip:
-                    if self.ask_permission(name, snip, code):   # user wait — not timed
-                        args["allow_unsafe"] = True
-                    else:
+                    if not self._permit(name, snip, code):
                         return f"DENIED by user: refused to run flagged operation '{snip}'"
-        if name in ("jira_assign", "jira_comment") and not self.skip_permissions:
+                    args["allow_unsafe"] = True
+        if name in ("jira_assign", "jira_comment"):
             key = args.get("key", "?")
             if name == "jira_assign":
                 snip = f"assign {key} → {args.get('assignee', '?')}"
@@ -2655,9 +2707,9 @@ class AgentTUI(App):
                 body = (args.get("body", "") or "")
                 snip = f"comment on {key}: {body[:80]}" + ("…" if len(body) > 80 else "")
                 code = f"jira issue comment add {key} \"{body[:300]}\""
-            if not self.ask_permission(name, snip, code):
+            if not self._permit(name, snip, code):
                 return f"DENIED by user: refused Jira write '{snip}'"
-        if name in ("confluence_create", "confluence_comment") and not self.skip_permissions:
+        if name in ("confluence_create", "confluence_comment"):
             body = (args.get("body", "") or "")
             if name == "confluence_create":
                 sp = args.get("space") or os.environ.get("CONFLUENCE_SPACE", "?")
@@ -2666,9 +2718,16 @@ class AgentTUI(App):
             else:
                 snip = f"comment on page {args.get('page_id', '?')}: {body[:80]}" + ("…" if len(body) > 80 else "")
                 code = f"POST confluence comment · page={args.get('page_id', '')} · {body[:200]}"
-            if not self.ask_permission(name, snip, code):
+            if not self._permit(name, snip, code):
                 return f"DENIED by user: refused Confluence write '{snip}'"
         if name in ("write_file", "edit_file") and isinstance(args, dict) and args.get("path"):
+            path = args["path"]
+            if not self._in_workspace(path):   # writes are confined to the workspace
+                snip = f"{name} OUTSIDE the workspace"
+                code = f"target: {os.path.abspath(path)}\nworkspace: {self._workspace()}"
+                if not self._permit(name, snip, code):
+                    return (f"DENIED by user: '{name}' targets a path outside the workspace "
+                            f"({path}). Set permissions.workspace or approve it.")
             return self._run_with_diff(name, args)
         return self._with_timeout(name, lambda: call_tool(name, args))
 

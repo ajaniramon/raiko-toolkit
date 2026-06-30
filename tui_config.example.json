@@ -36,6 +36,7 @@
   "max_iterations": 8,
   "budget_usd": 0,
   "pricing": {},
+  "permissions": { "allow": [], "deny": [], "workspace": "" },
   "jira": { "api_token": "" },
   "confluence": { "base_url": "https://your-site.atlassian.net/wiki", "email": "", "space": "" },
   "auto_compact": true,
