@@ -8,7 +8,7 @@
 ![TUI](https://img.shields.io/badge/TUI-Textual-5f5fd7)
 ![Local](https://img.shields.io/badge/local-llama.cpp-ff5f5f)
 ![Tools](https://img.shields.io/badge/tools-MCP-46c2f5?logo=modelcontextprotocol&logoColor=white)
-![Providers](https://img.shields.io/badge/providers-8-e7b94e)
+![Providers](https://img.shields.io/badge/providers-9-e7b94e)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-9b93b8)
 
 </div>
@@ -27,7 +27,7 @@ benchmark** that decides which local model is actually worth running.
 
 | | |
 |---|---|
-| 🖥️ **Multi-provider TUI** | One wizard, 8 providers: `nano-gpt`, **local llama.cpp** (your GPU), **remote llama.cpp** (enter a URL), `OpenAI`, `Anthropic`, `Gemini`, `xAI`, `OpenRouter`. |
+| 🖥️ **Multi-provider TUI** | One wizard, 9 providers: `nano-gpt`, **local llama.cpp** (your GPU), **remote llama.cpp** / **vLLM** (enter a URL), `OpenAI`, `Anthropic`, `Gemini`, `xAI`, `OpenRouter`. |
 | 📊 **Live telemetry** | In local mode, real-time GPU-util sparkline + VRAM/CPU/RAM bars + temp/power/tok-s, straight from `nvidia-smi` + `psutil`. |
 | 🧩 **Clean widget chat** | opencode/Claude-Code-style: box-less message widgets, inline dim thinking (collapsible), compact colored tool bullets + inline diffs, and an animated "working" bar (spinner + wiggling wave + elapsed/tok·s) while the model runs. |
 | 🔐 **Permission gating** | Claude-Code-style allow/always/deny prompts for flagged operations (`--dangerously-skip-permissions` to opt out). |
@@ -81,7 +81,7 @@ python tui.py --dangerously-skip-permissions
   startup, if you have saved sessions, a **Continue / New** menu lets you resume one
   (history replayed into the log); pick it from a list, or delete with `d`.
 - **Model swap (`F3`)**: switch model mid-conversation on cloud/remote providers
-  (nano · OpenAI · Anthropic · Gemini · xAI · OpenRouter · remote llama.cpp) — history is kept.
+  (nano · OpenAI · Anthropic · Gemini · xAI · OpenRouter · remote llama.cpp · vLLM) — history is kept.
   Not available in local mode (one model per llama-server).
 - **System prompt presets (`F6`)**: named personas in `tui_config.json`
   (`system_prompts`); pick/edit/save one and it applies live (next turn) and persists to

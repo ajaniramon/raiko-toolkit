@@ -215,6 +215,8 @@ DEFAULT_CONFIG = {
                           "gemini-2.0-flash", "gemini-2.0-flash-lite"]},
     # remote llama.cpp: the URL is requested on selection and remembered here
     "remote": {"base_url": "", "api_key": "sk-noop", "model": "", "ctx_window": 16000},
+    # vLLM: an OpenAI-compatible server (vllm serve …). URL requested on selection.
+    "vllm": {"base_url": "", "api_key": "sk-noop", "model": "", "ctx_window": 131072},
     # MCP url: overridden in tui_config.json (not versioned) with your real host
     "mcp": {"enabled": True, "url": "http://localhost:8765/mcp", "prefix": "mac_"},
     "tavily_api_key": "",   # for the web_search tool (free key at tavily.com)
@@ -226,11 +228,13 @@ DEFAULT_CONFIG = {
     "active_system_prompt": "default",   # used for NEW sessions
     "last": {"provider": None, "model": None},   # last used (default on startup)
     "favorites": {"nano": [], "xai": [], "openrouter": [], "openai": [], "anthropic": [],
-                  "gemini": [], "remote": []},
+                  "gemini": [], "remote": [], "vllm": []},
 }
 
 # OpenAI-compatible providers served via API (GPU sidebar OFF; model's ctx)
-CLOUD = {"nano", "xai", "openrouter", "openai", "anthropic", "gemini", "remote"}
+CLOUD = {"nano", "xai", "openrouter", "openai", "anthropic", "gemini", "remote", "vllm"}
+# providers whose endpoint is a user-supplied URL (no API key, list models live)
+URL_PROVIDERS = {"remote", "vllm"}
 
 # The persona is user-configurable (via presets); TOOL_RULES are mechanical rules
 # that are ALWAYS appended so a custom persona can't break tool-calling.
@@ -430,6 +434,7 @@ class ProviderScreen(Screen):
         ("nano", "☁  nano-gpt    (cloud · 600+ models)"),
         ("local", "🖥  local       (llama.cpp on your GPU)"),
         ("remote", "🌐  llama.cpp   (remote · enter a URL)"),
+        ("vllm", "🚀  vLLM        (OpenAI server · enter a URL)"),
         ("openai", "⚙  OpenAI      (GPT · cloud)"),
         ("anthropic", "✺  Anthropic   (Claude · cloud)"),
         ("gemini", "♊  Gemini      (Google · cloud)"),
@@ -461,8 +466,8 @@ class ProviderScreen(Screen):
     def on_option_list_option_selected(self, e: OptionList.OptionSelected):
         pid = e.option.id
         self.app.provider = pid
-        if pid == "remote":
-            self.app.push_screen(RemoteUrlScreen())
+        if pid in URL_PROVIDERS:
+            self.app.push_screen(RemoteUrlScreen(pid))
         elif pid in CLOUD and not (self.app.cfg.get(pid, {}).get("api_key")):
             self.app.push_screen(ApiKeyScreen(pid))
         else:
@@ -515,7 +520,8 @@ class ApiKeyScreen(Screen):
 
 
 class RemoteUrlScreen(Screen):
-    """Asks for a remote llama-server's URL and then lists its models."""
+    """Asks for the URL of an OpenAI-compatible server (remote llama.cpp or vLLM)
+    and then lists its models."""
 
     CSS = """
     RemoteUrlScreen { align: center middle; }
@@ -526,16 +532,27 @@ class RemoteUrlScreen(Screen):
     """
     BINDINGS = [("escape", "back", "Back")]
 
+    META = {
+        "remote": ("🌐  Remote llama.cpp server",
+                   "e.g. http://192.168.1.50:8080  →  /v1 is added automatically"),
+        "vllm": ("🚀  vLLM server (OpenAI-compatible)",
+                 "e.g. http://gpu-host:8000  (the default vLLM port)  →  /v1 is added automatically"),
+    }
+
+    def __init__(self, provider="remote"):
+        super().__init__()
+        self.provider = provider
+
     def action_back(self):
         self.app.pop_screen()
 
     def compose(self) -> ComposeResult:
+        title, example = self.META.get(self.provider, self.META["remote"])
         with Vertical(id="rbox"):
-            yield Static("🌐  Remote llama.cpp server", id="rtitle")
+            yield Static(title, id="rtitle")
             yield Static(Text.from_markup(
-                "Enter the server URL (host:port or full /v1 URL).\n"
-                "[dim]e.g. http://192.168.1.50:8080  →  /v1 is added automatically[/]"), id="rinfo")
-            yield Input(value=self.app.cfg["remote"].get("base_url", "")
+                f"Enter the server URL (host:port or full /v1 URL).\n[dim]{example}[/]"), id="rinfo")
+            yield Input(value=self.app.cfg.get(self.provider, {}).get("base_url", "")
                         or "http://", id="url_in")
             yield Static(Text.from_markup("[dim]Enter to list models · Esc back[/]"), id="rhint")
 
@@ -558,9 +575,9 @@ class RemoteUrlScreen(Screen):
         if not url:
             self.query_one("#rinfo", Static).update(Text("Please enter a URL.", style="red"))
             return
-        self.app.cfg["remote"]["base_url"] = url
+        self.app.cfg.setdefault(self.provider, {})["base_url"] = url
         save_config(self.app.cfg)
-        self.app.push_screen(ModelScreen("remote"))
+        self.app.push_screen(ModelScreen(self.provider))
 
 
 class ModelScreen(Screen):
@@ -939,6 +956,7 @@ class ConfigureScreen(ModalScreen):
             ("k_xai", "xAI key", True, ("xai", "api_key")),
             ("k_openrouter", "OpenRouter key", True, ("openrouter", "api_key")),
             ("remote_url", "Remote llama.cpp base_url", False, ("remote", "base_url")),
+            ("vllm_url", "vLLM base_url (e.g. http://host:8000/v1)", False, ("vllm", "base_url")),
         ]),
         ("Web search", [
             ("tavily", "Tavily API key", True, ("tavily_api_key",)),
@@ -2091,9 +2109,9 @@ class AgentTUI(App):
         msgs = sess.get("messages") or [{"role": "system", "content": SYSTEM_PROMPT}]
         self.provider = provider
         self.session_id = sess.get("id")
-        if provider == "remote":
-            self.cfg.setdefault("remote", {})["base_url"] = (
-                sess.get("base_url") or self.cfg.get("remote", {}).get("base_url", ""))
+        if provider in URL_PROVIDERS:
+            self.cfg.setdefault(provider, {})["base_url"] = (
+                sess.get("base_url") or self.cfg.get(provider, {}).get("base_url", ""))
         if provider == "local":
             if registry.find(model) is None:
                 self.push_screen(ProviderScreen())
@@ -2129,8 +2147,8 @@ class AgentTUI(App):
             "ctx_window": getattr(self.tracker, "limit", None),
             "messages": self.messages,
         }
-        if self.provider == "remote":
-            sess["base_url"] = self.cfg.get("remote", {}).get("base_url", "")
+        if self.provider in URL_PROVIDERS:
+            sess["base_url"] = self.cfg.get(self.provider, {}).get("base_url", "")
         write_session(sess)
 
     # ---------- system prompt (presets + live edit) ----------

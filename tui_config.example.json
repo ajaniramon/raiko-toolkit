@@ -30,6 +30,7 @@
     "models": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.0-flash-lite"]
   },
   "remote": { "base_url": "", "api_key": "sk-noop", "model": "", "ctx_window": 16000 },
+  "vllm": { "base_url": "", "api_key": "sk-noop", "model": "", "ctx_window": 131072 },
   "mcp": { "enabled": false, "url": "http://localhost:8765/mcp", "prefix": "mac_" },
   "tavily_api_key": "",
   "max_iterations": 8,
@@ -39,5 +40,5 @@
   "system_prompts": { "default": "", "coder": "You are a precise senior software engineer." },
   "active_system_prompt": "default",
   "last": { "provider": null, "model": null },
-  "favorites": { "nano": [], "xai": [], "openrouter": [], "openai": [], "anthropic": [], "gemini": [], "remote": [] }
+  "favorites": { "nano": [], "xai": [], "openrouter": [], "openai": [], "anthropic": [], "gemini": [], "remote": [], "vllm": [] }
 }
