@@ -31,7 +31,7 @@
   },
   "remote": { "base_url": "", "api_key": "sk-noop", "model": "", "ctx_window": 16000 },
   "vllm": { "base_url": "", "api_key": "sk-noop", "model": "", "ctx_window": 131072 },
-  "mcp": { "enabled": false, "url": "http://localhost:8765/mcp", "prefix": "mac_" },
+  "mcp": { "enabled": false, "servers": [{ "name": "example", "url": "http://localhost:8765/mcp", "prefix": "x_" }] },
   "tavily_api_key": "",
   "max_iterations": 8,
   "jira": { "api_token": "" },

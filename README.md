@@ -18,7 +18,7 @@
 A tool-using agent you can point at **anything** — your own GGUF models on the GPU via
 `llama.cpp`, a remote llama-server, or the big cloud APIs (OpenAI, Anthropic, Google Gemini, xAI,
 OpenRouter, nano-gpt) — wrapped in a polished terminal UI, backed by a portable tool
-layer, an **MCP tool server with a web backoffice**, and a rigorous **tool-calling
+layer, an **MCP client** (plug in any MCP server), and a rigorous **tool-calling
 benchmark** that decides which local model is actually worth running.
 
 ---
@@ -32,7 +32,7 @@ benchmark** that decides which local model is actually worth running.
 | 🧩 **Clean widget chat** | opencode/Claude-Code-style: box-less message widgets, inline dim thinking (collapsible), compact colored tool bullets + inline diffs, and an animated "working" bar (spinner + wiggling wave + elapsed/tok·s) while the model runs. |
 | 🔐 **Permission gating** | Claude-Code-style allow/always/deny prompts for flagged operations (`--dangerously-skip-permissions` to opt out). |
 | 🪐 **Atlassian integration** | Search, read and — behind a permission prompt — write **Jira** issues (`jira_search`/`jira_get`/`jira_assign`/`jira_comment`) and **Confluence** pages (`confluence_search`/`confluence_get`/`confluence_create`/`confluence_comment`), all sharing one Atlassian API token. |
-| 🛰️ **MCP tool server** | Serve the whole toolset over MCP (`/mcp`) with a web **backoffice** to enable/disable tools and author custom shell tools — no redeploy of the agent. |
+| 🔌 **MCP client** | Plug raiko into any external MCP server(s) — their tools join the agent name-prefixed, routed back to the right server. You curate which servers, so no tool-list bloat. |
 | 🏁 **Decisive benchmark** | 4 tiers, deterministic decoding, programmatic graders, resumable runs, and a leaderboard that tells you which model to burn your VRAM on. |
 | ⚙️ **Zero hardcoded secrets** | Every key/path/host lives in gitignored local config; the repo ships with safe placeholders and `*.example.json` templates. |
 
@@ -52,7 +52,7 @@ flowchart LR
   P --> cloud["OpenAI / Anthropic<br>xAI / OpenRouter"]
   tui --> T["tools.py<br>read-only + exec tools"]
   T --> A["Jira / Confluence<br>Atlassian token"]
-  tui -->|"mac_ prefix"| M["MCP server<br>+ web backoffice"]
+  tui -->|MCP client| M["external MCP server(s)<br>tools join the agent"]
   M --> T2["tools on the host<br>file / shell / python"]
   B["benchmark<br>bench/"] --> local
 ```
@@ -105,7 +105,7 @@ python tui.py --dangerously-skip-permissions
   turns) · `/system` (prompt editor) · `/tools` (tool log) · `/configure` (setup wizard) ·
   `/help`. Typing `/` pops a filterable command menu above the input (↑/↓ to move, Tab to
   complete, Enter to run).
-- **MCP routing**: remote tools are auto-discovered and exposed with a `mac_` prefix.
+- **MCP client**: attach external MCP servers in config; their tools are discovered on startup and exposed name-prefixed per server.
 
 There's also a headless agent loop in **`agent.py`** (same providers via env vars) for
 scripting:
@@ -119,7 +119,7 @@ AGENT_API_KEY=sk-noop AGENT_MODEL=qwen35-9b python agent.py
 
 ## 🧰 Tools — `tools.py`
 
-A portable, stdlib-only tool layer shared by the TUI, the agent, and the MCP server.
+A portable, stdlib-only tool layer shared by the TUI and the headless agent.
 
 **Read-only:** `read_file` · `list_dir` · `get_current_directory` · `grep` · `find_files`
 · `read_lines` · `head` · `tail` · `count_lines` · `stat_path` · `tree` · `find_in_files`
@@ -129,7 +129,7 @@ A portable, stdlib-only tool layer shared by the TUI, the agent, and the MCP ser
 
 **Web:** `web_search` — Tavily ranked results + synthesized answer · `web_fetch` — read
 a page's full text (Tavily Extract). Set `tavily_api_key` in `tui_config.json` (or the
-`TAVILY_API_KEY` env var); both are also exposed over the MCP server.
+`TAVILY_API_KEY` env var).
 
 **Jira:** `jira_search` — find issues by free text or raw JQL · `jira_get` — fetch one
 issue by key · `jira_assign` — (re)assign an issue · `jira_comment` — post a comment. All
@@ -150,26 +150,35 @@ Execution tools run in a subprocess with **timeouts** and a **denylist** that bl
 genuinely destructive operations (`rm -rf`, `format`, `shutdown`, registry edits); normal
 subprocess/network use is allowed. Anything flagged triggers a permission prompt in the TUI.
 
-> Host-specific capabilities (e.g. operating a remote Mac) are **not** shipped here — the
-> agent reaches them through the MCP server, whose file/shell tools already run on that host.
+> Host-specific capabilities (e.g. operating a remote machine) are **not** shipped here —
+> attach an MCP server running on that host (see the MCP client section) and its file/shell
+> tools join the agent, executing where that server runs.
 
 ---
 
-## 🛰️ MCP server + backoffice — `mcp_server/server.py`
+## 🔌 MCP client — `mcp_client.py`
 
-Exposes the toolset over the **Model Context Protocol** (streamable-HTTP) and serves a web
-**backoffice** to manage it live.
+raiko is an **MCP client**: point it at one or more external **Model Context Protocol**
+servers (streamable-HTTP) and their tools join the agent alongside the built-in ones,
+name-prefixed per server. You pick which servers to attach — so you bring exactly the
+capabilities you want (a filesystem server, GitHub, a browser, your own), without bloating
+the model's tool list.
 
-```bash
-python mcp_server/server.py --http --port 8765
-#   MCP endpoint  →  http://<host>:8765/mcp
-#   Backoffice    →  http://<host>:8765/
+Configure it in the `mcp` section of `tui_config.json`:
+
+```jsonc
+"mcp": {
+  "enabled": true,
+  "servers": [
+    { "name": "fs",  "url": "http://localhost:8765/mcp", "prefix": "fs_" },
+    { "name": "gh",  "url": "http://localhost:9000/mcp", "prefix": "gh_" }
+  ]
+}
 ```
 
-The backoffice lets you **enable/disable** any tool, see the **full description the model
-receives**, and author **custom shell tools** (`name + description + command with {args}`) —
-it saves to `tools_config.json` and hot-restarts the server. Point the TUI at it via the
-`mcp` section of `tui_config.json`.
+On startup each server's tools are discovered and exposed as `<prefix><tool>`; calls are
+routed back to the server that owns them. A tool that mutates state still goes through the
+permission prompt.
 
 ---
 
@@ -286,9 +295,8 @@ python tui.py            # or: python tui.py --configure
 
 | File | What it holds | Template |
 |---|---|---|
-| `tui_config.json` | Provider base-urls, **API keys**, default model, MCP url, favorites | `tui_config.example.json` |
+| `tui_config.json` | Provider base-urls, **API keys**, default model, MCP servers, favorites | `tui_config.example.json` |
 | `bench/models.json` | `llama-server` path, models folder, one entry per GGUF model | `bench/models.example.json` |
-| `mcp_server/tools_config.json` | Enabled/disabled tools + custom shell tools | *(auto-created)* |
 | `mac-credentials.txt` | (optional, benchmark only) `user:pass` + host for the circuit tier | — |
 
 No secrets, keys, IPs, or machine-specific paths live in the source — only in these files.
@@ -299,12 +307,11 @@ No secrets, keys, IPs, or machine-specific paths live in the source — only in 
 
 ```
 raiko-toolkit/
-├─ tui.py              # Textual TUI (multi-provider, telemetry, MCP routing)
+├─ tui.py              # Textual TUI (multi-provider, telemetry, MCP client)
 ├─ agent.py           # headless agent loop (same providers via env)
 ├─ tools.py           # portable read-only + execution tool layer
 ├─ context.py         # token / context-window tracker
-├─ mcp_client.py      # MCP client (loads remote tools into the agent)
-├─ mcp_server/        # FastMCP server + web backoffice
+├─ mcp_client.py      # MCP client (attach external MCP servers)
 ├─ bench/             # benchmark harness, tiers, graders, charts
 └─ assets/            # README charts
 ```
