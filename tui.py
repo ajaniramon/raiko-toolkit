@@ -207,6 +207,11 @@ DEFAULT_CONFIG = {
                   "model": "claude-opus-4-8", "ctx_window": 200000,
                   "models": ["claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
                              "claude-sonnet-4-6", "claude-haiku-4-5", "claude-fable-5"]},
+    # Google Gemini via its OpenAI-compatible endpoint (same openai SDK)
+    "gemini": {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+               "api_key": "", "model": "gemini-2.5-flash", "ctx_window": 1048576,
+               "models": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite",
+                          "gemini-2.0-flash", "gemini-2.0-flash-lite"]},
     # remote llama.cpp: the URL is requested on selection and remembered here
     "remote": {"base_url": "", "api_key": "sk-noop", "model": "", "ctx_window": 16000},
     # MCP url: overridden in tui_config.json (not versioned) with your real host
@@ -218,11 +223,12 @@ DEFAULT_CONFIG = {
     "system_prompts": {"default": ""},
     "active_system_prompt": "default",   # used for NEW sessions
     "last": {"provider": None, "model": None},   # last used (default on startup)
-    "favorites": {"nano": [], "xai": [], "openrouter": [], "openai": [], "anthropic": [], "remote": []},
+    "favorites": {"nano": [], "xai": [], "openrouter": [], "openai": [], "anthropic": [],
+                  "gemini": [], "remote": []},
 }
 
 # OpenAI-compatible providers served via API (GPU sidebar OFF; model's ctx)
-CLOUD = {"nano", "xai", "openrouter", "openai", "anthropic", "remote"}
+CLOUD = {"nano", "xai", "openrouter", "openai", "anthropic", "gemini", "remote"}
 
 # The persona is user-configurable (via presets); TOOL_RULES are mechanical rules
 # that are ALWAYS appended so a custom persona can't break tool-calling.
@@ -424,6 +430,7 @@ class ProviderScreen(Screen):
         ("remote", "🌐  llama.cpp   (remote · enter a URL)"),
         ("openai", "⚙  OpenAI      (GPT · cloud)"),
         ("anthropic", "✺  Anthropic   (Claude · cloud)"),
+        ("gemini", "♊  Gemini      (Google · cloud)"),
         ("xai", "✦  xAI         (Grok · cloud)"),
         ("openrouter", "🔀  OpenRouter  (cloud · many models)"),
     ]
@@ -473,7 +480,7 @@ class ApiKeyScreen(Screen):
     BINDINGS = [("escape", "back", "Back")]
 
     LABELS = {"xai": "xAI", "openai": "OpenAI", "anthropic": "Anthropic",
-              "openrouter": "OpenRouter", "nano": "nano-gpt"}
+              "openrouter": "OpenRouter", "nano": "nano-gpt", "gemini": "Google Gemini"}
 
     def __init__(self, provider):
         super().__init__()
@@ -926,6 +933,7 @@ class ConfigureScreen(ModalScreen):
             ("k_nano", "nano-gpt key", True, ("nano", "api_key")),
             ("k_openai", "OpenAI key", True, ("openai", "api_key")),
             ("k_anthropic", "Anthropic key", True, ("anthropic", "api_key")),
+            ("k_gemini", "Google Gemini key", True, ("gemini", "api_key")),
             ("k_xai", "xAI key", True, ("xai", "api_key")),
             ("k_openrouter", "OpenRouter key", True, ("openrouter", "api_key")),
             ("remote_url", "Remote llama.cpp base_url", False, ("remote", "base_url")),
@@ -1121,7 +1129,7 @@ class ConfigureScreen(ModalScreen):
         lines = []
         # cloud provider keys → models.list()
         for prov, fid in [("nano", "k_nano"), ("openai", "k_openai"), ("anthropic", "k_anthropic"),
-                          ("xai", "k_xai"), ("openrouter", "k_openrouter")]:
+                          ("gemini", "k_gemini"), ("xai", "k_xai"), ("openrouter", "k_openrouter")]:
             key = values.get((prov, "api_key"), "")
             if not key:
                 continue
