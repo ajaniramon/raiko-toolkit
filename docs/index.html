@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>raiko-toolkit — point an agent at anything</title>
-<meta name="description" content="Reimon AI Krazy Orchestrator: a local-first, multi-provider LLM agent toolkit. Your GGUF models on the GPU, a remote llama-server, or the big cloud APIs — in one polished terminal UI, with a portable tool layer, an MCP server, and a decisive tool-calling benchmark.">
+<meta name="description" content="Reimon AI Krazy Orchestrator: a local-first, multi-provider LLM agent toolkit. Your GGUF models on the GPU, a remote llama-server, or the big cloud APIs — in one polished terminal UI, with a portable tool layer, an MCP client, and a decisive tool-calling benchmark.">
 <meta property="og:type" content="website">
 <meta property="og:title" content="raiko-toolkit — point an agent at anything">
-<meta property="og:description" content="A local-first, multi-provider LLM agent toolkit in a polished terminal UI: local llama.cpp on your GPU, remote, or cloud — with an MCP server and a decisive tool-calling benchmark.">
+<meta property="og:description" content="A local-first, multi-provider LLM agent toolkit in a polished terminal UI: local llama.cpp on your GPU, remote, or cloud — with an MCP client and a decisive tool-calling benchmark.">
 <meta property="og:image" content="https://ajaniramon.github.io/raiko-toolkit/logo.png">
 <meta property="og:url" content="https://ajaniramon.github.io/raiko-toolkit/">
 <meta name="twitter:card" content="summary_large_image">
@@ -274,7 +274,7 @@
         <p class="eyebrow">Reimon AI Krazy Orchestrator</p>
         <h1>Point an agent<br>at <span class="ac">anything</span><span class="cur">_</span></h1>
         <p class="lede">A local-first, multi-provider LLM agent toolkit — wrapped in a terminal UI that actually feels good.</p>
-        <p class="sub">Your own GGUF models on the GPU via <span class="mono">llama.cpp</span>, a remote llama-server, or the big cloud APIs. One tool layer, an MCP server, and a benchmark that decides which local model is worth your VRAM.</p>
+        <p class="sub">Your own GGUF models on the GPU via <span class="mono">llama.cpp</span>, a remote llama-server, or the big cloud APIs. One tool layer, an MCP client to plug in the MCP ecosystem, and a benchmark that decides which local model is worth your VRAM.</p>
         <div class="cta">
           <a class="btn btn-primary" href="https://github.com/ajaniramon/raiko-toolkit/releases">Download for your OS</a>
           <a class="btn btn-ghost" href="#install">Install with Python</a>
@@ -282,7 +282,7 @@
         <div class="metaline">
           <span><b>9</b> providers</span>
           <span><b>local</b> GPU + cloud</span>
-          <span><b>MCP</b> server + backoffice</span>
+          <span><b>MCP</b> client</span>
           <span>Windows · macOS · Linux</span>
         </div>
       </div>
@@ -357,7 +357,7 @@
         <div class="card reveal"><div class="ic" style="color:var(--purple)">⏺</div><h3>Clean widget chat</h3><p>Claude-Code-style: a gray user bubble, inline collapsible thinking, compact colored tool bullets with inline diffs, and an animated working bar while the model runs.</p></div>
         <div class="card reveal"><div class="ic" style="color:var(--green)">⚿</div><h3>Permission gating</h3><p>Allow / always / deny prompts for any flagged operation — writes, exec, secrets. Opt out per-run with <code>--dangerously-skip-permissions</code>.</p></div>
         <div class="card reveal"><div class="ic" style="color:var(--yellow)">✦</div><h3>Atlassian, built in</h3><p>Search, read and — behind a prompt — write <b>Jira</b> issues and <b>Confluence</b> pages (incl. search by author and paginated reads), all sharing one Atlassian token.</p></div>
-        <div class="card reveal"><div class="ic" style="color:var(--magenta)">⬡</div><h3>MCP tool server</h3><p>Serve the whole toolset over MCP with a web <b>backoffice</b> to enable/disable tools and author custom shell tools — no redeploy of the agent.</p></div>
+        <div class="card reveal"><div class="ic" style="color:var(--magenta)">⬡</div><h3>MCP client</h3><p>Plug raiko into any external MCP server(s) — filesystem, GitHub, a browser, your own. Their tools join the agent name-prefixed; you curate which servers, so no tool-list bloat.</p></div>
       </div>
     </div>
   </section>
@@ -368,7 +368,7 @@
       <div class="sec-head reveal">
         <p class="eyebrow">How it fits together</p>
         <h2>One agent core, every backend.</h2>
-        <p>The TUI and a headless agent both speak the OpenAI-compatible protocol, so the same tool layer drives any provider — local or cloud — and reaches the host through MCP.</p>
+        <p>The TUI and a headless agent both speak the OpenAI-compatible protocol, so the same tool layer drives any provider — local or cloud — and MCP servers plug in extra tools on top.</p>
       </div>
       <div class="arch reveal">
         <div class="arch-flow">
@@ -392,7 +392,7 @@
           <div class="col">
             <div class="node tool"><span class="t">tools.py</span><span class="s">read-only + exec</span></div>
             <div class="node acc"><span class="t">Jira · Confluence</span><span class="s">Atlassian token</span></div>
-            <div class="node mcp"><span class="t">MCP server</span><span class="s">+ web backoffice</span></div>
+            <div class="node mcp"><span class="t">MCP client</span><span class="s">attach any server</span></div>
           </div>
         </div>
       </div>
@@ -405,7 +405,7 @@
       <div class="sec-head reveal">
         <p class="eyebrow">The tool layer</p>
         <h2>Portable, stdlib-only, shared everywhere.</h2>
-        <p>The same tools back the TUI, the headless agent and the MCP server. Reads are free; writes and execution go through the permission prompt.</p>
+        <p>The same tools back the TUI and the headless agent; MCP servers add more on top. Reads are free; writes and execution go through the permission prompt.</p>
       </div>
       <div class="toolgrid">
         <div class="toolcat reveal">
@@ -441,22 +441,25 @@
     <div class="wrap split">
       <div class="reveal">
         <div class="codeblock">
-          <div class="cb-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="ttl">serve the toolset over MCP</span><span class="copy" data-copy="python mcp_server/server.py --http --port 8765">copy</span></div>
-<pre><span class="c"># one command — MCP endpoint + web backoffice</span>
-<span class="p">python</span> mcp_server/server.py <span class="y">--http</span> <span class="y">--port</span> <span class="g">8765</span>
-
-<span class="c">#   MCP endpoint  →  http://&lt;host&gt;:8765/mcp</span>
-<span class="c">#   Backoffice    →  http://&lt;host&gt;:8765/</span></pre>
+          <div class="cb-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="ttl">attach MCP servers (tui_config.json)</span><span class="copy">copy</span></div>
+<pre><span class="c">// each server's tools join the agent, name-prefixed</span>
+<span class="y">"mcp"</span>: {
+  <span class="y">"enabled"</span>: <span class="g">true</span>,
+  <span class="y">"servers"</span>: [
+    { <span class="y">"name"</span>:<span class="g">"fs"</span>, <span class="y">"url"</span>:<span class="g">"http://localhost:8765/mcp"</span>, <span class="y">"prefix"</span>:<span class="g">"fs_"</span> },
+    { <span class="y">"name"</span>:<span class="g">"gh"</span>, <span class="y">"url"</span>:<span class="g">"http://localhost:9000/mcp"</span>, <span class="y">"prefix"</span>:<span class="g">"gh_"</span> }
+  ]
+}</pre>
         </div>
       </div>
       <div class="reveal">
-        <p class="eyebrow">MCP server + backoffice</p>
-        <h2 style="font-family:var(--mono);font-size:1.7rem;font-weight:800">Manage your tools live.</h2>
+        <p class="eyebrow">MCP client</p>
+        <h2 style="font-family:var(--mono);font-size:1.7rem;font-weight:800">Plug in the MCP ecosystem.</h2>
         <ul class="feat-list">
-          <li><span class="mk">▸</span>Expose the whole toolset over the Model Context Protocol (streamable-HTTP).</li>
-          <li><span class="mk">▸</span><b style="color:var(--text)">Enable or disable</b> any tool and see the exact description the model receives.</li>
-          <li><span class="mk">▸</span>Author <b style="color:var(--text)">custom shell tools</b> — name + description + a command with <code style="font-family:var(--mono);color:var(--cyan)">{args}</code> — saved and hot-restarted, no agent redeploy.</li>
-          <li><span class="mk">▸</span>Point the TUI at it; remote tools are auto-discovered with a <code style="font-family:var(--mono);color:var(--cyan)">mac_</code> prefix.</li>
+          <li><span class="mk">▸</span>Attach <b style="color:var(--text)">any MCP server</b> (streamable-HTTP) — filesystem, GitHub, a browser, your own.</li>
+          <li><span class="mk">▸</span>Each server's tools are discovered on startup and exposed <b style="color:var(--text)">name-prefixed</b>; calls route back to the server that owns them.</li>
+          <li><span class="mk">▸</span><b style="color:var(--text)">You curate</b> which servers attach — bring exactly the capabilities you want, no tool-list bloat.</li>
+          <li><span class="mk">▸</span>A tool that mutates state still goes through the permission prompt.</li>
         </ul>
       </div>
     </div>

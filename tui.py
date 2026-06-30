@@ -217,8 +217,10 @@ DEFAULT_CONFIG = {
     "remote": {"base_url": "", "api_key": "sk-noop", "model": "", "ctx_window": 16000},
     # vLLM: an OpenAI-compatible server (vllm serve …). URL requested on selection.
     "vllm": {"base_url": "", "api_key": "sk-noop", "model": "", "ctx_window": 131072},
-    # MCP url: overridden in tui_config.json (not versioned) with your real host
-    "mcp": {"enabled": True, "url": "http://localhost:8765/mcp", "prefix": "mac_"},
+    # MCP client: connect raiko to external MCP servers. Each server's tools are
+    # exposed to the agent name-prefixed. Edit in tui_config.json:
+    #   "mcp": {"enabled": true, "servers": [{"name":"fs","url":"http://localhost:8765/mcp","prefix":"fs_"}]}
+    "mcp": {"enabled": False, "servers": []},
     "tavily_api_key": "",   # for the web_search tool (free key at tavily.com)
     "auto_compact": True,   # auto-summarize older turns when the context fills up
     "max_iterations": 8,    # max tool-call rounds per turn (agent loop cap)
@@ -1828,7 +1830,7 @@ class MainScreen(Screen):
         if app.is_local:
             self.set_interval(1.0, app.poll_usage)
             app.poll_usage()
-        if app.mcp_url:
+        if app.mcp_servers:
             app.run_worker(app.load_mcp_tools, thread=True)
         self.query_one("#prompt", Composer).focus()
 
@@ -1928,11 +1930,10 @@ class AgentTUI(App):
         self.cur_think = self.cur_content = ""
         self._think_leak_calls = []
         self.busy = False
-        self.mcp_url = None
-        self.mcp_prefix = "mac_"
-        self.mcp_tools = []
-        self.mcp_map = {}
-        self.mcp_names = set()
+        self.mcp_servers = []     # [{name,url,prefix}] enabled MCP servers to consume
+        self.mcp_tools = []       # OpenAI tool schemas (prefixed names)
+        self.mcp_route = {}       # prefixed_name -> (url, original_name)
+        self.mcp_names = set()    # set(self.mcp_route)
         self._stream_chars = 0
         self._pending_ctx = None
         self.server_proc = None
@@ -2023,12 +2024,7 @@ class AgentTUI(App):
         self.enable_thinking = self.cfg["local"].get("enable_thinking", True)
         self.client = OpenAI(base_url=self.base_url, api_key=self.api_key)
         self.tracker = ContextTracker(self.model)
-        mc = self.cfg.get("mcp", {})
-        if mc.get("enabled") and mc.get("url"):
-            self.mcp_url = mc["url"]
-            self.mcp_prefix = mc.get("prefix", "mac_")
-        else:
-            self.mcp_url = None
+        self.mcp_servers = self._mcp_servers_from_cfg()
         if ctx_limit:
             self.tracker.limit = ctx_limit
         elif not self.is_local:
@@ -2441,22 +2437,46 @@ class AgentTUI(App):
             self._do_compact(auto=True)
 
     # ---------- MCP (remote tools) ----------
+    def _mcp_servers_from_cfg(self):
+        """Build the list of enabled MCP servers from config. Supports a `servers`
+        list ([{name,url,prefix}]) and a legacy single {url, prefix} shape."""
+        mc = self.cfg.get("mcp", {}) or {}
+        if not mc.get("enabled"):
+            return []
+        servers = mc.get("servers")
+        if not servers and mc.get("url"):   # legacy single-server config (wizard)
+            servers = [{"name": "mcp", "url": mc["url"], "prefix": mc.get("prefix", "")}]
+        out = []
+        for i, s in enumerate(servers or []):
+            url = (s.get("url") or "").strip()
+            if url:
+                out.append({"name": s.get("name") or f"mcp{i + 1}",
+                            "url": url, "prefix": s.get("prefix", "")})
+        return out
+
     def load_mcp_tools(self):
-        raw, _names = mcp_client.list_tools_openai(self.mcp_url)
-        self.mcp_tools, self.mcp_map = [], {}
-        for t in raw:
-            orig = t["function"]["name"]
-            pn = self.mcp_prefix + orig
-            t["function"]["name"] = pn
-            self.mcp_tools.append(t)
-            self.mcp_map[pn] = orig
-        self.mcp_names = set(self.mcp_map)
-        n = len(self.mcp_names)
-        msg = (f"[green]MCP connected[/] · {n} remote tools from {self.mcp_url} "
-               f"(prefix '{self.mcp_prefix}')" if n
-               else f"[yellow]MCP: no tools reachable at {self.mcp_url} (server down?)[/]")
-        self.call_from_thread(self.write_log, Panel(Text.from_markup(msg),
-                              border_style="green" if n else "yellow", expand=False))
+        """Connect to each configured MCP server and merge its tools (name-prefixed)."""
+        self.mcp_tools, self.mcp_route = [], {}
+        lines = []
+        for srv in self.mcp_servers:
+            raw, _ = mcp_client.list_tools_openai(srv["url"])
+            cnt = 0
+            for t in raw:
+                orig = t["function"]["name"]
+                pn = srv["prefix"] + orig
+                t = {**t, "function": {**t["function"], "name": pn}}
+                self.mcp_tools.append(t)
+                self.mcp_route[pn] = (srv["url"], orig)
+                cnt += 1
+            lines.append(f"[green]✓[/] {srv['name']}: {cnt} tools (prefix '{srv['prefix']}')" if cnt
+                         else f"[yellow]✗ {srv['name']}: none reachable at {srv['url']}[/]")
+        self.mcp_names = set(self.mcp_route)
+        if not lines:
+            return
+        total = len(self.mcp_names)
+        self.call_from_thread(self.write_log, Panel(
+            Text.from_markup("[bold]MCP[/] · " + str(total) + " tools\n" + "\n".join(lines)),
+            border_style="green" if total else "yellow", expand=False))
 
     # ---------- permissions + tool execution ----------
     def ask_permission(self, tool, snippet, code):
@@ -2496,9 +2516,9 @@ class AgentTUI(App):
         """Runs a tool; for run_python/run_powershell with a dangerous op it asks
         for permission (unless skip_permissions) and, if approved, runs with allow_unsafe.
         Every actual call is bounded by TOOL_TIMEOUT (the permission prompt is not)."""
-        if name in self.mcp_names:   # remote tool (MCP) → run on the server
-            return self._with_timeout(
-                name, lambda: mcp_client.call_tool(self.mcp_url, self.mcp_map[name], raw_args))
+        if name in self.mcp_route:   # remote tool (MCP) → run on its server
+            url, orig = self.mcp_route[name]
+            return self._with_timeout(name, lambda: mcp_client.call_tool(url, orig, raw_args))
         try:
             args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
         except Exception:
@@ -2751,7 +2771,7 @@ class AgentTUI(App):
     _EXEC_TOOLS = {"write_file", "edit_file", "run_python", "run_powershell", "run_bash"}
 
     def _tool_color(self, name):
-        if name.startswith(self.mcp_prefix):
+        if name in self.mcp_names:
             return "magenta"
         if name == "vault_get_secret":
             return "green"
