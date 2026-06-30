@@ -30,7 +30,7 @@ benchmark** that decides which local model is actually worth running.
 | 🖥️ **Multi-provider TUI** | One wizard, 9 providers: `nano-gpt`, **local llama.cpp** (your GPU), **remote llama.cpp** / **vLLM** (enter a URL), `OpenAI`, `Anthropic`, `Gemini`, `xAI`, `OpenRouter`. |
 | 📊 **Live telemetry** | In local mode, real-time GPU-util sparkline + VRAM/CPU/RAM bars + temp/power/tok-s, straight from `nvidia-smi` + `psutil`. |
 | 🧩 **Clean widget chat** | opencode/Claude-Code-style: box-less message widgets, inline dim thinking (collapsible), compact colored tool bullets + inline diffs, and an animated "working" bar (spinner + wiggling wave + elapsed/tok·s) while the model runs. |
-| 🔐 **Permission gating** | Claude-Code-style allow/always/deny prompts for flagged operations (`--dangerously-skip-permissions` to opt out). |
+| 🔐 **Scoped permissions** | Allow/always/deny prompts for flagged ops — **Always-allow persists per tool** to a config allowlist (not a global switch). `write_file`/`edit_file` are **confined to a workspace** dir; writes outside it prompt. `--dangerously-skip-permissions` opts out. |
 | 🪐 **Atlassian integration** | Search, read and — behind a permission prompt — write **Jira** issues (`jira_search`/`jira_get`/`jira_assign`/`jira_comment`) and **Confluence** pages (`confluence_search`/`confluence_get`/`confluence_create`/`confluence_comment`), all sharing one Atlassian API token. |
 | 🔌 **MCP client** | Plug raiko into any external MCP server(s) — their tools join the agent name-prefixed, routed back to the right server. You curate which servers, so no tool-list bloat. |
 | 🏁 **Decisive benchmark** | 4 tiers, deterministic decoding, programmatic graders, resumable runs, and a leaderboard that tells you which model to burn your VRAM on. |
@@ -99,16 +99,20 @@ python tui.py --dangerously-skip-permissions
   (provider-reported when available — nano-gpt/OpenRouter — else from a price table you
   can override via `pricing`; self-hosted is free). Set `budget_usd` to cap a session — it
   warns as you approach it and blocks new turns once exceeded (`/clear` resets the tally).
+- **Scoped permissions + workspace** (`/permissions`): flagged ops prompt allow / **always /
+  deny; "always" persists that tool** to `permissions.allow` in config (deny-list too), so
+  trust survives restarts without a global skip. `write_file`/`edit_file` are **confined to
+  `permissions.workspace`** (default: the launch dir) — writing outside it triggers a prompt.
 - **Settings (`F2`)**: open and edit `tui_config.json` in-app, with JSON validation.
 - **Setup wizard (`/configure`, `--configure`, or first run)**: a guided screen for
   provider keys, Jira/Confluence and MCP, with live **Validate** and a safe **Save** (a
   blank field never clears an existing value). It also has **optional one-click downloads**:
   the Jira CLI + Vault binaries, and **llama-server auto-matched to your machine** (detects
   OS/arch + CUDA and grabs the right llama.cpp build) — or just skip them.
-- **Slash commands**: `/clear` (reset the conversation) · `/compact` (summarize older
-  turns) · `/system` (prompt editor) · `/tools` (tool log) · `/configure` (setup wizard) ·
-  `/help`. Typing `/` pops a filterable command menu above the input (↑/↓ to move, Tab to
-  complete, Enter to run).
+- **Slash commands**: `/clear` (reset) · `/compact` (summarize older turns) · `/system`
+  (prompt editor) · `/tools` (tool log) · `/configure` (setup wizard) · `/permissions`
+  (allow/deny + workspace) · `/help`. Typing `/` pops a filterable command menu above the
+  input (↑/↓ to move, Tab to complete, Enter to run).
 - **MCP client**: attach external MCP servers in config; their tools are discovered on startup and exposed name-prefixed per server.
 
 There's also a headless agent loop in **`agent.py`** (same providers via env vars) for
