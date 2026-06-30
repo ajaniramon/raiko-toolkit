@@ -95,6 +95,9 @@ python tui.py --dangerously-skip-permissions
 - **Diff view**: `write_file` / `edit_file` render a colored before→after diff of the change.
 - **Compaction**: when the context fills up the older turns are auto-summarized
   (`auto_compact` in config, threshold ~85%); run it anytime with `/compact`.
+- **Retry / edit / export**: `/retry` regenerates the last response, `/edit` rewinds to
+  your last message and drops it in the composer to tweak and resend, and `/export` writes
+  the whole conversation to a Markdown file.
 - **Cost & budget**: live USD estimate per turn + session total in the status bar
   (provider-reported when available — nano-gpt/OpenRouter — else from a price table you
   can override via `pricing`; self-hosted is free). Set `budget_usd` to cap a session — it
@@ -109,10 +112,11 @@ python tui.py --dangerously-skip-permissions
   blank field never clears an existing value). It also has **optional one-click downloads**:
   the Jira CLI + Vault binaries, and **llama-server auto-matched to your machine** (detects
   OS/arch + CUDA and grabs the right llama.cpp build) — or just skip them.
-- **Slash commands**: `/clear` (reset) · `/compact` (summarize older turns) · `/system`
-  (prompt editor) · `/tools` (tool log) · `/configure` (setup wizard) · `/permissions`
-  (allow/deny + workspace) · `/help`. Typing `/` pops a filterable command menu above the
-  input (↑/↓ to move, Tab to complete, Enter to run).
+- **Slash commands**: `/clear` (reset) · `/compact` (summarize older turns) · `/retry`
+  (regenerate) · `/edit` (edit & resend) · `/export` (to Markdown) · `/system` (prompt
+  editor) · `/tools` (tool log) · `/configure` (setup wizard) · `/permissions` (allow/deny
+  + workspace) · `/help`. Typing `/` pops a filterable command menu above the input (↑/↓ to
+  move, Tab to complete, Enter to run).
 - **MCP client**: attach external MCP servers in config; their tools are discovered on startup and exposed name-prefixed per server.
 
 There's also a headless agent loop in **`agent.py`** (same providers via env vars) for
