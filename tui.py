@@ -1705,6 +1705,9 @@ SLASH_COMMANDS = [
     ("/compact", "summarize older turns to free up context"),
     ("/system", "edit the system prompt (also F6)"),
     ("/tools", "open the tool-call log (also F4)"),
+    ("/retry", "regenerate the last response"),
+    ("/edit", "edit & resend your last message"),
+    ("/export", "save the conversation to Markdown"),
     ("/configure", "setup wizard: keys · Jira · Confluence · MCP"),
     ("/help", "list the available commands"),
 ]
@@ -1905,11 +1908,19 @@ class MainScreen(Screen):
             self.app.push_screen(ToolLogScreen())
         elif cmd in ("configure", "config", "setup"):
             self.app.push_screen(ConfigureScreen())
+        elif cmd in ("retry", "regen", "regenerate"):
+            self.app.retry_last()
+        elif cmd in ("edit", "rewind"):
+            self.app.edit_last()
+        elif cmd in ("export", "save"):
+            self.app.export_session()
         elif cmd == "help":
             self.app.write_log(Panel(Text.from_markup(
                 "[bold]Commands[/]\n"
                 "  [cyan]/clear[/]      clear the conversation context (keeps the system prompt)\n"
                 "  [cyan]/compact[/]    summarize older turns to free up context\n"
+                "  [cyan]/retry[/]      regenerate the last response · [cyan]/edit[/] edit & resend your last message\n"
+                "  [cyan]/export[/]     save the conversation to a Markdown file\n"
                 "  [cyan]/system[/]     edit the system prompt (also F6)\n"
                 "  [cyan]/tools[/]      open the tool-call log (also F4)\n"
                 "  [cyan]/configure[/]  setup wizard (keys · Jira · Confluence · MCP)\n"
@@ -2213,7 +2224,7 @@ class AgentTUI(App):
             f"[dim](history kept)[/]"), border_style="magenta", expand=False))
         self.update_ctx()
 
-    def render_history(self):
+    def render_history(self, footer=True):
         """Replay a resumed conversation as widgets (so it matches the live look)."""
         for m in self.messages:
             role, content = m.get("role"), m.get("content")
@@ -2233,7 +2244,84 @@ class AgentTUI(App):
             elif role == "tool":
                 note = " ".join((content or "").split())[:80]
                 self.write_log(Text.from_markup(f"  [dim]⎿ {note}[/]"))
-        self.write_log(Text.from_markup("[dim]— end of restored history —[/]"))
+        if footer:
+            self.write_log(Text.from_markup("[dim]— end of restored history —[/]"))
+
+    # ---------- retry / edit / export ----------
+    def _last_user_index(self):
+        for i in range(len(self.messages) - 1, -1, -1):
+            if self.messages[i].get("role") == "user":
+                return i
+        return None
+
+    def _rewind_to_last_user(self):
+        """Drop the last user message and everything after it; re-render the trimmed
+        conversation. Returns the dropped user text, or None if there's nothing to do."""
+        if self.busy:
+            return None
+        idx = self._last_user_index()
+        if idx is None:
+            self.write_log(Panel(Text("Nothing to retry/edit yet.", style="yellow"),
+                                 border_style="yellow", expand=False))
+            return None
+        text = self.messages[idx].get("content") or ""
+        self.messages = self.messages[:idx]
+        self.action_clear_log()
+        self.render_history(footer=False)
+        return text
+
+    def retry_last(self):
+        """Re-run the last user message (regenerate the response)."""
+        text = self._rewind_to_last_user()
+        if text is None:
+            return
+        self.busy = True
+        self.run_worker(lambda: self.agent_turn(text), thread=True, exclusive=True)
+
+    def edit_last(self):
+        """Rewind to the last user message and load it into the composer to edit + resend."""
+        text = self._rewind_to_last_user()
+        if text is None:
+            return
+        self.save_session()
+        try:
+            comp = self._q("#prompt", Composer)
+            comp._load(text)
+            comp.focus()
+        except Exception:
+            pass
+        self.write_log(Text.from_markup("[dim]✎ edit your message above and press Enter to resend[/]"))
+
+    def export_session(self):
+        """Write the current conversation to a Markdown file under the sessions dir."""
+        ts = datetime.now().isoformat(timespec="seconds")
+        lines = [f"# raiko conversation — {self.provider} · {self.model}", f"_exported {ts}_", ""]
+        for m in self.messages:
+            role, content = m.get("role"), (m.get("content") or "")
+            if role == "system":
+                continue
+            if role == "user":
+                lines += ["## 🧑 You", "", content, ""]
+            elif role == "assistant":
+                if content:
+                    lines += ["## 🤖 Assistant", "", content, ""]
+                for tc in (m.get("tool_calls") or []):
+                    fn = tc.get("function", {})
+                    args = (fn.get("arguments", "") or "")[:200]
+                    lines += [f"> 🛠 `{fn.get('name', '?')}({args})`", ""]
+            elif role == "tool":
+                lines += ["> ⎿ " + " ".join(content.split())[:500], ""]
+        fn = f"export-{self.session_id or datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
+        path = os.path.join(_sessions_dir(), fn)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+        except Exception as e:
+            self.write_log(Panel(Text(f"export failed: {e}", style="red"), border_style="red", expand=False))
+            return
+        n = sum(1 for m in self.messages if m.get("role") != "system")
+        self.write_log(Panel(Text.from_markup(f"Exported {n} messages to [cyan]{path}[/]"),
+                             title="[bold green]📄 export[/]", border_style="green", expand=False))
 
     def _local_failed(self, err):
         try:
