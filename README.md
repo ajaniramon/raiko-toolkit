@@ -95,6 +95,10 @@ python tui.py --dangerously-skip-permissions
 - **Diff view**: `write_file` / `edit_file` render a colored before→after diff of the change.
 - **Compaction**: when the context fills up the older turns are auto-summarized
   (`auto_compact` in config, threshold ~85%); run it anytime with `/compact`.
+- **Cost & budget**: live USD estimate per turn + session total in the status bar
+  (provider-reported when available — nano-gpt/OpenRouter — else from a price table you
+  can override via `pricing`; self-hosted is free). Set `budget_usd` to cap a session — it
+  warns as you approach it and blocks new turns once exceeded (`/clear` resets the tally).
 - **Settings (`F2`)**: open and edit `tui_config.json` in-app, with JSON validation.
 - **Setup wizard (`/configure`, `--configure`, or first run)**: a guided screen for
   provider keys, Jira/Confluence and MCP, with live **Validate** and a safe **Save** (a
