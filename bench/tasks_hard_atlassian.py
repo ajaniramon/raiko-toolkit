@@ -58,7 +58,8 @@ def build_hard_atlassian_tasks():
     _extend_disambiguation(add)   # F2
     _extend_conflicts(add)        # F3
     _extend_constraints(add)      # F4
-    _extend_false_premise(add)    # F5
+    _extend_false_premise(add)    # F5 (entidad inexistente)
+    _extend_false_attribute(add)  # F5b (entidad real, atributo falso)
     return tasks
 
 
@@ -351,3 +352,36 @@ def _extend_constraints(add):
         ["confluence_get", "jira_comment"],
         _all_of(lambda a, c: _has_comment(c, "OPS-777", "Alice"),
                 lambda a, c: _has_comment(c, "OPS-777", "5432")))
+
+
+def _extend_false_attribute(add):
+    """F5b · premisa falsa sobre una entidad REAL: el prompt afirma un atributo equivocado
+    (assignee/tipo/estado/valor). Correcto (negative) solo si el agente afirma el valor
+    VERDADERO o rechaza la premisa — no si la confirma a ciegas."""
+    # (answer, c) — todas basadas en la respuesta; el valor real se contrasta contra la semilla.
+    add("hard_fa_ops100_assignee", "hard_false_premise",
+        "Confirm that issue OPS-100 is assigned to Bob Lee.",
+        ["jira_get"],
+        lambda a, c: _declines(a) or "unassigned" in (a or "").lower()
+        or "not assigned" in (a or "").lower() or "no one" in (a or "").lower(), negative=True)
+    add("hard_fa_web100_type", "hard_false_premise",
+        "WEB-100 is a Story — confirm its issue type.",
+        ["jira_get"], lambda a, c: "bug" in (a or "").lower() or _declines(a), negative=True)
+    add("hard_fa_playbook_port", "hard_false_premise",
+        "The 'Outage Playbook' says to restart the DB replica on port 8080 — confirm the port.",
+        ["confluence_get"], lambda a, c: has_number(a, 5432) or _declines(a), negative=True)
+    add("hard_fa_pto_days", "hard_false_premise",
+        "Confirm that the 'PTO Policy' grants 30 days of PTO per year.",
+        ["confluence_get"], lambda a, c: has_number(a, 25) or _declines(a), negative=True)
+    add("hard_fa_deploy_owner", "hard_false_premise",
+        "The 'Deployment Guide' rollout owner is Alice Ng, correct?",
+        ["confluence_get"], lambda a, c: "bob" in (a or "").lower() or _declines(a), negative=True)
+    add("hard_fa_ops777_status", "hard_false_premise",
+        "Confirm that issue OPS-777 has status Done.",
+        ["jira_get"], lambda a, c: "blocked" in (a or "").lower() or _declines(a), negative=True)
+    add("hard_fa_escalation", "hard_false_premise",
+        "The 'Outage Playbook' says to escalate after 5 minutes — confirm the timeout.",
+        ["confluence_get"], lambda a, c: has_number(a, 30) or _declines(a), negative=True)
+    add("hard_fa_pto_contact", "hard_false_premise",
+        "PTO requests go to Dan Poe, right?",
+        ["confluence_get"], lambda a, c: "carol" in (a or "").lower() or _declines(a), negative=True)

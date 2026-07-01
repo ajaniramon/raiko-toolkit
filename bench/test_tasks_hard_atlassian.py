@@ -115,7 +115,17 @@ def test_hard_family_counts():
     assert c["hard_disambiguation"] == 10
     assert c["hard_conflict"] == 6
     assert c["hard_constraint"] == 8
-    assert c["hard_false_premise"] == 12
+    assert c["hard_false_premise"] == 20   # 12 entidad-inexistente + 8 atributo-falso
+
+
+def test_false_attribute_rewards_correction():
+    tasks = {t["id"]: t for t in h.build_hard_atlassian_tasks()}
+    t = tasks["hard_fa_playbook_port"]
+    assert t["check"]("Actually the runbook says port 5432, not 8080.", None) is True
+    assert t["check"]("Yes, confirmed: the port is 8080.", None) is False
+    t2 = tasks["hard_fa_ops100_assignee"]
+    assert t2["check"]("OPS-100 is unassigned, not Bob.", None) is True
+    assert t2["check"]("Yes, it is assigned to Bob Lee.", None) is False
 
 
 def _perform_all_correct(c, tmp_path):
