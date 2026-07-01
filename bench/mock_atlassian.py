@@ -248,7 +248,7 @@ class MockConfluence:
                 if not names:
                     return (f"No Confluence user matched '{author}'. Use confluence_user to "
                             f"find the exact name / accountId, then retry.")
-            if len(parts) == 1:
+            if len(parts) == 1 and not author:   # author-only sí es una búsqueda válida
                 return "ERROR: provide `query`, `author`, `space`, or a raw `cql`."
             q = " AND ".join(parts)
         matched = [p for p in self._pages.values() if _eval_cql(p, q)]

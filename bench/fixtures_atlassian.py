@@ -94,6 +94,16 @@ def build_confluence_seed():
                 "editor": editor, "edited": f"2026-0{1 + ((k + 1) % 6)}-15",
                 "version": 1 + (k % 5), "links": links,
             })
+    # Página larga (>12k chars) para ejercitar la paginación de confluence_get:
+    # el codeword va al final, fuera de la primera ventana de 12000 chars.
+    long_body = ("Runbook operational notes. " * 620) + \
+                "\nFINAL LINE: the codeword is OMEGA-CODEWORD-42."
+    pages.append({
+        "id": "10099", "space": "RUNBOOKS", "title": "Long Runbook Archive",
+        "body": long_body, "labels": ["runbook", "archive"], "ancestors": ["Outage Playbook"],
+        "creator": "Alice Ng", "created": "2026-01-01",
+        "editor": "Alice Ng", "edited": "2026-06-30", "version": 9, "links": [],
+    })
     return pages
 
 

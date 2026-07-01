@@ -117,6 +117,12 @@ def test_conf_user():
     out = c.user("Alice")
     assert "acc-alice" in out and "Alice Ng" in out
 
+def test_conf_search_author_only():
+    c = MockConfluence(PAGES, USERS_T)
+    out = c.search(author="Alice")          # solo autor, sin query/space
+    assert "10001" in out and "10002" not in out   # 10001 es de Alice Ng, 10002 de Bob Lee
+    assert c.search(author="Zoe Nobody").startswith("No Confluence user matched")
+
 def test_conf_create_mutates():
     c = MockConfluence(PAGES, USERS_T)
     out = c.create(space="ENG", title="Postmortem OPS-1", body="root cause: bad deploy")

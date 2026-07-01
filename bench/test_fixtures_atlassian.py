@@ -23,6 +23,15 @@ def test_conf_seed_size_and_spaces():
 def test_conf_seed_deterministic():
     assert fx.build_confluence_seed() == fx.build_confluence_seed()
 
+def test_long_page_for_pagination():
+    pages = fx.build_confluence_seed()
+    lp = [p for p in pages if p["title"] == "Long Runbook Archive"]
+    assert len(lp) == 1
+    p = lp[0]
+    assert len(p["body"]) > 12000                      # fuerza paginación en confluence_get
+    assert "OMEGA-CODEWORD-42" in p["body"]
+    assert p["body"].index("OMEGA-CODEWORD-42") > 12000  # el codeword va tras la 1ª ventana
+
 def test_needle_issue_present():
     issues = fx.build_jira_seed()
     needles = [i for i in issues if "NEBULA7788" in (i["summary"] + i["description"])]
