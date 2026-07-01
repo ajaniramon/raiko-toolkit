@@ -1595,7 +1595,26 @@ _WAVE = "▁▂▃▄▅▆▇▆▅▄▃▂"
 _SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧"
 
 
-class Notice(Static):
+class SelectableStatic(Static):
+    """A Static that stays selectable even when it renders a non-Text/Content
+    renderable (Markdown, a diff Syntax, a Panel…). Textual's default get_selection
+    returns None for those, so the text can't be copied. We fall back to rebuilding
+    the on-screen text from the rendered strips, whose lines/columns line up exactly
+    with the selection offsets the user dragged over."""
+
+    def get_selection(self, selection):
+        result = super().get_selection(selection)
+        if result is not None:
+            return result
+        cache = getattr(self, "_render_cache", None)
+        lines = getattr(cache, "lines", None) if cache else None
+        if not lines:
+            return None
+        text = "\n".join(strip.text for strip in lines)
+        return selection.extract(text), "\n"
+
+
+class Notice(SelectableStatic):
     """A one-off, box-less line in the chat (connect line, errors, status notes)."""
 
 
@@ -1637,7 +1656,7 @@ class ThinkingBlock(Vertical):
     def __init__(self):
         super().__init__()
         self._head = Static(Text("💭 thinking", style="#9b93b8"), classes="thead")
-        self._body = Static("", classes="tbody")
+        self._body = SelectableStatic("", classes="tbody")
         self._open = True
         self._has_text = False
 
@@ -1667,7 +1686,7 @@ class AssistantBlock(Vertical):
     def __init__(self):
         super().__init__()
         self.think = ThinkingBlock()
-        self.body = Static("")
+        self.body = SelectableStatic("")
 
     def compose(self) -> ComposeResult:
         yield self.think
@@ -1691,8 +1710,8 @@ class ToolBlock(Vertical):
 
     def __init__(self, call_renderable):
         super().__init__()
-        self.call_static = Static(call_renderable)
-        self.result_static = Static("")
+        self.call_static = SelectableStatic(call_renderable)
+        self.result_static = SelectableStatic("")
 
     def compose(self) -> ComposeResult:
         yield self.call_static
