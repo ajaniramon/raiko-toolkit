@@ -28,6 +28,11 @@ import serve
 from harness import run_task, aggregate
 from tools import TOOLS
 from tasks_advanced import build_tasks_adv
+from tasks_atlassian import build_atlassian_tasks
+import fixtures_atlassian as fx
+from mock_atlassian import (MockJira, MockConfluence, MockVault, AtlasCtx,
+                            build_atlas_impls)
+from tools import DISPATCH
 
 console = Console()
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -103,23 +108,36 @@ def run_suite(client, alias, label, tasks, enable_thinking):
         for i, task in enumerate(tasks, 1):
             if task["id"] in done:
                 results.append(done[task["id"]])
-                console.print(f"  [{label}] {i:>2}/{len(tasks)} {task['id']:<16} [dim]cached[/]")
+                console.print(f"  [{label}] {i:>2}/{len(tasks)} {task['id']:<20} [dim]cached[/]")
                 continue
             # FRESH sandbox per task in a UNIQUE dir (avoids the WinError 32 from
             # deleting a dir that a just-finished subprocess still holds on
             # Windows). chdir to a stable dir before building.
             os.chdir(SCRATCH)
             base = os.path.join(SCRATCH, "advtmp", f"{label}_{i}")
-            root = fixtures.build_sandbox(base)["root"]
-            os.chdir(root)
-            r = run_task(client, alias, task, root, enable_thinking,
-                         tools=FULL_TOOLS, grader_root=True)
+            if task.get("setup") == "atlassian":
+                # empty FS sandbox (for write_file chains) + fresh mocks
+                os.makedirs(base, exist_ok=True)
+                root = base
+                os.chdir(root)
+                jira = MockJira(fx.build_jira_seed(), fx.USERS)
+                conf = MockConfluence(fx.build_confluence_seed(), fx.USERS)
+                vault = MockVault(fx.build_vault_seed())
+                disp = dict(DISPATCH); disp.update(build_atlas_impls(jira, conf, vault))
+                ctx = AtlasCtx(jira, conf, vault, root)
+                r = run_task(client, alias, task, root, enable_thinking,
+                             tools=FULL_TOOLS, dispatch=disp, grader_ctx=ctx)
+            else:
+                root = fixtures.build_sandbox(base)["root"]
+                os.chdir(root)
+                r = run_task(client, alias, task, root, enable_thinking,
+                             tools=FULL_TOOLS, grader_root=True)
             results.append(r)
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
             f.flush(); os.fsync(f.fileno())
             mark = "[green]OK [/]" if r["correct"] else "[red]FAIL[/]"
             tool = "" if r["tool_ok"] else "[yellow](tool?)[/]"
-            console.print(f"  [{label}] {i:>2}/{len(tasks)} {task['id']:<16} {mark} {tool} "
+            console.print(f"  [{label}] {i:>2}/{len(tasks)} {task['id']:<20} {mark} {tool} "
                           f"score={r['score']:.2f} iters={r['iterations']} {r['latency_s']}s [dim]{r['status']}[/]")
     finally:
         f.close()
@@ -146,6 +164,16 @@ def write_report(all_runs, n_tasks):
               "|---|" + "---|" * len(rows)]
     for c in cats:
         lines.append(f"| {c} | " + " | ".join(str(r["agg"]["by_category"].get(c, "—")) for r in rows) + " |")
+    diffs = ["easy", "medium", "hard"]
+    lines += ["", "## Accuracy by difficulty (%)", "",
+              "| Difficulty | " + " | ".join(r["label"] for r in rows) + " |",
+              "|---|" + "---|" * len(rows)]
+    for d in diffs:
+        cells = []
+        for r in rows:
+            per = r["agg"].get("by_difficulty", {})
+            cells.append(str(per.get(d, "—")))
+        lines.append(f"| {d} | " + " | ".join(cells) + " |")
     lines += ["", f"Transcripts in `results/adv/logs/`.", ""]
     os.makedirs(ADV_DIR, exist_ok=True)
     open(os.path.join(ADV_DIR, "report_adv.md"), "w", encoding="utf-8").write("\n".join(lines))
@@ -166,7 +194,7 @@ def main():
     os.chdir(HERE)
     shutil.rmtree(os.path.join(SCRATCH, "advtmp"), ignore_errors=True)
 
-    tasks = build_tasks_adv()
+    tasks = build_tasks_adv() + build_atlassian_tasks()
     if args.limit:
         tasks = tasks[:args.limit]
     total = len(tasks)

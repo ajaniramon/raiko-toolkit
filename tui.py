@@ -1042,8 +1042,8 @@ class ConfigureScreen(ModalScreen):
                 yield Static("Optional downloads — click to fetch (skip = do nothing)", classes="csec")
                 yield Static(Text.from_markup(f"[dim]detected: {installers.describe()}[/]"), id="cdetect")
                 with Horizontal(classes="crow"):
-                    yield Static("Jira + Vault CLIs", classes="clabel")
-                    yield Button("Download", id="dl_clis", variant="primary")
+                    yield Static("Jira CLI", classes="clabel")
+                    yield Button("Download Jira CLI", id="dl_clis", variant="primary")
                 with Horizontal(classes="crow"):
                     yield Static("llama-server (local GPU)", classes="clabel")
                     yield Button("Download for my machine", id="dl_llama", variant="primary")
@@ -1096,14 +1096,14 @@ class ConfigureScreen(ModalScreen):
          "dl_llama": self.action_dl_llama}[e.button.id]()
 
     def action_dl_clis(self):
-        self._status("[cyan]Downloading Jira CLI + Vault… (this can take a minute)[/]")
+        self._status("[cyan]Downloading Jira CLI… (this can take a minute)[/]")
         self.run_worker(self._dl_clis_worker, thread=True)
 
     def _dl_clis_worker(self):
         import installers
         log = lambda m: self.app.call_from_thread(self._status, f"[dim]{m}[/]")
         out = []
-        for name, fn in [("jira", installers.install_jira_cli), ("vault", installers.install_vault)]:
+        for name, fn in [("jira", installers.install_jira_cli)]:
             try:
                 path, msg = fn(log=log)
             except Exception as ex:

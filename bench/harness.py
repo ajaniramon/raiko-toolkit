@@ -55,7 +55,8 @@ def _extract_reasoning(msg) -> str:
 
 
 def run_task(client, model_name, task, root, enable_thinking, tools=None,
-             grader_root=False, system_prompt=None, max_iterations=None):
+             grader_root=False, system_prompt=None, max_iterations=None,
+             dispatch=None, grader_ctx=None):
     """Executes a task. Returns a dict with result, metrics and the full transcript.
 
     tools: list of tools to expose (defaults to READONLY_TOOLS).
@@ -144,7 +145,7 @@ def run_task(client, model_name, task, root, enable_thinking, tools=None,
                 bad_json = True
                 malformed_json += 1
 
-            result = call_tool(name, raw_args)
+            result = call_tool(name, raw_args, dispatch=dispatch)
             if len(result) > TOOL_RESULT_CAP:
                 result = result[:TOOL_RESULT_CAP] + f"\n... (truncated, {len(result) - TOOL_RESULT_CAP} chars more)"
 
@@ -165,7 +166,9 @@ def run_task(client, model_name, task, root, enable_thinking, tools=None,
 
     # ---- grading ----
     try:
-        if grader_root:
+        if grader_ctx is not None:
+            correct = bool(task["check"](answer or "", grader_ctx))
+        elif grader_root:
             correct = bool(task["check"](answer or "", root))
         else:
             correct = bool(task["check"](answer or ""))
@@ -184,6 +187,7 @@ def run_task(client, model_name, task, root, enable_thinking, tools=None,
     return {
         "id": task["id"],
         "category": task["category"],
+        "difficulty": task.get("difficulty"),
         "negative": bool(task.get("negative")),
         "prompt": task["prompt"],
         "answer": answer,
@@ -236,6 +240,13 @@ def aggregate(results: list) -> dict:
         cats.setdefault(r["category"], []).append(r["correct"])
     by_category = {c: round(100 * sum(v) / len(v)) for c, v in sorted(cats.items())}
 
+    diffs = {}
+    for r in results:
+        d = r.get("difficulty")
+        if d:
+            diffs.setdefault(d, []).append(r["correct"])
+    by_difficulty = {d: round(100 * sum(v) / len(v)) for d, v in sorted(diffs.items())}
+
     return {
         "n_tasks": n,
         "final_score": final_score,
@@ -251,4 +262,5 @@ def aggregate(results: list) -> dict:
         "avg_latency_s": round(sum(r["latency_s"] for r in results) / n, 2),
         "total_completion_tokens": sum(r["completion_tokens"] for r in results),
         "by_category": by_category,
+        "by_difficulty": by_difficulty,
     }

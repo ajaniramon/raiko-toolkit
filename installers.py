@@ -1,13 +1,12 @@
 """Optional dependency installers used by the configure wizard.
 
-Downloads the external binaries the toolkit can use — the Jira CLI, HashiCorp
-Vault and llama-server — picking the right release asset for the current OS /
-arch (and CUDA, for llama-server). Everything is opt-in: the wizard only calls
+Downloads the external binaries the toolkit can use — the Jira CLI and
+llama-server — picking the right release asset for the current OS / arch
+(and CUDA, for llama-server). Everything is opt-in: the wizard only calls
 these when the user clicks the button.
 
 Targets the paths the rest of the app already looks in (Windows):
     jira  -> C:\\utils\\jira\\bin\\jira.exe   (tools._jira_bin default)
-    vault -> C:\\utils\\vault.exe             (bench/vaultsvc.py)
     llama -> C:\\llamacpp\\llama-server.exe   (bench/models.json default)
 On other OSes it installs under ~/.raiko/bin and returns the resolved path so
 the caller can persist it.
@@ -108,32 +107,6 @@ def install_jira_cli(log=print):
     if os.name != "nt":
         os.chmod(path, 0o755)
     return path, f"jira-cli → {path}"
-
-
-def install_vault(log=print):
-    """Install HashiCorp Vault. Returns (path_or_None, message)."""
-    import requests
-    d = detect()
-    os_tok = {"windows": "windows", "macos": "darwin", "linux": "linux"}[d["os"]]
-    arch_tok = {"x64": "amd64", "arm64": "arm64"}.get(d["arch"], d["arch"])
-    data = requests.get("https://api.releases.hashicorp.com/v1/releases/vault/latest", timeout=20).json()
-    url = next((b["url"] for b in data.get("builds", [])
-                if b.get("os") == os_tok and b.get("arch") == arch_tok), None)
-    if not url:
-        return None, f"no vault build for {d['os']}/{d['arch']}"
-    tmp = os.path.join(tempfile.gettempdir(), url.split("/")[-1])
-    _download(url, tmp, log)
-    dest = _tools_dir()
-    _extract(tmp, dest)   # the vault zip holds a bare vault / vault.exe
-    exe = "vault.exe" if os.name == "nt" else "vault"
-    path = os.path.join(dest, exe)
-    if not os.path.isfile(path):
-        path = _find(dest, exe)
-    if not path:
-        return None, "vault extracted but binary not found"
-    if os.name != "nt":
-        os.chmod(path, 0o755)
-    return path, f"vault → {path}"
 
 
 def _models_json_path(repo_root: str = None) -> str:
