@@ -1943,7 +1943,9 @@ class MainScreen(Screen):
 
 class AgentTUI(App):
     CSS = "Screen { layout: vertical; } #body { height: 1fr; }"
-    BINDINGS = [("ctrl+c", "quit", "Quit"), ("ctrl+l", "clear_log", "Clear")]
+    # Quit on ctrl+q so we don't shadow Textual's smart ctrl+c, which copies the
+    # current text selection to the clipboard (and still quits on a double press).
+    BINDINGS = [("ctrl+q", "quit", "Quit"), ("ctrl+l", "clear_log", "Clear")]
 
     def __init__(self, cfg, cli_provider=None, cli_model=None, cli_demo=False,
                  skip_permissions=False, cli_configure=False):
@@ -2333,7 +2335,7 @@ class AgentTUI(App):
     def _local_failed(self, err):
         try:
             self.screen.query_one("#lmsg", Static).update(Text("Could not start the model", style="bold red"))
-            self.screen.query_one("#lerr", Static).update(Text(f"{err}\n(Ctrl+C to quit)", style="red"))
+            self.screen.query_one("#lerr", Static).update(Text(f"{err}\n(Ctrl+Q to quit)", style="red"))
         except Exception:
             pass
 
