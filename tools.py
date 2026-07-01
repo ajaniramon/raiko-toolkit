@@ -1278,8 +1278,9 @@ DISPATCH = {
 }
 
 
-def call_tool(name: str, arguments: str | dict) -> str:
-    if name not in DISPATCH:
+def call_tool(name: str, arguments: str | dict, dispatch: dict | None = None) -> str:
+    table = dispatch if dispatch is not None else DISPATCH
+    if name not in table:
         return f"ERROR: unknown tool {name}"
     # Malformed JSON in the arguments must NOT crash the turn: we return a
     # recoverable error so the model retries with valid JSON.
@@ -1291,7 +1292,7 @@ def call_tool(name: str, arguments: str | dict) -> str:
     if not isinstance(args, dict):
         return f"ERROR: arguments for '{name}' must be a JSON object."
     try:
-        result = DISPATCH[name](**args)
+        result = table[name](**args)
     except Exception as e:
         return f"ERROR: {type(e).__name__}: {e}"
     return result if isinstance(result, str) else json.dumps(result)
