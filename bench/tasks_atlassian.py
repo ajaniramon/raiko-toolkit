@@ -5,10 +5,17 @@ inyecta el dispatch y pasa un AtlasCtx como grader_ctx. Los checks tienen firma
 check(answer, ctx).
 """
 import os
+import re
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tasks import contains, has_number      # helpers de grading reutilizados
 from tasks_advanced import rf                # lectura de ficheros del sandbox
+
+
+def _mentions_space(answer, space):
+    """El space key (p.ej. 'HR', 'ENG') como palabra completa y case-sensitive,
+    para no sobre-acreditar por substring dentro de palabras normales ('through')."""
+    return re.search(rf"\b{re.escape(space)}\b", answer or "") is not None
 
 CATEGORIES = {"jira_search", "conf_search", "jira_read", "conf_read",
               "jira_write", "conf_write", "chain", "vault_gated"}
@@ -204,7 +211,7 @@ def _extend_generated(add):
     for p in clean_pages:
         add(f"gcr_{p['id']}", "conf_read", "easy",
             f"Use confluence_get to open the page titled '{p['title']}' and report which space it is in.",
-            ["confluence_get"], (lambda s: lambda a, c: contains(a, s))(p["space"]))
+            ["confluence_get"], (lambda s: lambda a, c: _mentions_space(a, s))(p["space"]))
 
     # chain A: jira_get -> write_file (abre el issue por key y escribe su status).
     for i in [x for x in issues if x["key"] != "OPS-777"][::4][:16]:
