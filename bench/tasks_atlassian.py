@@ -50,8 +50,8 @@ def build_atlassian_tasks():
         "Use confluence_search to find the page titled 'Outage Playbook' and report its id.",
         ["confluence_search"], lambda a, c: contains(a, "10001"))
     add("cs_space_filter", "conf_search", "medium",
-        "Search Confluence in the RUNBOOKS space for pages about backups and report a matching title.",
-        ["confluence_search"], lambda a, c: contains(a, "Backup"))
+        "Search Confluence in the RUNBOOKS space for the page about backup recovery and report its title.",
+        ["confluence_search"], lambda a, c: contains(a, "Backup Recovery"))
 
     # ---------------- Jira: lectura / extracción ----------------
     add("jr_assignee", "jira_read", "easy",
