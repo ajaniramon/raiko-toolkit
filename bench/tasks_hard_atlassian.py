@@ -54,8 +54,11 @@ def build_hard_atlassian_tasks():
                       "prompt": prompt, "expect_tools": expect, "check": check,
                       "negative": negative, "setup": "atlassian"})
 
-    _extend_multihop(add)        # F1
-    _extend_false_premise(add)   # F5
+    _extend_multihop(add)         # F1
+    _extend_disambiguation(add)   # F2
+    _extend_conflicts(add)        # F3
+    _extend_constraints(add)      # F4
+    _extend_false_premise(add)    # F5
     return tasks
 
 
@@ -66,6 +69,12 @@ def _page_body(ctx, title):
 def _has_comment(ctx, key, text):
     i = ctx.jira.issue(key)
     return bool(i) and any(text.lower() in x.lower() for x in i["comments"])
+
+
+def _only_target_commented(ctx, target, siblings, text):
+    """El comentario está en el issue correcto Y en ninguno de sus casi-duplicados."""
+    return _has_comment(ctx, target, text) and not any(
+        _has_comment(ctx, k, text) for k in siblings if k != target)
 
 
 def _extend_multihop(add):
@@ -198,3 +207,147 @@ def _extend_false_premise(add):
         "Read the secret at 'secret/data/prod-db', take its 'issue' field, and comment "
         "'credentials rotated' on that Jira issue.",
         ["vault_get_secret"], lambda a, c: _declines(a), negative=True)
+
+
+# ============================ F2 · desambiguación ============================
+def _extend_disambiguation(add):
+    """F2 · casi-duplicados: mismo summary, distinta (status,assignee,type). El agente
+    debe elegir por CONJUNCIÓN de atributos y actuar solo sobre el correcto (los hermanos NO)."""
+    import fixtures_atlassian as fx
+    SIB = fx.DUPE_CLUSTER
+    S = "the 'checkout timeout regression under load' issues"
+
+    # comentar en el issue que cumple la conjunción (y solo en ese)
+    comments = [
+        ("hard_dis_c1", "WEB-900", f"Among {S}, comment 'confirmed-A' on the one that is In Review, assigned to Carol Diaz, and a Bug.", "confirmed-A"),
+        ("hard_dis_c2", "WEB-901", f"Among {S}, comment 'confirmed-B' on the one that is In Review and assigned to Dan Poe.", "confirmed-B"),
+        ("hard_dis_c3", "WEB-902", f"Among {S}, comment 'confirmed-C' on the one that is Blocked.", "confirmed-C"),
+        ("hard_dis_c4", "WEB-903", f"Among {S}, comment 'confirmed-D' on the one that is In Progress.", "confirmed-D"),
+        ("hard_dis_c5", "WEB-904", f"Among {S}, comment 'confirmed-E' on the one that is Done.", "confirmed-E"),
+        ("hard_dis_c6", "WEB-905", f"Among {S}, comment 'confirmed-F' on the Task that is In Review.", "confirmed-F"),
+    ]
+    for tid, target, prompt, text in comments:
+        add(tid, "hard_disambiguation", prompt, ["jira_search", "jira_comment"],
+            (lambda tg, tx: lambda a, c: _only_target_commented(c, tg, SIB, tx))(target, text),
+            )
+
+    # reasignar el issue que cumple la conjunción
+    assigns = [
+        ("hard_dis_a1", "WEB-902", "erin@raiko.dev", f"Among {S}, reassign the Blocked Bug to erin@raiko.dev."),
+        ("hard_dis_a2", "WEB-903", "bob@raiko.dev",  f"Among {S}, reassign the In Progress Task to bob@raiko.dev."),
+        ("hard_dis_a3", "WEB-901", "alice@raiko.dev", f"Among {S}, reassign the Bug assigned to Dan Poe to alice@raiko.dev."),
+        ("hard_dis_a4", "WEB-900", "dan@raiko.dev",  f"Among {S}, reassign the In Review Bug assigned to Carol Diaz to dan@raiko.dev."),
+    ]
+    for tid, target, who, prompt in assigns:
+        add(tid, "hard_disambiguation", prompt, ["jira_search", "jira_assign"],
+            (lambda tg, w: lambda a, c: c.jira.issue(tg)["assignee"] == w)(target, who))
+
+
+# ============================== F3 · conflictos ==============================
+def _extend_conflicts(add):
+    """F3 · datos en conflicto: dos páginas discrepan en un valor; la más reciente (por la
+    fecha 'Last verified' del cuerpo) es la autoritativa. El agente debe detectarlo."""
+    # report-both + cuál es más reciente
+    add("hard_cf_port_report", "hard_conflict",
+        "'Primary DB Runbook' and 'Legacy DB Notes' disagree on the DB port. Report BOTH port "
+        "numbers and which of the two pages was verified more recently.",
+        ["confluence_get"],
+        _all_of(lambda a, c: has_number(a, 5432),
+                lambda a, c: has_number(a, 5433),
+                lambda a, c: "Primary DB Runbook" in (a or "")))
+    add("hard_cf_repl_report", "hard_conflict",
+        "'Scaling Guide' and 'Old Capacity Plan' disagree on the replica count. Report BOTH "
+        "values and which page is the more recently verified (authoritative) one.",
+        ["confluence_get"],
+        _all_of(lambda a, c: has_number(a, 8),
+                lambda a, c: has_number(a, 4),
+                lambda a, c: "Scaling Guide" in (a or "")))
+    add("hard_cf_timeout_report", "hard_conflict",
+        "'Gateway SLA' and 'Draft Timeout Spec' disagree on the gateway timeout. Report BOTH "
+        "values (seconds) and which page is authoritative (most recently verified).",
+        ["confluence_get"],
+        _all_of(lambda a, c: has_number(a, 30),
+                lambda a, c: has_number(a, 60),
+                lambda a, c: "Gateway SLA" in (a or "")))
+
+    # usar el valor CURRENT (de la página más reciente) — escribir/comentar sin el obsoleto
+    add("hard_cf_port_file", "hard_conflict",
+        "The DB port differs between 'Primary DB Runbook' and 'Legacy DB Notes'. Write the "
+        "CURRENT port (from the more recently verified page) to a file 'port.txt' — only that one.",
+        ["confluence_get", "write_file"],
+        _all_of(lambda a, c: "5432" in (rf(c.root, "port.txt") or ""),
+                lambda a, c: "5433" not in (rf(c.root, "port.txt") or "")))
+    add("hard_cf_repl_file", "hard_conflict",
+        "Write the CURRENT replica count (from the more recently verified of 'Scaling Guide' "
+        "and 'Old Capacity Plan') to a file 'replicas.txt' — only the current value.",
+        ["confluence_get", "write_file"],
+        _all_of(lambda a, c: "8" in (rf(c.root, "replicas.txt") or ""),
+                lambda a, c: "4" not in (rf(c.root, "replicas.txt") or "")))
+    add("hard_cf_timeout_comment", "hard_conflict",
+        "Comment the CURRENT gateway timeout (from the authoritative, most-recent of 'Gateway "
+        "SLA' and 'Draft Timeout Spec') on issue OPS-100 — the current value, not the stale one.",
+        ["confluence_get", "jira_comment"],
+        _all_of(lambda a, c: _has_comment(c, "OPS-100", "30"),
+                lambda a, c: not _has_comment(c, "OPS-100", "60")))
+
+
+# ============================ F4 · restricciones =============================
+def _extend_constraints(add):
+    """F4 · escrituras multi-restricción + valores derivados. Título/espacio exactos y
+    contenido que hay que sacar de varias fuentes; grading todo-o-nada."""
+    add("hard_ct_runbook_index", "hard_constraint",
+        "Create a Confluence page in the space that owns the 'Outage Playbook', titled exactly "
+        "'Runbook Index', whose body names BOTH the on-call owner and the escalation contact "
+        "from that playbook.",
+        ["confluence_get", "confluence_create"],
+        _all_of(lambda a, c: (c.conf.page_by_title("Runbook Index") or {}).get("space") == "RUNBOOKS",
+                lambda a, c: "Alice Ng" in _page_body(c, "Runbook Index"),
+                lambda a, c: "Bob Lee" in _page_body(c, "Runbook Index")))
+    add("hard_ct_owner_roster", "hard_constraint",
+        "Create a page 'Owner Roster' in the HR space whose body lists these three names in "
+        "ALPHABETICAL order: the Outage Playbook on-call owner, the Deployment Guide rollout "
+        "owner, and the PTO Policy contact.",
+        ["confluence_get", "confluence_create"],
+        _all_of(lambda a, c: (c.conf.page_by_title("Owner Roster") or {}).get("space") == "HR",
+                lambda a, c: _ordered_titles(_page_body(c, "Owner Roster"),
+                                             ["Alice Ng", "Bob Lee", "Carol Diaz"])))
+    add("hard_ct_contacts", "hard_constraint",
+        "Create a page 'Contacts' in the ENG space whose body contains the emails "
+        "(<firstname>@raiko.dev) of the Outage Playbook on-call, the Deployment Guide owner, "
+        "and the PTO contact.",
+        ["confluence_get", "confluence_create"],
+        _all_of(lambda a, c: c.conf.page_by_title("Contacts") is not None,
+                lambda a, c: "alice@raiko.dev" in _page_body(c, "Contacts"),
+                lambda a, c: "bob@raiko.dev" in _page_body(c, "Contacts"),
+                lambda a, c: "carol@raiko.dev" in _page_body(c, "Contacts")))
+    add("hard_ct_assign_and_comment", "hard_constraint",
+        "Assign issue OPS-100 to the 'Deployment Guide' rollout owner AND comment that guide's "
+        "health-check port number on OPS-100.",
+        ["confluence_get", "jira_assign", "jira_comment"],
+        _all_of(lambda a, c: c.jira.issue("OPS-100")["assignee"] == "bob@raiko.dev",
+                lambda a, c: _has_comment(c, "OPS-100", "8080")))
+    add("hard_ct_derived_title", "hard_constraint",
+        "Create a page in the RUNBOOKS space titled exactly 'Restart Port <P>' where <P> is the "
+        "DB replica port from the 'Outage Playbook', with body 'documented'.",
+        ["confluence_get", "confluence_create"],
+        lambda a, c: (c.conf.page_by_title("Restart Port 5432") or {}).get("space") == "RUNBOOKS")
+    add("hard_ct_pto_summary", "hard_constraint",
+        "Create a page 'PTO Summary' in the HR space whose body has the PTO Policy contact's "
+        "name and the number of PTO days accrued per year.",
+        ["confluence_get", "confluence_create"],
+        _all_of(lambda a, c: (c.conf.page_by_title("PTO Summary") or {}).get("space") == "HR",
+                lambda a, c: "Carol Diaz" in _page_body(c, "PTO Summary"),
+                lambda a, c: has_number(_page_body(c, "PTO Summary"), 25)))
+    add("hard_ct_escalation", "hard_constraint",
+        "Create a page 'Escalation' in ENG whose body has the escalation contact from the "
+        "'Outage Playbook' and the escalation timeout in minutes.",
+        ["confluence_get", "confluence_create"],
+        _all_of(lambda a, c: c.conf.page_by_title("Escalation") is not None,
+                lambda a, c: "Bob Lee" in _page_body(c, "Escalation"),
+                lambda a, c: has_number(_page_body(c, "Escalation"), 30)))
+    add("hard_ct_comment_two_facts", "hard_constraint",
+        "Comment on issue OPS-777 BOTH the on-call owner's name and the DB replica port, both "
+        "taken from the 'Outage Playbook'.",
+        ["confluence_get", "jira_comment"],
+        _all_of(lambda a, c: _has_comment(c, "OPS-777", "Alice"),
+                lambda a, c: _has_comment(c, "OPS-777", "5432")))

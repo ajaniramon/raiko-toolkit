@@ -105,3 +105,71 @@ def test_f1_graders_winnable(tmp_path):
     for t in h.build_hard_atlassian_tasks():
         if t["category"] == "hard_multihop":
             assert t["check"]("", c) is True, t["id"]   # ganable tras la acción correcta
+
+
+# ---- F2/F3/F4 · conteos y satisfacibilidad global ----
+def test_hard_family_counts():
+    from collections import Counter
+    c = Counter(t["category"] for t in h.build_hard_atlassian_tasks())
+    assert c["hard_multihop"] == 10
+    assert c["hard_disambiguation"] == 10
+    assert c["hard_conflict"] == 6
+    assert c["hard_constraint"] == 8
+    assert c["hard_false_premise"] == 12
+
+
+def _perform_all_correct(c, tmp_path):
+    """Lleva el estado del mock (y el sandbox) al resultado correcto de TODAS las
+    tasks HARD basadas en estado/fichero."""
+    import os
+    # F1
+    c.conf.create("ENG", "Postmortem OPS-777", "On-call owner Alice Ng; escalate to Bob Lee.")
+    (tmp_path / "incident.txt").write_text("port 5432, escalate after 30 minutes")
+    c.jira.comment("OPS-777", "bob@raiko.dev")
+    c.conf.create("HR", "Owner Contact", "contact: alice@raiko.dev")
+    (tmp_path / "ports.txt").write_text("db=5432 health=8080")
+    c.jira.comment("OPS-100", "alice@raiko.dev")
+    c.conf.create("HR", "PTO Contact", "Carol Diaz — 25 days")
+    c.jira.comment("OPS-777", "SLA: 30 min")
+    c.jira.comment("OPS-105", "reviewed by oncall")
+    # F2 (comentar el correcto; assign el correcto)
+    for key, tx in [("WEB-900", "confirmed-A"), ("WEB-901", "confirmed-B"), ("WEB-902", "confirmed-C"),
+                    ("WEB-903", "confirmed-D"), ("WEB-904", "confirmed-E"), ("WEB-905", "confirmed-F")]:
+        c.jira.comment(key, tx)
+    c.jira.assign("WEB-902", "erin@raiko.dev")
+    c.jira.assign("WEB-903", "bob@raiko.dev")
+    c.jira.assign("WEB-901", "alice@raiko.dev")
+    c.jira.assign("WEB-900", "dan@raiko.dev")
+    # F3 (fichero/comentario con el valor CURRENT)
+    (tmp_path / "port.txt").write_text("5432")
+    (tmp_path / "replicas.txt").write_text("8")
+    c.jira.comment("OPS-100", "gateway timeout is 30 seconds")
+    # F4
+    c.conf.create("RUNBOOKS", "Runbook Index", "On-call Alice Ng; escalate to Bob Lee.")
+    c.conf.create("HR", "Owner Roster", "Alice Ng\nBob Lee\nCarol Diaz")
+    c.conf.create("ENG", "Contacts", "alice@raiko.dev, bob@raiko.dev, carol@raiko.dev")
+    c.jira.assign("OPS-100", "bob@raiko.dev")
+    c.jira.comment("OPS-100", "health check port 8080")
+    c.conf.create("RUNBOOKS", "Restart Port 5432", "documented")
+    c.conf.create("HR", "PTO Summary", "Carol Diaz — 25 days per year")
+    c.conf.create("ENG", "Escalation", "Escalate to Bob Lee after 30 minutes")
+    c.jira.comment("OPS-777", "on-call Alice Ng, DB port 5432")
+
+
+# answer que satisface las tasks basadas en ANSWER (F3 report + F5 declino)
+_GOOD_ANSWER = ("Ports 5432 and 5433; Primary DB Runbook is more recent. Replicas 8 vs 4; "
+                "Scaling Guide is authoritative. Timeout 30 vs 60 seconds; Gateway SLA is "
+                "authoritative. That entity does not exist, so I cannot perform the action.")
+
+
+def test_all_hard_fail_on_empty(tmp_path):
+    c = _ctx(str(tmp_path))
+    for t in h.build_hard_atlassian_tasks():
+        assert t["check"]("", c) is False, f"{t['id']} pasa con answer vacío y estado inicial"
+
+
+def test_all_hard_pass_when_correct(tmp_path):
+    c = _ctx(str(tmp_path))
+    _perform_all_correct(c, tmp_path)
+    for t in h.build_hard_atlassian_tasks():
+        assert t["check"](_GOOD_ANSWER, c) is True, f"{t['id']} NO es ganable"

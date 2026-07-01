@@ -197,7 +197,11 @@ def _all_issues(ctx):
 
 def _extend_generated(add):
     import fixtures_atlassian as fx
-    issues = fx.build_jira_seed()
+    # El floor excluye la semilla exclusiva de HARD (clúster casi-duplicado + páginas en
+    # conflicto); esas viven en los mocks para que la batería HARD las consulte, pero no
+    # deben ensuciar los generadores del piso.
+    _HARD_KEYS = set(getattr(fx, "DUPE_CLUSTER", []))
+    issues = [i for i in fx.build_jira_seed() if i["key"] not in _HARD_KEYS]
     vault = fx.build_vault_seed()
 
     # recall GANABLE: buscar por topic dentro del proyecto y aceptar la key de cualquier match real.
@@ -236,8 +240,10 @@ def _extend_generated(add):
                 (lambda k, w: lambda a, c: c.jira.issue(k)["assignee"] == w)(iss, who))
 
     pages = fx.build_confluence_seed()
-    # títulos limpios y cuerpos normales (excluye variantes '— part' y la página larga)
-    clean_pages = [p for p in pages if "—" not in p["title"] and len(p["body"]) < 5000]
+    # títulos limpios y cuerpos normales del piso: excluye variantes '— part', la página
+    # larga (10099) y las páginas de conflicto de HARD (ids > 10081).
+    clean_pages = [p for p in pages if "—" not in p["title"] and len(p["body"]) < 5000
+                   and int(p["id"]) <= 10081]
     _OVERRIDE = {"Outage Playbook", "Deployment Guide", "PTO Policy"}
     generic_pages = [p for p in clean_pages if p["title"] not in _OVERRIDE]
 

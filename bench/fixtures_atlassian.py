@@ -58,7 +58,30 @@ def build_jira_seed():
         "description": "Unique token NEBULA7788. The Outage Playbook covers the recovery.",
         "comments": [], "links": ["Outage Playbook"], "seq": seq,
     })
+    # Clúster de casi-duplicados (F2): MISMO summary, distinta (status,assignee,type).
+    # Rompe a propósito la correlación assignee<->status del resto de la semilla, de modo
+    # que cada conjunción de atributos identifica un ÚNICO issue.
+    for k, (key, status, assignee, typ) in enumerate([
+        ("WEB-900", "In Review",   "carol@raiko.dev", "Bug"),
+        ("WEB-901", "In Review",   "dan@raiko.dev",   "Bug"),
+        ("WEB-902", "Blocked",     "carol@raiko.dev", "Bug"),
+        ("WEB-903", "In Progress", "carol@raiko.dev", "Task"),
+        ("WEB-904", "Done",        "erin@raiko.dev",  "Story"),
+        ("WEB-905", "In Review",   "carol@raiko.dev", "Task"),
+    ]):
+        seq += 1
+        issues.append({
+            "key": key, "project": "WEB", "type": typ, "status": status,
+            "assignee": assignee, "reporter": "bob@raiko.dev",
+            "summary": "checkout timeout regression under load",
+            "description": "Near-duplicate cluster issue about checkout timeout regression under load.",
+            "comments": [], "links": [], "seq": seq,
+        })
     return issues
+
+
+# Keys del clúster de casi-duplicados (para los graders de F2).
+DUPE_CLUSTER = ["WEB-900", "WEB-901", "WEB-902", "WEB-903", "WEB-904", "WEB-905"]
 
 
 def build_confluence_seed():
@@ -104,6 +127,25 @@ def build_confluence_seed():
         "creator": "Alice Ng", "created": "2026-01-01",
         "editor": "Alice Ng", "edited": "2026-06-30", "version": 9, "links": [],
     })
+    # Pares en conflicto (F3): dos páginas discrepan en un valor; la fecha de "verificado"
+    # va en el CUERPO (confluence_get muestra el body) para poder razonar cuál es más reciente.
+    conflicts = [
+        # (id, title, space, valor, fecha_verificado)
+        ("10101", "Primary DB Runbook", "RUNBOOKS", "the DB port is 5432", "2026-06-30"),
+        ("10102", "Legacy DB Notes",    "RUNBOOKS", "the DB port is 5433", "2026-01-15"),
+        ("10103", "Scaling Guide",      "ENG",      "run 8 replicas",      "2026-05-20"),
+        ("10104", "Old Capacity Plan",  "ENG",      "run 4 replicas",      "2026-02-10"),
+        ("10105", "Gateway SLA",        "ENG",      "the gateway timeout is 30 seconds", "2026-06-01"),
+        ("10106", "Draft Timeout Spec", "ENG",      "the gateway timeout is 60 seconds", "2026-03-01"),
+    ]
+    for cid, title, space, value, verified in conflicts:
+        pages.append({
+            "id": cid, "space": space, "title": title,
+            "body": f"{title}: {value}. Last verified {verified}.",
+            "labels": [space.lower(), "config"], "ancestors": [], "creator": "Bob Lee",
+            "created": "2026-01-01", "editor": "Bob Lee", "edited": verified,
+            "version": 2, "links": [],
+        })
     return pages
 
 
