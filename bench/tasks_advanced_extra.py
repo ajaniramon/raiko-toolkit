@@ -6,12 +6,19 @@ structures the sandbox is built from, so the answers can't drift.
 IDs are prefixed 'xa_' to never collide with tasks_advanced.py.
 """
 
+import platform
 from pathlib import Path
 
 from tasks import has_number, contains
 from tasks_advanced import rf, _json
 from fixtures import USERS, SALES, INVENTORY
 from fixtures_extra import EMPLOYEES, PRODUCTS
+
+# OS-adaptive shell: PowerShell on Windows, bash elsewhere. The graders verify the
+# filesystem effect (OS-agnostic), so the same task is fair on any platform.
+_IS_WIN = platform.system() == "Windows"
+SHELL_TOOL = "run_powershell" if _IS_WIN else "run_bash"
+SHELL_NAME = "PowerShell" if _IS_WIN else "bash"
 
 # ---- expected aggregates (computed once, deterministic) ----
 USERS_SCORE = sum(u[4] for u in USERS)
@@ -44,10 +51,10 @@ def build_extra_adv() -> list:
         tasks.append({"id": id, "category": category, "prompt": prompt,
                       "expect_tools": expect_tools, "check": check, "negative": False})
 
-    WRITE = ["write_file", "run_python", "run_powershell"]
-    EDIT = ["edit_file", "write_file", "run_python", "run_powershell"]
+    WRITE = ["write_file", "run_python", SHELL_TOOL]
+    EDIT = ["edit_file", "write_file", "run_python", SHELL_TOOL]
     PY = ["run_python"]
-    PS = ["run_powershell"]
+    SH = [SHELL_TOOL]
 
     # ---------- write a file with exact text (60) ----------
     for i in range(60):
@@ -152,35 +159,35 @@ def build_extra_adv() -> list:
             f"Using Python, compute {desc} and write ONLY the resulting number into a new file named {fn}.",
             PY, (lambda fn, val: lambda a, r: has_number(rf(r, fn) or "", val))(fn, val))
 
-    # ---------- powershell: count files by extension (6) ----------
+    # ---------- shell: count files by extension (6) ----------
     for ext in [".py", ".csv", ".log", ".md", ".json", ".txt"]:
-        add(f"xa_ps_ext_{ext[1:]}", "powershell",
-            f"Using PowerShell, count how many {ext} files exist in the whole project tree "
+        add(f"xa_sh_ext_{ext[1:]}", "shell",
+            f"Using {SHELL_NAME}, count how many {ext} files exist in the whole project tree "
             f"(including subfolders) and report the number.",
-            PS, (lambda ext: lambda a, r: has_number(a, sum(1 for _ in Path(r).rglob(f"*{ext}"))))(ext))
+            SH, (lambda ext: lambda a, r: has_number(a, sum(1 for _ in Path(r).rglob(f"*{ext}"))))(ext))
 
-    # ---------- powershell: count lines of a file (10) ----------
-    ps_line_files = ["big.log", "data/users.csv", "data/employees.csv", "data/products.csv",
+    # ---------- shell: count lines of a file (10) ----------
+    sh_line_files = ["big.log", "data/users.csv", "data/employees.csv", "data/products.csv",
                      "logs/app.log", "logs/api.log", "data/notes.txt", "config/services.json",
                      "src/main.py", "docs/usage.md"]
-    for i, rel in enumerate(ps_line_files):
-        add(f"xa_ps_lines_{i:02d}", "powershell",
-            f"Using PowerShell, report how many lines the file {rel} has.",
-            PS, (lambda rel: lambda a, r: has_number(a, len((rf(r, rel) or "").splitlines())))(rel))
+    for i, rel in enumerate(sh_line_files):
+        add(f"xa_sh_lines_{i:02d}", "shell",
+            f"Using {SHELL_NAME}, report how many lines the file {rel} has.",
+            SH, (lambda rel: lambda a, r: has_number(a, len((rf(r, rel) or "").splitlines())))(rel))
 
-    # ---------- powershell: read a config value (4) ----------
-    add("xa_ps_port", "powershell",
-        "Using PowerShell, read config.ini and report the configured server port number.",
-        PS, lambda a, r: has_number(a, 8080))
-    add("xa_ps_timeout", "powershell",
-        "Using PowerShell, read config.ini and report the timeout value.",
-        PS, lambda a, r: has_number(a, 30))
-    add("xa_ps_httport", "powershell",
-        "Using PowerShell, read config/services.json and report ports.http.",
-        PS, lambda a, r: has_number(a, 8088))
-    add("xa_ps_replicas", "powershell",
-        "Using PowerShell, read config/services.json and report the number of replicas.",
-        PS, lambda a, r: has_number(a, 6))
+    # ---------- shell: read a config value (4) ----------
+    add("xa_sh_port", "shell",
+        f"Using {SHELL_NAME}, read config.ini and report the configured server port number.",
+        SH, lambda a, r: has_number(a, 8080))
+    add("xa_sh_timeout", "shell",
+        f"Using {SHELL_NAME}, read config.ini and report the timeout value.",
+        SH, lambda a, r: has_number(a, 30))
+    add("xa_sh_httport", "shell",
+        f"Using {SHELL_NAME}, read config/services.json and report ports.http.",
+        SH, lambda a, r: has_number(a, 8088))
+    add("xa_sh_replicas", "shell",
+        f"Using {SHELL_NAME}, read config/services.json and report the number of replicas.",
+        SH, lambda a, r: has_number(a, 6))
 
     # ---------- append rows / lines (12) ----------
     new_users = [(9, "ivan"), (10, "judy"), (11, "kim"), (12, "liam"), (13, "mona")]

@@ -7,9 +7,16 @@ tasks don't interfere with each other.
 """
 
 import json
+import platform
 from pathlib import Path
 
 from tasks import has_number, contains, contains_any
+
+# OS-adaptive shell: PowerShell on Windows, bash elsewhere. Graders verify the
+# filesystem effect (OS-agnostic), so the same task is fair on any platform.
+_IS_WIN = platform.system() == "Windows"
+SHELL_TOOL = "run_powershell" if _IS_WIN else "run_bash"
+SHELL_NAME = "PowerShell" if _IS_WIN else "bash"
 
 
 def rf(root, rel):
@@ -32,8 +39,8 @@ def build_tasks_adv():
         tasks.append({"id": id, "category": category, "prompt": prompt,
                       "expect_tools": expect_tools, "check": check, "negative": False})
 
-    WRITE = ["write_file", "run_python", "run_powershell"]
-    EDIT = ["edit_file", "write_file", "run_python", "run_powershell"]
+    WRITE = ["write_file", "run_python", SHELL_TOOL]
+    EDIT = ["edit_file", "write_file", "run_python", SHELL_TOOL]
 
     # ---------------- write files ----------------
     add("w_create", "write",
@@ -91,22 +98,22 @@ def build_tasks_adv():
         "Read the MAGIC constant from src/utils.py, then use Python to compute MAGIC multiplied by 10, and write the result into a file named magic10.txt.",
         ["run_python", "read_file", "grep"], lambda a, r: has_number(rf(r, "magic10.txt") or "", 420))
 
-    # ---------------- PowerShell ----------------
-    add("ps_countpy", "powershell",
-        "Using PowerShell, count how many .py files exist under the src directory (including subfolders) and report the number.",
-        ["run_powershell"], lambda a, r: has_number(a, len(list((Path(r) / "src").rglob("*.py")))))
-    add("ps_write", "powershell",
-        "Using PowerShell, create a file named ps_out.txt containing the text: from powershell",
-        ["run_powershell"], lambda a, r: "from powershell" in (rf(r, "ps_out.txt") or "").lower())
-    add("ps_lines", "powershell",
-        "Using PowerShell, report how many lines the file big.log has.",
-        ["run_powershell"], lambda a, r: has_number(a, len((rf(r, "big.log") or "").splitlines())))
-    add("ps_listdir", "powershell",
-        "Using PowerShell, list the names of the files in the data directory.",
-        ["run_powershell"], lambda a, r: contains(a, "users.csv") and contains(a, "sales.csv"))
-    add("ps_port", "powershell",
-        "Using PowerShell, read config.ini and report the configured port number.",
-        ["run_powershell"], lambda a, r: has_number(a, 8080))
+    # ---------------- Shell (OS-adaptive: PowerShell on Windows, bash elsewhere) ----------------
+    add("sh_countpy", "shell",
+        f"Using {SHELL_NAME}, count how many .py files exist under the src directory (including subfolders) and report the number.",
+        [SHELL_TOOL], lambda a, r: has_number(a, len(list((Path(r) / "src").rglob("*.py")))))
+    add("sh_write", "shell",
+        f"Using {SHELL_NAME}, create a file named sh_out.txt containing the text: from shell",
+        [SHELL_TOOL], lambda a, r: "from shell" in (rf(r, "sh_out.txt") or "").lower())
+    add("sh_lines", "shell",
+        f"Using {SHELL_NAME}, report how many lines the file big.log has.",
+        [SHELL_TOOL], lambda a, r: has_number(a, len((rf(r, "big.log") or "").splitlines())))
+    add("sh_listdir", "shell",
+        f"Using {SHELL_NAME}, list the names of the files in the data directory.",
+        [SHELL_TOOL], lambda a, r: contains(a, "users.csv") and contains(a, "sales.csv"))
+    add("sh_port", "shell",
+        f"Using {SHELL_NAME}, read config.ini and report the configured port number.",
+        [SHELL_TOOL], lambda a, r: has_number(a, 8080))
 
     # ---------------- mixed / multistep ----------------
     add("m_edit_verify", "mixed",
