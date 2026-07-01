@@ -151,7 +151,7 @@ def _extend_generated(add):
     vault = fx.build_vault_seed()
 
     # Recall: para 45 issues variados, pedir su key por su summary exacto.
-    picks = [i for i in issues if i["key"] != "OPS-777"][::2][:50]
+    picks = [i for i in issues if i["key"] != "OPS-777"][::5][:25]
     for i in picks:
         key = i["key"]; summ = i["summary"]
         add(f"gjs_{key}", "jira_search", "easy",
@@ -159,7 +159,7 @@ def _extend_generated(add):
             ["jira_search"], (lambda k: lambda a, c: contains(a, k))(key))
 
     # Lectura: para 35 issues, reportar el status via jira_get.
-    for i in [x for x in issues if x["key"] != "OPS-777"][::2][:35]:
+    for i in [x for x in issues if x["key"] != "OPS-777"][::6][:20]:
         key = i["key"]
         add(f"gjr_{key}", "jira_read", "easy",
             f"Use jira_get to open {key} and report its status.",
@@ -167,7 +167,7 @@ def _extend_generated(add):
 
     # Escritura: para 35 issues, asignar a un usuario fijo y verificar el store.
     targets = ["alice@raiko.dev", "bob@raiko.dev", "carol@raiko.dev", "dan@raiko.dev", "erin@raiko.dev"]
-    for n, i in enumerate([x for x in issues if x["key"] != "OPS-777"][::2][:35]):
+    for n, i in enumerate([x for x in issues if x["key"] != "OPS-777"][::7][:20]):
         key = i["key"]; who = targets[n % len(targets)]
         add(f"gjw_{key}", "jira_write", "medium",
             f"Assign Jira issue {key} to {who}.",
@@ -182,3 +182,52 @@ def _extend_generated(add):
                 f"Assign that issue to that assignee in Jira.",
                 ["vault_get_secret", "jira_assign"],
                 (lambda k, w: lambda a, c: c.jira.issue(k)["assignee"] == w)(iss, who))
+
+    pages = fx.build_confluence_seed()
+    clean_pages = [p for p in pages if "—" not in p["title"]]   # 12 páginas de título limpio
+    _OVERRIDE = {"Outage Playbook", "Deployment Guide", "PTO Policy"}
+    generic_pages = [p for p in clean_pages if p["title"] not in _OVERRIDE]
+
+    def _email(name):
+        return name.split()[0].lower() + "@raiko.dev"
+
+    # conf_search: buscar página por la palabra más larga de su título y reportar su id.
+    for p in clean_pages:
+        kw = max(p["title"].split(), key=len)
+        add(f"gcs_{p['id']}", "conf_search", "medium",
+            f"Search Confluence for the page about '{kw}' and report its page id.",
+            ["confluence_search"], (lambda i: lambda a, c: contains(a, i))(p["id"]))
+
+    # conf_read: abrir página por título y reportar su espacio.
+    for p in clean_pages:
+        add(f"gcr_{p['id']}", "conf_read", "easy",
+            f"Use confluence_get to open the page titled '{p['title']}' and report which space it is in.",
+            ["confluence_get"], (lambda s: lambda a, c: contains(a, s))(p["space"]))
+
+    # chain A: jira_search -> write_file (escribe la key encontrada en un archivo).
+    for i in [x for x in issues if x["key"] != "OPS-777"][::4][:16]:
+        key, summ = i["key"], i["summary"]
+        add(f"gch_a_{key}", "chain", "hard",
+            f"Find the Jira issue whose summary is '{summ}', then write ONLY its issue key "
+            f"to a file named 'found.txt'.",
+            ["jira_search", "write_file"],
+            (lambda k: lambda a, c: k in (rf(c.root, "found.txt") or ""))(key))
+
+    # chain B: confluence_get -> write_file (escribe el space de la página en un archivo).
+    for p in clean_pages:
+        add(f"gch_b_{p['id']}", "chain", "hard",
+            f"Open the Confluence page titled '{p['title']}' and write the space key it belongs to "
+            f"into a file named 'space.txt'.",
+            ["confluence_get", "write_file"],
+            (lambda s: lambda a, c: s in (rf(c.root, "space.txt") or ""))(p["space"]))
+
+    # chain C: confluence_get -> jira_assign (owner de la página -> asignar un issue a ese owner).
+    assign_issues = [x for x in issues if x["key"] != "OPS-777"][2::9][:12]
+    for n, i in enumerate(assign_issues):
+        p = generic_pages[n % len(generic_pages)]
+        key, mail = i["key"], _email(p["creator"])
+        add(f"gch_c_{key}", "chain", "hard",
+            f"Read the Confluence page titled '{p['title']}' to find its owner, then assign Jira "
+            f"issue {key} to that person (their email is <firstname>@raiko.dev, all lowercase).",
+            ["confluence_get", "jira_assign"],
+            (lambda k, e: lambda a, c: c.jira.issue(k)["assignee"] == e)(key, mail))

@@ -26,3 +26,13 @@ def test_deterministic():
 def test_vault_gated_count():
     tasks = ta.build_atlassian_tasks()
     assert 8 <= sum(1 for t in tasks if t["category"] == "vault_gated") <= 12
+
+def test_category_coverage_matches_design():
+    from collections import Counter
+    tasks = ta.build_atlassian_tasks()
+    c = Counter(t["category"] for t in tasks)
+    assert c["chain"] >= 30, c
+    assert c["conf_read"] >= 12, c
+    assert c["conf_search"] >= 12, c
+    assert c["conf_write"] >= 2, c
+    assert 150 <= len(tasks) <= 175, len(tasks)
