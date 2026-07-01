@@ -110,3 +110,30 @@ def test_conf_comment_mutates():
     c = MockConfluence(PAGES, USERS_T)
     c.comment(page_id="10001", body="resolved on 2026-05-03")
     assert any("resolved" in x for x in c.comments("10001"))
+
+
+from mock_atlassian import MockVault, build_atlas_impls, AtlasCtx
+
+def test_vault_get_returns_json():
+    import json
+    v = MockVault({"secret/data/mac": {"host": "h", "port": "22"}})
+    out = v.get("secret/data/mac")
+    assert json.loads(out) == {"host": "h", "port": "22"}
+
+def test_vault_unknown_path():
+    v = MockVault({})
+    assert "ERROR" in v.get("secret/data/nope")
+
+def test_build_atlas_impls_keys():
+    j = MockJira(ISSUES); c = MockConfluence(PAGES, USERS_T); v = MockVault({})
+    impls = build_atlas_impls(j, c, v)
+    assert set(impls) == {
+        "jira_search", "jira_get", "jira_assign", "jira_comment",
+        "confluence_search", "confluence_user", "confluence_get",
+        "confluence_create", "confluence_comment", "vault_get_secret",
+    }
+
+def test_atlas_ctx_holds_stores():
+    j = MockJira(ISSUES); c = MockConfluence(PAGES, USERS_T); v = MockVault({})
+    ctx = AtlasCtx(j, c, v, "/tmp/x")
+    assert ctx.jira is j and ctx.conf is c and ctx.vault is v and ctx.root == "/tmp/x"

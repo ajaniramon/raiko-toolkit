@@ -296,3 +296,37 @@ class MockConfluence:
             return f"ERROR: no page {page_id}"
         self._comments.setdefault(page_id.strip(), []).append(body.strip())
         return f"Comment added to page {page_id.strip()}."
+
+
+class MockVault:
+    def __init__(self, secrets):
+        self._secrets = {k: dict(v) for k, v in secrets.items()}
+
+    def get(self, path):
+        p = (path or "").strip()
+        if p not in self._secrets:
+            return f"ERROR: Vault returned 404: no secret at {p}"
+        return json.dumps(self._secrets[p])
+
+
+class AtlasCtx:
+    def __init__(self, jira, conf, vault, root):
+        self.jira = jira
+        self.conf = conf
+        self.vault = vault
+        self.root = root
+
+
+def build_atlas_impls(jira, conf, vault):
+    return {
+        "jira_search": lambda **kw: jira.search(**kw),
+        "jira_get": lambda **kw: jira.get(**kw),
+        "jira_assign": lambda **kw: jira.assign(**kw),
+        "jira_comment": lambda **kw: jira.comment(**kw),
+        "confluence_search": lambda **kw: conf.search(**kw),
+        "confluence_user": lambda **kw: conf.user(**kw),
+        "confluence_get": lambda **kw: conf.get(**kw),
+        "confluence_create": lambda **kw: conf.create(**kw),
+        "confluence_comment": lambda **kw: conf.comment(**kw),
+        "vault_get_secret": lambda **kw: vault.get(**kw),
+    }
