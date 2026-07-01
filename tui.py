@@ -2807,7 +2807,11 @@ class AgentTUI(App):
                         for i, tc in enumerate(self._think_leak_calls)]
                     self.call_from_thread(self.write_log, Text.from_markup(
                         "[dim yellow]↻ recovered the tool call from the thinking[/]"))
-                self.messages.append(msg)
+                # An interrupt can end a segment with no content and no tool_calls;
+                # don't persist that — strict providers (e.g. Anthropic) 400 on an
+                # assistant message that has neither.
+                if msg.get("content") or msg.get("tool_calls"):
+                    self.messages.append(msg)
                 if self._cancel.is_set():
                     self.call_from_thread(self.write_log, Text.from_markup("[bold yellow]⏹ stopped[/]"))
                     break
@@ -2852,7 +2856,28 @@ class AgentTUI(App):
                     f"[cyan]budget_usd[/] (F2) or /clear."))
             self.save_session()   # persist the conversation after every turn
 
+    def _repair_history(self):
+        """Keep the message list valid for strict providers (e.g. Anthropic) after an
+        interrupt or when resuming a session saved mid-turn: drop assistant messages
+        with neither content nor tool_calls, and give every tool_call a matching tool
+        result (a placeholder if the turn was stopped before the tool ran)."""
+        kept = [m for m in self.messages
+                if not (m.get("role") == "assistant"
+                        and not m.get("content") and not m.get("tool_calls"))]
+        answered = {m.get("tool_call_id") for m in kept if m.get("role") == "tool"}
+        out = []
+        for m in kept:
+            out.append(m)
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                for tc in m["tool_calls"]:
+                    if tc.get("id") and tc["id"] not in answered:
+                        out.append({"role": "tool", "tool_call_id": tc["id"],
+                                    "content": "[interrupted]"})
+                        answered.add(tc["id"])
+        self.messages = out
+
     def stream_one(self):
+        self._repair_history()
         params = dict(model=self.model, messages=self.messages, tools=TOOLS + self.mcp_tools,
                       tool_choice="auto", stream=True)
         params["stream_options"] = {"include_usage": True}
