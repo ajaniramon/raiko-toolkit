@@ -150,13 +150,15 @@ def _extend_generated(add):
     issues = fx.build_jira_seed()
     vault = fx.build_vault_seed()
 
-    # Recall: para 45 issues variados, pedir su key por su summary exacto.
+    # recall GANABLE: buscar por topic dentro del proyecto y aceptar la key de cualquier match real.
     picks = [i for i in issues if i["key"] != "OPS-777"][::5][:25]
     for i in picks:
-        key = i["key"]; summ = i["summary"]
-        add(f"gjs_{key}", "jira_search", "easy",
-            f"Search Jira for the issue whose summary is '{summ}' and report its key.",
-            ["jira_search"], (lambda k: lambda a, c: contains(a, k))(key))
+        key, proj = i["key"], i["project"]
+        topic = i["summary"].split(" (batch")[0]
+        valid = {x["key"] for x in issues if x["project"] == proj and topic in x["summary"]}
+        add(f"gjs_{key}", "jira_search", "medium",
+            f"Search Jira in the {proj} project for an issue about '{topic}' and report a matching issue key.",
+            ["jira_search"], (lambda ks: lambda a, c: any(k in a for k in ks))(valid))
 
     # Lectura: para 35 issues, reportar el status via jira_get.
     for i in [x for x in issues if x["key"] != "OPS-777"][::6][:20]:
