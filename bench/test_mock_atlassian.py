@@ -56,3 +56,57 @@ def test_comment_mutates():
     j = MockJira(ISSUES)
     j.comment("WEB-2", "fixed the CSS")
     assert "fixed the CSS" in j.issue("WEB-2")["comments"]
+
+
+from mock_atlassian import MockConfluence
+
+PAGES = [
+    {"id": "10001", "space": "RUNBOOKS", "title": "Outage Playbook",
+     "body": "On-call owner is Alice Ng. Restart the replica on port 5432.",
+     "labels": ["runbook"], "ancestors": ["Runbooks Home"],
+     "creator": "Alice Ng", "created": "2026-03-01", "editor": "Bob Lee",
+     "edited": "2026-05-02", "version": 3, "links": ["OPS-1"]},
+    {"id": "10002", "space": "ENG", "title": "Deployment Guide",
+     "body": "Deploy with the blue-green strategy. Contact Bob Lee.",
+     "labels": ["eng"], "ancestors": [], "creator": "Bob Lee", "created": "2026-02-10",
+     "editor": "Bob Lee", "edited": "2026-04-01", "version": 1, "links": []},
+]
+USERS_T = [{"name": "Alice Ng", "email": "alice@raiko.dev", "accountId": "acc-alice"},
+           {"name": "Bob Lee", "email": "bob@raiko.dev", "accountId": "acc-bob"}]
+
+def test_conf_search_text():
+    c = MockConfluence(PAGES, USERS_T)
+    out = c.search(query="playbook")
+    assert "10001" in out and "Outage Playbook" in out
+
+def test_conf_search_space_filter():
+    c = MockConfluence(PAGES, USERS_T)
+    out = c.search(query="deploy", space="RUNBOOKS")
+    assert "No pages matched" in out
+
+def test_conf_get_body():
+    c = MockConfluence(PAGES, USERS_T)
+    out = c.get(page_id="10001")
+    assert "On-call owner is Alice Ng" in out and "port 5432" in out
+
+def test_conf_get_by_title():
+    c = MockConfluence(PAGES, USERS_T)
+    out = c.get(title="Deployment Guide")
+    assert "blue-green" in out
+
+def test_conf_user():
+    c = MockConfluence(PAGES, USERS_T)
+    out = c.user("Alice")
+    assert "acc-alice" in out and "Alice Ng" in out
+
+def test_conf_create_mutates():
+    c = MockConfluence(PAGES, USERS_T)
+    out = c.create(space="ENG", title="Postmortem OPS-1", body="root cause: bad deploy")
+    assert "Created page" in out
+    p = c.page_by_title("Postmortem OPS-1")
+    assert p is not None and "root cause" in p["body"] and p["space"] == "ENG"
+
+def test_conf_comment_mutates():
+    c = MockConfluence(PAGES, USERS_T)
+    c.comment(page_id="10001", body="resolved on 2026-05-03")
+    assert any("resolved" in x for x in c.comments("10001"))
