@@ -204,14 +204,14 @@ def _extend_generated(add):
             f"Use confluence_get to open the page titled '{p['title']}' and report which space it is in.",
             ["confluence_get"], (lambda s: lambda a, c: contains(a, s))(p["space"]))
 
-    # chain A: jira_search -> write_file (escribe la key encontrada en un archivo).
+    # chain A: jira_get -> write_file (abre el issue por key y escribe su status).
     for i in [x for x in issues if x["key"] != "OPS-777"][::4][:16]:
-        key, summ = i["key"], i["summary"]
-        add(f"gch_a_{key}", "chain", "hard",
-            f"Find the Jira issue whose summary is '{summ}', then write ONLY its issue key "
-            f"to a file named 'found.txt'.",
-            ["jira_search", "write_file"],
-            (lambda k: lambda a, c: k in (rf(c.root, "found.txt") or ""))(key))
+        key = i["key"]
+        add(f"gch_a_{key}", "chain", "medium",
+            f"Look up Jira issue {key} and write ONLY its status to a file named 'status.txt'.",
+            ["jira_get", "write_file"],
+            (lambda k: lambda a, c: (c.jira.issue(k)["status"].lower()
+                in (rf(c.root, "status.txt") or "").lower()))(key))
 
     # chain B: confluence_get -> write_file (escribe el space de la página en un archivo).
     for p in clean_pages:
