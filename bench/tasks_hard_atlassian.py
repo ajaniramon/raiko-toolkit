@@ -11,8 +11,9 @@ import os
 import re
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tasks import has_number
+from tasks_advanced import rf
 from tasks_atlassian import _says_none
-# nota: contains/has_number (tasks) y rf (tasks_advanced) se importarán al añadir F1-F4.
 
 
 # --------------------------- grading combinators ---------------------------
@@ -53,8 +54,97 @@ def build_hard_atlassian_tasks():
                       "prompt": prompt, "expect_tools": expect, "check": check,
                       "negative": negative, "setup": "atlassian"})
 
+    _extend_multihop(add)        # F1
     _extend_false_premise(add)   # F5
     return tasks
+
+
+def _page_body(ctx, title):
+    return (ctx.conf.page_by_title(title) or {}).get("body", "")
+
+
+def _has_comment(ctx, key, text):
+    i = ctx.jira.issue(key)
+    return bool(i) and any(text.lower() in x.lower() for x in i["comments"])
+
+
+def _extend_multihop(add):
+    """F1 · cadenas de 4-6 pasos: search/get -> cross-ref -> filtrar/derivar -> escribir.
+    Graders todo-o-nada sobre el efecto final. Datos anclados a la semilla:
+    Outage Playbook (on-call Alice Ng, puerto 5432, escalar a Bob Lee tras 30 min),
+    Deployment Guide (rollout owner Bob Lee, health port 8080), PTO Policy (Carol Diaz, 25),
+    OPS-777 (needle NEBULA7788, reporter alice@raiko.dev), secret/data/oncall -> OPS-777."""
+
+    add("hard_ch_postmortem", "hard_multihop",
+        "Find the Jira incident that mentions 'NEBULA7788', open the Confluence runbook it "
+        "links to, and create a Confluence page in the ENG space titled 'Postmortem OPS-777' "
+        "whose body names BOTH the on-call owner AND the escalation contact from that runbook.",
+        ["jira_search", "confluence_get", "confluence_create"],
+        _all_of(lambda a, c: c.conf.page_by_title("Postmortem OPS-777") is not None,
+                lambda a, c: "Alice Ng" in _page_body(c, "Postmortem OPS-777"),
+                lambda a, c: "Bob Lee" in _page_body(c, "Postmortem OPS-777")))
+
+    add("hard_ch_incident_facts", "hard_multihop",
+        "Find the incident mentioning 'NEBULA7788', open its linked runbook, and write to a "
+        "file 'incident.txt' both the DB replica port and the escalation timeout (minutes) "
+        "stated in the runbook.",
+        ["jira_search", "confluence_get", "write_file"],
+        _all_of(lambda a, c: "5432" in (rf(c.root, "incident.txt") or ""),
+                lambda a, c: "30" in (rf(c.root, "incident.txt") or "")))
+
+    add("hard_ch_deploy_ack", "hard_multihop",
+        "Open the 'Deployment Guide', find the rollout owner, and comment that person's email "
+        "(<firstname>@raiko.dev) on issue OPS-777.",
+        ["confluence_get", "jira_comment"],
+        lambda a, c: _has_comment(c, "OPS-777", "bob@raiko.dev"))
+
+    add("hard_ch_owner_contact", "hard_multihop",
+        "Read the 'Outage Playbook', identify the on-call owner, and create a Confluence page "
+        "in the HR space titled 'Owner Contact' whose body contains that person's email "
+        "(<firstname>@raiko.dev).",
+        ["confluence_get", "confluence_create"],
+        _all_of(lambda a, c: (c.conf.page_by_title("Owner Contact") or {}).get("space") == "HR",
+                lambda a, c: "alice@raiko.dev" in _page_body(c, "Owner Contact")))
+
+    add("hard_ch_two_ports", "hard_multihop",
+        "Find the DB replica port in the 'Outage Playbook' and the health-check port in the "
+        "'Deployment Guide', and write both to a file 'ports.txt'.",
+        ["confluence_get", "write_file"],
+        _all_of(lambda a, c: "5432" in (rf(c.root, "ports.txt") or ""),
+                lambda a, c: "8080" in (rf(c.root, "ports.txt") or "")))
+
+    add("hard_ch_vault_reporter", "hard_multihop",
+        "Read the Vault secret at 'secret/data/oncall' (it has an 'issue'), open that issue, "
+        "find who reported it, and comment the reporter's email on issue OPS-100.",
+        ["vault_get_secret", "jira_get", "jira_comment"],
+        lambda a, c: _has_comment(c, "OPS-100", "alice@raiko.dev"))
+
+    add("hard_ch_pto_contact", "hard_multihop",
+        "Open the 'PTO Policy', find who PTO requests go to and how many PTO days accrue per "
+        "year, and create a Confluence page in HR titled 'PTO Contact' whose body has that "
+        "person's name and that number of days.",
+        ["confluence_get", "confluence_create"],
+        _all_of(lambda a, c: c.conf.page_by_title("PTO Contact") is not None,
+                lambda a, c: "Carol Diaz" in _page_body(c, "PTO Contact"),
+                lambda a, c: has_number(_page_body(c, "PTO Contact"), 25)))
+
+    add("hard_ch_sla", "hard_multihop",
+        "Find the incident mentioning 'NEBULA7788', open its runbook, and if the runbook says "
+        "to escalate after 30 minutes, comment 'SLA: 30 min' on that incident.",
+        ["jira_search", "confluence_get", "jira_comment"],
+        lambda a, c: _has_comment(c, "OPS-777", "SLA: 30 min"))
+
+    add("hard_ch_conditional_assign", "hard_multihop",
+        "Read the 'Outage Playbook' to find the on-call owner. Then comment 'reviewed by "
+        "oncall' on issue OPS-105 ONLY IF OPS-105 is assigned to that on-call owner.",
+        ["confluence_get", "jira_get", "jira_comment"],
+        lambda a, c: _has_comment(c, "OPS-105", "reviewed by oncall"))
+
+    add("hard_ch_backup_owner", "hard_multihop",
+        "Open the 'Backup Recovery' runbook, find its owner, and assign issue OPS-100 to that "
+        "person (email <firstname>@raiko.dev).",
+        ["confluence_get", "jira_assign"],
+        lambda a, c: c.jira.issue("OPS-100")["assignee"] == "bob@raiko.dev")
 
 
 # Entidades inexistentes afirmadas con seguridad (keys reales: PROJ-100..139 + OPS-777).

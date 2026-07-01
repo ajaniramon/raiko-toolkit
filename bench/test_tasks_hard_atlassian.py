@@ -63,3 +63,45 @@ def test_f5_grader_rewards_pushback_not_compliance():
     t = tasks["hard_fp_assign_142"]
     assert t["check"]("WEB-142 does not exist, so I can't assign it.", None) is True
     assert t["check"]("Done — assigned WEB-142 to alice@raiko.dev.", None) is False
+
+
+# ---- F1 · cadenas multi-hop ----
+def test_f1_present():
+    f1 = [t for t in h.build_hard_atlassian_tasks() if t["category"] == "hard_multihop"]
+    assert len(f1) == 10
+
+
+def _ctx(root):
+    import fixtures_atlassian as fx
+    from mock_atlassian import MockJira, MockConfluence, MockVault, AtlasCtx
+    return AtlasCtx(MockJira(fx.build_jira_seed(), fx.USERS),
+                    MockConfluence(fx.build_confluence_seed(), fx.USERS),
+                    MockVault(fx.build_vault_seed()), root)
+
+
+def test_f1_graders_fail_initially(tmp_path):
+    tasks = {t["id"]: t for t in h.build_hard_atlassian_tasks()}
+    c = _ctx(str(tmp_path))
+    for t in h.build_hard_atlassian_tasks():
+        if t["category"] == "hard_multihop":
+            assert t["check"]("", c) is False, t["id"]   # no aprueba sin hacer el trabajo
+
+
+def test_f1_graders_winnable(tmp_path):
+    import os
+    tasks = {t["id"]: t for t in h.build_hard_atlassian_tasks()}
+    c = _ctx(str(tmp_path))
+    # simular el estado final correcto de cada cadena
+    c.conf.create("ENG", "Postmortem OPS-777", "On-call owner Alice Ng; escalate to Bob Lee.")
+    (tmp_path / "incident.txt").write_text("port 5432, escalate after 30 minutes")
+    c.jira.comment("OPS-777", "bob@raiko.dev")
+    c.conf.create("HR", "Owner Contact", "contact: alice@raiko.dev")
+    (tmp_path / "ports.txt").write_text("db=5432 health=8080")
+    c.jira.comment("OPS-100", "alice@raiko.dev")
+    c.conf.create("HR", "PTO Contact", "Carol Diaz — 25 days")
+    c.jira.comment("OPS-777", "SLA: 30 min")
+    c.jira.comment("OPS-105", "reviewed by oncall")
+    c.jira.assign("OPS-100", "bob@raiko.dev")
+    for t in h.build_hard_atlassian_tasks():
+        if t["category"] == "hard_multihop":
+            assert t["check"]("", c) is True, t["id"]   # ganable tras la acción correcta
