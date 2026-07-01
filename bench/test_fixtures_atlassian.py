@@ -4,7 +4,7 @@ import fixtures_atlassian as fx
 
 def test_jira_seed_size_and_keys():
     issues = fx.build_jira_seed()
-    assert 110 <= len(issues) <= 130
+    assert 110 <= len(issues) <= 145   # incluye needle + clústeres de casi-duplicados de HARD
     projects = {i["project"] for i in issues}
     assert projects == {"OPS", "WEB", "DATA"}
     seqs = [i["seq"] for i in issues]

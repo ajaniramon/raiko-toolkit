@@ -54,9 +54,10 @@ def build_hard_atlassian_tasks():
                       "prompt": prompt, "expect_tools": expect, "check": check,
                       "negative": negative, "setup": "atlassian"})
 
-    _extend_multihop(add)         # F1
-    _extend_disambiguation(add)   # F2
-    _extend_conflicts(add)        # F3
+    _extend_multihop(add)              # F1
+    _extend_disambiguation(add)        # F2
+    _extend_disambiguation_hard(add)   # F2 hard (clúster denso, conjunción de 3)
+    _extend_conflicts(add)             # F3
     _extend_constraints(add)      # F4
     _extend_false_premise(add)    # F5 (entidad inexistente)
     _extend_false_attribute(add)  # F5b (entidad real, atributo falso)
@@ -385,3 +386,32 @@ def _extend_false_attribute(add):
     add("hard_fa_pto_contact", "hard_false_premise",
         "PTO requests go to Dan Poe, right?",
         ["confluence_get"], lambda a, c: "carol" in (a or "").lower() or _declines(a), negative=True)
+
+
+def _extend_disambiguation_hard(add):
+    """F2 hard · clúster DENSO (8 issues, mismo summary): cada conjunción de 2 atributos
+    matchea 2 issues, así que hay que acertar los 3 (status+assignee+type) para elegir."""
+    import fixtures_atlassian as fx
+    SIB = fx.DENSE_CLUSTER
+    S = "the 'database outage during peak traffic' issues"
+
+    # (target, prompt-conjunción, texto) — conjunción de 3 atributos, target único
+    triples = [
+        ("OPS-910", "In Progress, assigned to Alice Ng, and a Bug", "triage-1"),
+        ("OPS-917", "Blocked, assigned to Bob Lee, and a Task", "triage-2"),
+        ("OPS-913", "In Progress, assigned to Bob Lee, and a Task", "triage-3"),
+        ("OPS-914", "Blocked, assigned to Alice Ng, and a Bug", "triage-4"),
+    ]
+    for n, (target, conj, text) in enumerate(triples, 1):
+        add(f"hard_dish_{n}", "hard_disambiguation",
+            f"Among {S}, comment '{text}' on the one that is {conj}. "
+            f"(Several share two of those attributes — you need all three.)",
+            ["jira_search", "jira_comment"],
+            (lambda tg, tx: lambda a, c: _only_target_commented(c, tg, SIB, tx))(target, text))
+
+    # variante assign: In Progress + Bob + Bug -> OPS-912
+    add("hard_dish_5", "hard_disambiguation",
+        f"Among {S}, reassign the one that is In Progress, assigned to Bob Lee, and a Bug "
+        f"to erin@raiko.dev. (Others share two of those three attributes.)",
+        ["jira_search", "jira_assign"],
+        lambda a, c: c.jira.issue("OPS-912")["assignee"] == "erin@raiko.dev")

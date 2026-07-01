@@ -77,11 +77,28 @@ def build_jira_seed():
             "description": "Near-duplicate cluster issue about checkout timeout regression under load.",
             "comments": [], "links": [], "seq": seq,
         })
+    # Clúster DENSO (F2 hard): las 8 combinaciones status×assignee×type sobre el MISMO
+    # summary. Cada conjunción de 2 atributos matchea 2 issues -> obliga a la conjunción
+    # de 3 para desambiguar.
+    _st = {"P": "In Progress", "B": "Blocked"}
+    _as = {"a": "alice@raiko.dev", "b": "bob@raiko.dev"}
+    _ty = {"g": "Bug", "t": "Task"}
+    for n, code in enumerate(["Pag", "Pat", "Pbg", "Pbt", "Bag", "Bat", "Bbg", "Bbt"]):
+        seq += 1
+        issues.append({
+            "key": f"OPS-91{n}", "project": "OPS", "type": _ty[code[2]],
+            "status": _st[code[0]], "assignee": _as[code[1]], "reporter": "carol@raiko.dev",
+            "summary": "database outage during peak traffic",
+            "description": "Dense near-duplicate cluster issue about a database outage during peak traffic.",
+            "comments": [], "links": [], "seq": seq,
+        })
     return issues
 
 
-# Keys del clúster de casi-duplicados (para los graders de F2).
+# Keys de los clústeres de casi-duplicados (para los graders de F2 y para excluirlos del floor).
 DUPE_CLUSTER = ["WEB-900", "WEB-901", "WEB-902", "WEB-903", "WEB-904", "WEB-905"]
+DENSE_CLUSTER = [f"OPS-91{n}" for n in range(8)]   # OPS-910..OPS-917
+HARD_ONLY_KEYS = DUPE_CLUSTER + DENSE_CLUSTER
 
 
 def build_confluence_seed():

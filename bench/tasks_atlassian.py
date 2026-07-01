@@ -200,7 +200,7 @@ def _extend_generated(add):
     # El floor excluye la semilla exclusiva de HARD (clúster casi-duplicado + páginas en
     # conflicto); esas viven en los mocks para que la batería HARD las consulte, pero no
     # deben ensuciar los generadores del piso.
-    _HARD_KEYS = set(getattr(fx, "DUPE_CLUSTER", []))
+    _HARD_KEYS = set(getattr(fx, "HARD_ONLY_KEYS", getattr(fx, "DUPE_CLUSTER", [])))
     issues = [i for i in fx.build_jira_seed() if i["key"] not in _HARD_KEYS]
     vault = fx.build_vault_seed()
 
