@@ -199,7 +199,9 @@ permission prompt.
 A decisive, reproducible tool-calling benchmark for local GGUF models. Deterministic
 decoding (`temperature=0, seed=42`), **programmatic graders** (no vibes), **resumable**
 runs (per-task JSONL + fsync), thinking **ON/OFF** per model, and a weighted leaderboard
-(`70% correctness · 20% tool-selection · 10% efficiency − penalties`).
+(`70% correctness · 15% tool-selection · 15% efficiency − penalties`). Penalties dock
+malformed JSON, timeouts, and **max-iter flailing** — a decisive agent that concludes
+quickly beats one that loops, on every tier.
 
 Tiers: **basic 202 · advanced 214 · hardcore 201**, plus a **mocked Atlassian battery**
 (~200 tasks, folded into the advanced runner) and a **HARD discriminator tier**. Graders are

@@ -178,11 +178,11 @@ def run_task(client, model_name, task, root, enable_thinking, tools=None,
     tool_ok = any(n in task["expect_tools"] for n in tool_calls_made)
     hallucinated = bool(task.get("negative")) and used_tool is not None and not correct and bool((answer or "").strip())
 
-    # efficiency: penalizes extra iterations
+    # efficiency: penalizes extra iterations (weight bumped to 15% — flailing must cost)
     eff = 1.0 if iterations_used <= 2 else max(0.0, 1.0 - (iterations_used - 2) * 0.2)
     per_task_score = (0.70 * (1.0 if correct else 0.0)
-                      + 0.20 * (1.0 if tool_ok else 0.0)
-                      + 0.10 * eff)
+                      + 0.15 * (1.0 if tool_ok else 0.0)
+                      + 0.15 * eff)
 
     return {
         "id": task["id"],
@@ -229,9 +229,11 @@ def aggregate(results: list) -> dict:
     tool_accuracy = tool_ok / n
     efficiency = sum(r["efficiency"] for r in results) / n
 
-    # final score: correctness 70%, tool 20%, efficiency 10%, minus penalties
-    base = 100 * (0.70 * correctness_rate + 0.20 * tool_accuracy + 0.10 * efficiency)
-    penalty = min(10, malformed) + min(10, timeouts * 2)
+    # final score: correctness 70%, tool 15%, efficiency 15%, minus penalties.
+    # max_iter (flailing / no-conclusion) is penalised explicitly on top of the low
+    # per-task efficiency it already earns — a decisive agent must not loop.
+    base = 100 * (0.70 * correctness_rate + 0.15 * tool_accuracy + 0.15 * efficiency)
+    penalty = min(10, malformed) + min(10, timeouts * 2) + min(10, max_iter)
     final_score = max(0.0, round(base - penalty, 1))
 
     # breakdown by category (% accuracy)
@@ -259,6 +261,7 @@ def aggregate(results: list) -> dict:
         "malformed_json": malformed,
         "errors_timeouts": timeouts,
         "max_iter": max_iter,
+        "avg_iterations": round(sum(r["iterations"] for r in results) / n, 2),
         "avg_latency_s": round(sum(r["latency_s"] for r in results) / n, 2),
         "total_completion_tokens": sum(r["completion_tokens"] for r in results),
         "by_category": by_category,

@@ -141,12 +141,13 @@ def write_report(all_runs, n_tasks):
              "  a bug (its self-test is run), multi-file bumps and access-log analysis.",
              "- Only the 3 winners.", "",
              "## Leaderboard", "",
-             "| # | Run | Score | Correct% | Tool% | BadJSON | Errs | Lat(s) | OutTok |",
-             "|---|---|---|---|---|---|---|---|---|"]
+             "| # | Run | Score | Correct% | Tool% | Eff% | MaxIter | BadJSON | Errs | Lat(s) | OutTok |",
+             "|---|---|---|---|---|---|---|---|---|---|---|"]
     for i, run in enumerate(rows, 1):
         a = run["agg"]
         lines.append(f"| {i} | **{run['label']}** | **{a['final_score']}** | {a['correctness_pct']} | "
-                     f"{a['tool_accuracy_pct']} | {a['malformed_json']} | {a['errors_timeouts']} | "
+                     f"{a['tool_accuracy_pct']} | {a['efficiency_pct']} | {a['max_iter']} | "
+                     f"{a['malformed_json']} | {a['errors_timeouts']} | "
                      f"{a['avg_latency_s']} | {a['total_completion_tokens']} |")
     cats = sorted({c for run in rows for c in run["agg"]["by_category"]})
     lines += ["", "## Accuracy by category (%)", "",

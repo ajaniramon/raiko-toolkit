@@ -156,18 +156,18 @@ def write_report(all_runs, truth, n_tasks):
 
     lines.append("## 🏆 Leaderboard")
     lines.append("")
-    hdr = ("| # | Run | Score | Correct% | Tool% | Effic% | Neg ok | Halluc | NoTool | "
+    hdr = ("| # | Run | Score | Correct% | Tool% | Effic% | MaxIter | Neg ok | Halluc | NoTool | "
            "BadJSON | Errs | Lat(s) | OutTok |")
-    sep = "|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+    sep = "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
     lines += [hdr, sep]
     for i, run in enumerate(rows, 1):
         a = run["agg"]
         if not a:
-            lines.append(f"| {i} | {run['label']} | — (failed to load) |||||||||||")
+            lines.append(f"| {i} | {run['label']} | — (failed to load) ||||||||||||")
             continue
         lines.append(
             f"| {i} | **{run['label']}** | **{a['final_score']}** | {a['correctness_pct']} | "
-            f"{a['tool_accuracy_pct']} | {a['efficiency_pct']} | {a['negatives_ok']} | "
+            f"{a['tool_accuracy_pct']} | {a['efficiency_pct']} | {a['max_iter']} | {a['negatives_ok']} | "
             f"{a['hallucinations']} | {a['no_tool_calls']} | {a['malformed_json']} | "
             f"{a['errors_timeouts']} | {a['avg_latency_s']} | {a['total_completion_tokens']} |")
     lines.append("")
