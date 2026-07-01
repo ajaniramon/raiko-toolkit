@@ -30,15 +30,30 @@ def _match_clause(issue, field, op, value):
     return False
 
 
+def _mask_in_lists(expr):
+    """Protege las listas de valores de `in (...)` del colapso de grupos de texto."""
+    masks = []
+    def repl(m):
+        masks.append(m.group(0))
+        return f"\x00{len(masks) - 1}\x00"
+    return re.sub(r'\bin\s*\([^()]*\)', repl, expr, flags=re.IGNORECASE), masks
+
+
+def _unmask(expr, masks):
+    for i, orig in enumerate(masks):
+        expr = expr.replace(f"\x00{i}\x00", orig)
+    return expr
+
+
 def _eval_jql(issue, jql):
     """Evalúa el subconjunto JQL. Soporta cláusulas field op value unidas por AND/OR
     y un único grupo entre paréntesis (el que genera la búsqueda por texto)."""
     # Normaliza el grupo (a OR b OR c): lo evaluamos aparte y sustituimos por True/False.
+    masked, masks = _mask_in_lists(jql)
     def eval_group(m):
-        inner = m.group(1)
-        return "TRUE" if _eval_flat(issue, inner) else "FALSE"
-    flat = re.sub(r"\(([^()]*)\)", eval_group, jql)
-    return _eval_flat(issue, flat)
+        return "TRUE" if _eval_flat(issue, _unmask(m.group(1), masks)) else "FALSE"
+    flat = re.sub(r"\(([^()]*)\)", eval_group, masked)
+    return _eval_flat(issue, _unmask(flat, masks))
 
 
 _CLAUSE = re.compile(r'(\w+)\s*(=|!=|~|\bin\b)\s*(\([^)]*\)|"[^"]*"|\S+)', re.IGNORECASE)
@@ -70,8 +85,16 @@ def _eval_flat(issue, expr):
 
 
 class MockJira:
-    def __init__(self, issues):
+    def __init__(self, issues, users=None):
         self._issues = {i["key"]: copy.deepcopy(i) for i in issues}
+        self._users = list(users or [])
+
+    def _resolve_user(self, who):
+        w = (who or "").strip()
+        for u in self._users:
+            if w.lower() in (u["name"].lower(), u["email"].lower()):
+                return u["email"]
+        return w
 
     def issue(self, key):
         return self._issues.get((key or "").strip())
@@ -120,8 +143,8 @@ class MockJira:
             return f"ERROR: no issue {key}"
         if not assignee.strip():
             return "ERROR: provide both 'key' and 'assignee'."
-        i["assignee"] = assignee.strip()
-        return f"Assigned {key.strip()} to {assignee.strip()}."
+        i["assignee"] = self._resolve_user(assignee)
+        return f"Assigned {key.strip()} to {i['assignee']}."
 
     def comment(self, key="", body=""):
         i = self.issue(key)
@@ -145,10 +168,11 @@ def _page_hay(page, field):
 
 def _eval_cql(page, cql):
     # Reutiliza el evaluador de cláusulas, pero sobre campos de página.
+    masked, masks = _mask_in_lists(cql)
     def eval_group(m):
-        return "TRUE" if _eval_flat_page(page, m.group(1)) else "FALSE"
-    flat = re.sub(r"\(([^()]*)\)", eval_group, cql)
-    return _eval_flat_page(page, flat)
+        return "TRUE" if _eval_flat_page(page, _unmask(m.group(1), masks)) else "FALSE"
+    flat = re.sub(r"\(([^()]*)\)", eval_group, masked)
+    return _eval_flat_page(page, _unmask(flat, masks))
 
 
 def _eval_flat_page(page, expr):
@@ -172,6 +196,9 @@ def _eval_flat_page(page, expr):
             return hay == value.lower()
         if op == "!=":
             return hay != value.lower()
+        if op == "in":
+            vals = [v.strip().strip('"').lower() for v in value.strip("()").split(",")]
+            return hay in vals
         return False
     result = val(tokens[0]); i = 1
     while i + 1 < len(tokens):

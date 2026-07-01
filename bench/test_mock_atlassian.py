@@ -57,6 +57,24 @@ def test_comment_mutates():
     j.comment("WEB-2", "fixed the CSS")
     assert "fixed the CSS" in j.issue("WEB-2")["comments"]
 
+def test_search_jql_in_operator():
+    j = MockJira(ISSUES)
+    out = j.search(jql='status in ("In Progress", "Done")')
+    assert "OPS-1" in out and "WEB-2" in out   # Done + In Progress both matched
+    out2 = j.search(jql='assignee in ("alice@raiko.dev")')
+    assert "OPS-1" in out2 and "WEB-2" not in out2
+
+def test_assign_resolves_display_name_to_email():
+    users = [{"name": "Alice Ng", "email": "alice@raiko.dev", "accountId": "acc-alice"}]
+    j = MockJira(ISSUES, users)
+    j.assign("WEB-2", "Alice Ng")
+    assert j.issue("WEB-2")["assignee"] == "alice@raiko.dev"
+
+def test_assign_email_unchanged_and_no_users_ok():
+    j = MockJira(ISSUES)          # sin tabla de usuarios
+    j.assign("WEB-2", "dan@raiko.dev")
+    assert j.issue("WEB-2")["assignee"] == "dan@raiko.dev"
+
 
 from mock_atlassian import MockConfluence
 
@@ -110,6 +128,11 @@ def test_conf_comment_mutates():
     c = MockConfluence(PAGES, USERS_T)
     c.comment(page_id="10001", body="resolved on 2026-05-03")
     assert any("resolved" in x for x in c.comments("10001"))
+
+def test_conf_search_cql_in_operator():
+    c = MockConfluence(PAGES, USERS_T)
+    out = c.search(cql='space in ("RUNBOOKS", "ENG")')
+    assert "10001" in out and "10002" in out
 
 
 from mock_atlassian import MockVault, build_atlas_impls, AtlasCtx

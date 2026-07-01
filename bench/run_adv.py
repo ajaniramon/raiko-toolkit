@@ -120,7 +120,7 @@ def run_suite(client, alias, label, tasks, enable_thinking):
                 os.makedirs(base, exist_ok=True)
                 root = base
                 os.chdir(root)
-                jira = MockJira(fx.build_jira_seed())
+                jira = MockJira(fx.build_jira_seed(), fx.USERS)
                 conf = MockConfluence(fx.build_confluence_seed(), fx.USERS)
                 vault = MockVault(fx.build_vault_seed())
                 disp = dict(DISPATCH); disp.update(build_atlas_impls(jira, conf, vault))
