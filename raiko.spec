@@ -7,7 +7,12 @@
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 datas, binaries, hiddenimports = [], [], []
-for pkg in ("textual", "tiktoken", "tiktoken_ext"):
+# requests is imported lazily (jira/confluence/vault tools + the Anthropic model
+# list), so PyInstaller under-collects it and its deps — including certifi's CA
+# bundle, without which every requests HTTPS call fails in the frozen app while
+# httpx (bundled via openai) keeps working. Collect them in full.
+for pkg in ("textual", "tiktoken", "tiktoken_ext",
+            "requests", "certifi", "urllib3", "charset_normalizer", "idna"):
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b
