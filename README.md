@@ -201,16 +201,13 @@ decoding (`temperature=0, seed=42`), **programmatic graders** (no vibes), **resu
 runs (per-task JSONL + fsync), thinking **ON/OFF** per model, and a weighted leaderboard
 (`70% correctness · 20% tool-selection · 10% efficiency − penalties`).
 
-Each tier now ships **≥200 tasks** (basic 202 · advanced 214 · hardcore 201 · circuit 203).
+Each tier now ships **≥200 tasks** (basic 202 · advanced 214 · hardcore 201).
 The basic/advanced/hardcore graders are correct-by-construction — every expected answer is
-computed from the same fixture data the sandbox is built from. The circuit tier is mostly
-**local Vault retrieval** (200 seeded KV secrets read back) plus a few **real Mac SSH
-copies**, which stay few on purpose since they hit live infra.
+computed from the same fixture data the sandbox is built from.
 
 ```bash
 python bench/run_bench.py            # basic tier (read-only tools)
 python bench/run_adv.py              # advanced: write/edit/python/powershell
-python bench/run_circuit.py          # circuit: Vault secret → remote copy
 python bench/run_hard.py             # hardcore: real dev/sysadmin incidents
 ```
 
@@ -309,7 +306,6 @@ python tui.py            # or: python tui.py --configure
 |---|---|---|
 | `tui_config.json` | Provider base-urls, **API keys**, default model, MCP servers, favorites | `tui_config.example.json` |
 | `bench/models.json` | `llama-server` path, models folder, one entry per GGUF model | `bench/models.example.json` |
-| `mac-credentials.txt` | (optional, benchmark only) `user:pass` + host for the circuit tier | — |
 
 No secrets, keys, IPs, or machine-specific paths live in the source — only in these files.
 
