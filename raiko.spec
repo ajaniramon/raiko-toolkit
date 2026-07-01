@@ -12,7 +12,11 @@ for pkg in ("textual", "tiktoken", "tiktoken_ext"):
     datas += d
     binaries += b
     hiddenimports += h
-hiddenimports += collect_submodules("mcp")
+# We use the MCP *client* only. Skip mcp.cli — it imports typer (the optional
+# mcp[cli] extra we don't ship), which otherwise breaks the frozen build.
+hiddenimports += collect_submodules(
+    "mcp", filter=lambda name: not name.startswith("mcp.cli"), on_error="ignore"
+)
 hiddenimports += ["serve", "models", "tools", "context", "mcp_client",
                   "tiktoken_ext.openai_public"]
 
