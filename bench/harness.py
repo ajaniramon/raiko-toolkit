@@ -187,6 +187,7 @@ def run_task(client, model_name, task, root, enable_thinking, tools=None,
     return {
         "id": task["id"],
         "category": task["category"],
+        "difficulty": task.get("difficulty"),
         "negative": bool(task.get("negative")),
         "prompt": task["prompt"],
         "answer": answer,
@@ -239,6 +240,13 @@ def aggregate(results: list) -> dict:
         cats.setdefault(r["category"], []).append(r["correct"])
     by_category = {c: round(100 * sum(v) / len(v)) for c, v in sorted(cats.items())}
 
+    diffs = {}
+    for r in results:
+        d = r.get("difficulty")
+        if d:
+            diffs.setdefault(d, []).append(r["correct"])
+    by_difficulty = {d: round(100 * sum(v) / len(v)) for d, v in sorted(diffs.items())}
+
     return {
         "n_tasks": n,
         "final_score": final_score,
@@ -254,4 +262,5 @@ def aggregate(results: list) -> dict:
         "avg_latency_s": round(sum(r["latency_s"] for r in results) / n, 2),
         "total_completion_tokens": sum(r["completion_tokens"] for r in results),
         "by_category": by_category,
+        "by_difficulty": by_difficulty,
     }
