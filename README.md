@@ -201,15 +201,33 @@ decoding (`temperature=0, seed=42`), **programmatic graders** (no vibes), **resu
 runs (per-task JSONL + fsync), thinking **ON/OFF** per model, and a weighted leaderboard
 (`70% correctness · 20% tool-selection · 10% efficiency − penalties`).
 
-Each tier now ships **≥200 tasks** (basic 202 · advanced 214 · hardcore 201).
-The basic/advanced/hardcore graders are correct-by-construction — every expected answer is
-computed from the same fixture data the sandbox is built from.
+Tiers: **basic 202 · advanced 214 · hardcore 201**, plus a **mocked Atlassian battery**
+(~200 tasks, folded into the advanced runner) and a **HARD discriminator tier**. Graders are
+correct-by-construction — every expected answer is computed from the same fixture data the
+sandbox is built from.
 
 ```bash
 python bench/run_bench.py            # basic tier (read-only tools)
-python bench/run_adv.py              # advanced: write/edit/python/powershell
+python bench/run_adv.py              # advanced: write/edit/python/shell (OS-adaptive) + Atlassian battery
 python bench/run_hard.py             # hardcore: real dev/sysadmin incidents
 ```
+
+**Mocked Atlassian battery (dependency-free).** The advanced runner includes ~200
+Jira/Confluence/Vault tasks backed by **in-process mocks** that replicate the real tools'
+search semantics (JQL/CQL incl. `in (...)`, pagination, author search) and output format — so
+it runs on a plain `git clone`, with no live Jira/Confluence/Vault or any server. It covers
+search, read/extraction, writes, cross-tool chains, ~10 secret-gated flows, and **40 negative
+tasks** that measure **hallucination resistance** (invent a Jira key or page that doesn't
+exist → fail).
+
+**Shell tasks are OS-adaptive:** PowerShell on Windows, `bash` on Linux/macOS, chosen
+automatically — the grader checks the filesystem effect, so the tier is fair on any platform.
+
+**HARD tier (`tasks_hard_atlassian.py`) — a frontier discriminator.** The floor tiers
+saturate (a competent 9B scores ~97%); HARD is curated to *separate* strong models with
+multi-hop planning chains (4–6 steps) and **anti-sycophancy** tasks that assert a false
+premise ("update issue WEB-142, the CSRF bug" — which doesn't exist) and reward the model that
+pushes back instead of fabricating. Grading is all-or-nothing.
 
 It serves one model at a time (auto `--jinja`, kills between runs so VRAM never stacks),
 and any model is one line in `bench/models.json`.

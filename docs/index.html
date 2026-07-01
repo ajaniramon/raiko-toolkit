@@ -471,7 +471,7 @@
       <div class="sec-head reveal">
         <p class="eyebrow">bench/</p>
         <h2>A benchmark that actually decides.</h2>
-        <p>A decisive, reproducible tool-calling benchmark for local GGUF models: deterministic decoding, programmatic graders (no vibes), resumable runs, and a weighted leaderboard that tells you which model to burn your VRAM on.</p>
+        <p>A decisive, reproducible tool-calling benchmark for local GGUF models: deterministic decoding, programmatic graders (no vibes), resumable runs, and a weighted leaderboard that tells you which model to burn your VRAM on. Now with a <b>dependency-free mocked Jira/Confluence/Vault battery</b> (search, writes, cross-tool chains, secret-gated flows, and <b>hallucination-resistance</b> negatives), <b>OS-adaptive shell</b> tasks (PowerShell ↔ bash), and a curated <b>HARD tier</b> that separates frontier models where the floor saturates.</p>
       </div>
       <div class="bench-grid">
         <div class="figure reveal">
@@ -482,11 +482,13 @@
           <p class="big"><b>Ornith-1.0-9B</b> (Q4_K_M) is the overall #1.</p>
           <p>A 9B model that tops the basic tier (96.9), stays top-tier on advanced (97.5), and runs away with hardcore — <b style="color:var(--text)">94.3</b>, the best score the benchmark has ever recorded — all while being fast and token-efficient. Uniquely, thinking doesn't hurt it.</p>
           <p style="color:var(--dim);font-size:.85rem">The key finding: enabling a model's own "thinking" is neutral-to-helpful for a few, but <i>hurts most others</i> — sometimes by 20–30 points.</p>
+          <p style="color:var(--dim);font-size:.85rem">New: on the mocked Atlassian battery Ornith lands ~97.5% with <b style="color:var(--text)">zero hallucinations</b> — so the fresh <b style="color:var(--text)">HARD</b> tier (anti-sycophancy + multi-hop) is what now pulls models apart.</p>
         </div>
       </div>
       <div class="tierstats reveal">
         <div class="stat"><div class="n">202</div><div class="l">basic</div></div>
         <div class="stat"><div class="n">214</div><div class="l">advanced</div></div>
+        <div class="stat"><div class="n">202</div><div class="l">atlassian</div></div>
         <div class="stat"><div class="n">201</div><div class="l">hardcore</div></div>
       </div>
     </div>
