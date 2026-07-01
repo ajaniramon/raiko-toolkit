@@ -325,6 +325,20 @@ def save_config(cfg):
         return False
 
 
+# A provider's API key can live in tui_config.json or in the conventional env var.
+_PROVIDER_ENV = {
+    "anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY",
+    "gemini": "GEMINI_API_KEY", "xai": "XAI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY", "nano": "NANO_GPT_API_KEY",
+}
+
+
+def resolve_key(provider, pcfg):
+    """API key for a provider: the config value, else the conventional env var
+    (so a key exported in the shell just works, without writing it to disk)."""
+    return (pcfg or {}).get("api_key") or os.environ.get(_PROVIDER_ENV.get(provider, ""), "") or ""
+
+
 # ------------------------------ session storage ------------------------------
 # One JSON file per saved conversation under sessions/ (gitignored). A session
 # stores its provider + model so it can be restored exactly.
@@ -477,7 +491,7 @@ class ProviderScreen(Screen):
         self.app.provider = pid
         if pid in URL_PROVIDERS:
             self.app.push_screen(RemoteUrlScreen(pid))
-        elif pid in CLOUD and not (self.app.cfg.get(pid, {}).get("api_key")):
+        elif pid in CLOUD and not resolve_key(pid, self.app.cfg.get(pid, {})):
             self.app.push_screen(ApiKeyScreen(pid))
         else:
             self.app.push_screen(ModelScreen(pid))
@@ -645,26 +659,30 @@ class ModelScreen(Screen):
             if self.provider == "anthropic":
                 ids = self._anthropic_models(cfg)      # native endpoint, own headers
             else:
-                cli = OpenAI(base_url=cfg["base_url"], api_key=cfg.get("api_key") or "x")
+                cli = OpenAI(base_url=cfg["base_url"], api_key=resolve_key(self.provider, cfg) or "x")
                 ids = sorted(m.id for m in cli.models.list().data)
             if not ids:
                 raise ValueError("empty model list")
             self.app.call_from_thread(self.set_cloud, ids)
         except Exception as e:
             if fallback:
-                # /models not available (e.g. Anthropic): use the curated list from config
-                self.app.call_from_thread(self.set_cloud, list(fallback))
+                # Live listing failed — fall back to the curated config list, but say
+                # so (a silent fallback hides a bad/missing key behind a stale list).
+                reason = str(e).splitlines()[0][:70] if str(e) else type(e).__name__
+                self.app.call_from_thread(self.set_cloud, list(fallback),
+                                          f"⚠ live list failed ({reason}) · showing saved list")
                 return
-            hint = (f"set an api_key for '{self.provider}' in tui_config.json"
-                    if not cfg.get("api_key") else str(e))
+            hint = (f"set an api_key for '{self.provider}' (config or {_PROVIDER_ENV.get(self.provider, 'env')})"
+                    if not resolve_key(self.provider, cfg) else str(e))
             self.app.call_from_thread(lambda: self.query_one("#status", Static).update(
                 Text(f"error: {hint}", style="red")))
 
-    def set_cloud(self, ids):
+    def set_cloud(self, ids, note=None):
         self.names = ids
         self.label_of = {i: i for i in ids}
         self.rebuild()
-        self.query_one("#status", Static).update(Text(f"{len(ids)} models · filter, ↓, Enter"))
+        self.query_one("#status", Static).update(
+            Text(note, style="yellow") if note else Text(f"{len(ids)} models · filter, ↓, Enter"))
         self.query_one("#filter", Input).focus()
 
     def _anthropic_models(self, cfg):
@@ -675,7 +693,7 @@ class ModelScreen(Screen):
         base = cfg["base_url"].rstrip("/")
         r = requests.get(
             f"{base}/models",
-            headers={"x-api-key": cfg.get("api_key") or "", "anthropic-version": "2023-06-01"},
+            headers={"x-api-key": resolve_key("anthropic", cfg), "anthropic-version": "2023-06-01"},
             params={"limit": 1000}, timeout=15,
         )
         r.raise_for_status()
@@ -2078,7 +2096,7 @@ class AgentTUI(App):
         self.is_local = provider == "local"
         pc = self.cfg[provider]
         self.base_url = serve.base_url() if self.is_local else pc["base_url"]
-        self.api_key = pc.get("api_key", "sk-noop")
+        self.api_key = "sk-noop" if self.is_local else (resolve_key(provider, pc) or "sk-noop")
         self.model = model
         self.enable_thinking = self.cfg["local"].get("enable_thinking", True)
         self.client = OpenAI(base_url=self.base_url, api_key=self.api_key)
