@@ -642,8 +642,11 @@ class ModelScreen(Screen):
         cfg = self.app.cfg[self.provider]
         fallback = cfg.get("models") or []
         try:
-            cli = OpenAI(base_url=cfg["base_url"], api_key=cfg.get("api_key") or "x")
-            ids = sorted(m.id for m in cli.models.list().data)
+            if self.provider == "anthropic":
+                ids = self._anthropic_models(cfg)      # native endpoint, own headers
+            else:
+                cli = OpenAI(base_url=cfg["base_url"], api_key=cfg.get("api_key") or "x")
+                ids = sorted(m.id for m in cli.models.list().data)
             if not ids:
                 raise ValueError("empty model list")
             self.app.call_from_thread(self.set_cloud, ids)
@@ -663,6 +666,20 @@ class ModelScreen(Screen):
         self.rebuild()
         self.query_one("#status", Static).update(Text(f"{len(ids)} models · filter, ↓, Enter"))
         self.query_one("#filter", Input).focus()
+
+    def _anthropic_models(self, cfg):
+        """Anthropic's OpenAI-compatible endpoint doesn't serve /models with bearer
+        auth, so query the native endpoint with its own headers. Returns ids newest
+        first (the API's order); the curated config list stays as the fallback."""
+        import requests
+        base = cfg["base_url"].rstrip("/")
+        r = requests.get(
+            f"{base}/models",
+            headers={"x-api-key": cfg.get("api_key") or "", "anthropic-version": "2023-06-01"},
+            params={"limit": 1000}, timeout=15,
+        )
+        r.raise_for_status()
+        return [m["id"] for m in r.json().get("data", [])]
 
     def _favs(self):
         return self.app.cfg.setdefault("favorites", {}).setdefault(self.provider, [])
