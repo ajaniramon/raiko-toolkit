@@ -14,6 +14,7 @@ def _match_clause(issue, field, op, value):
     hay = {
         "project": issue["project"], "status": issue["status"],
         "assignee": issue.get("assignee") or "", "type": issue["type"],
+        "issuetype": issue["type"],   # alias real de Jira (JQL usa 'issuetype')
         "text": " ".join([issue["summary"], issue["description"], " ".join(issue["comments"])]),
         "summary": issue["summary"],
     }.get(field, "")

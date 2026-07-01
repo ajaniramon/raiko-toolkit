@@ -57,6 +57,12 @@ def test_comment_mutates():
     j.comment("WEB-2", "fixed the CSS")
     assert "fixed the CSS" in j.issue("WEB-2")["comments"]
 
+def test_search_jql_issuetype_alias():
+    # JQL real de Jira usa 'issuetype'; el mock debe aceptarlo como alias de 'type'.
+    j = MockJira(ISSUES)
+    out = j.search(jql='issuetype = "Bug"')
+    assert "WEB-2" in out and "OPS-1" not in out   # WEB-2 es Bug, OPS-1 es Incident
+
 def test_search_jql_in_operator():
     j = MockJira(ISSUES)
     out = j.search(jql='status in ("In Progress", "Done")')

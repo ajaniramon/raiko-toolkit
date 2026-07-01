@@ -69,5 +69,12 @@ def test_negative_helpers():
     assert not ta._no_page_id("maybe page 10001")
     assert ta._says_none("that issue does not exist")
     assert not ta._says_none("the status is Done")
+    # frases reales que el modelo usó al declinar (antes eran falsos negativos)
+    assert ta._says_none('No Confluence page titled "Quarterly Unicorn Report" exists in the system.')
+    assert ta._says_none("The search returned no matches.")
+    assert ta._says_none('No Jira issue matches "zombie outbreak dashboard."')
+    assert ta._says_none("Vault returned 404")
+    # pero una respuesta que afirma un valor NO cuenta como 'declinó'
+    assert not ta._says_none("The rollout owner is Bob Lee")
     assert ta._no_status("I could not find that issue")
     assert not ta._no_status("it is In Review")

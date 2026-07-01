@@ -29,15 +29,17 @@ def _status_ok(answer, status):
     return status in present and all(s == status for s in present)
 
 
-_NONE_CUES = ("not found", "no issue", "no such", "does not exist", "doesn't exist",
-              "no page", "not exist", "couldn't find", "could not find", "no matching",
-              "no results", "none found", "unable to find", "wasn't found", "no secret",
-              "cannot retrieve", "can't retrieve", "not exist", "no such issue", "no such page")
+# Detecta que el agente DECLARA no encontrar la entidad (en vez de inventarla).
+# Regex robusta: "no <…> exist/found/match/page/issue/result/secret", más variantes.
+_NONE_RE = re.compile(
+    r"\bno\b[^.]{0,50}\b(exist\w*|found|match\w*|page\w*|issue\w*|result\w*|secret\w*|record\w*)\b"
+    r"|does\s*n[o']?t\s+exist|not\s+found|not\s+exist\w*|couldn'?t\s+find|could\s+not\s+find"
+    r"|unable\s+to\s+(find|retrieve|locate)|no\s+such|returned\s+no|404|not\s+available",
+    re.IGNORECASE)
 
 
 def _says_none(answer):
-    a = (answer or "").lower()
-    return any(cue in a for cue in _NONE_CUES)
+    return bool(_NONE_RE.search(answer or ""))
 
 
 def _no_issue_key(answer):
@@ -311,7 +313,7 @@ def _extend_negatives(add):
         add(f"neg_js_{i:02d}", "jira_search", "hard",
             f"Search Jira for an issue about '{topic}' and report its key. "
             f"If nothing matches, say so — do not invent one.",
-            ["jira_search"], lambda a, c: _no_issue_key(a), negative=True)
+            ["jira_search"], lambda a, c: _says_none(a) or _no_issue_key(a), negative=True)
     # jira_get sobre keys inexistentes -> no inventar status (12)
     for i, key in enumerate(_GHOST_KEYS):
         add(f"neg_jr_{i:02d}", "jira_read", "hard",
