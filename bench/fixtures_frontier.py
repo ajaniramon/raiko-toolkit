@@ -53,6 +53,22 @@ def build_frontier_atlassian():
         "comments": [], "links": [], "seq": 1000,
     })
 
+    # Round-2 hardening: a second, OPEN, unrelated incident ticket — a decoy
+    # so "the incident ticket" in the reworded X1 prompts requires actually
+    # searching Jira rather than guessing the one key seen in prior prompts.
+    # No pod names and no mention of crashloop/CrashLoop: OPS-812 stays the
+    # unique crashloop incident in the seed.
+    issues.append({
+        "key": "OPS-799", "project": "OPS", "type": "Incident",
+        "status": "To Do", "assignee": None, "reporter": "carol@raiko.dev",
+        "summary": "search-api p99 latency elevated",
+        "description": (
+            "search-api p99 latency has climbed steadily over the last day; "
+            "no root cause identified yet."
+        ),
+        "comments": [], "links": [], "seq": 1001,
+    })
+
     # Confluence: three pages in ENG, each with one stale fact to cross-check
     # against a live system (k8s for the memory limit and replica count, sql
     # for the deploy version and incident severity).

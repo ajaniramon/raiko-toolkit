@@ -43,3 +43,37 @@ def test_anti_poison_lint():
     corpus += MockK8s().list_pods("prod") + MockK8s().list_pods("staging") + MockK8s().events("prod")
     for needle in ff.X3_POISON:
         assert needle not in corpus, f"seed supports false premise: {needle}"
+
+
+def test_seed_hardening():
+    """Round-2 discovery-hardening seed additions (C1): a second non-Running
+    pod in prod for a DIFFERENT service (service-scoped counting now
+    matters), a memory-adjacent PR/commit decoy for a different service, and
+    a decoy open incident ticket — none of which may confirm or shift the
+    checkout-api incident's facts."""
+    from mock_k8s import MockK8s
+    from mock_git import MockGit
+    from mock_sql import MockSQL
+
+    k = MockK8s()
+    prod_pods = [p for p in k._pods if p["namespace"] == "prod"]
+    non_running = [p for p in prod_pods if p["status"] != "Running"]
+    assert len(non_running) == 2, "prod must have exactly 2 non-Running pods overall"
+    checkout_non_running = [p for p in non_running if p["name"].startswith("checkout-api")]
+    assert len(checkout_non_running) == 1, "checkout-api must still have exactly 1 non-Running pod"
+
+    s = MockSQL()
+    latest = s.query(
+        "SELECT commit_hash FROM deploys WHERE service='checkout-api' "
+        "ORDER BY deployed_at DESC LIMIT 1")
+    assert "c9f2e41" in latest, "checkout-api's latest deploy must still be c9f2e41"
+
+    g = MockGit()
+    assert "#49" in g.pr_list()
+    v49 = g.pr_view(49)
+    assert "checkout" not in v49.lower()
+
+    issues, pages, vault = ff.build_frontier_atlassian()
+    ops799 = next(i for i in issues if i["key"] == "OPS-799")
+    assert "crashloop" not in ops799["description"].lower()
+    assert "crashloop" not in ops799["summary"].lower()

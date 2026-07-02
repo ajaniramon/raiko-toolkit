@@ -17,6 +17,12 @@ misattribute the incident to it. `b4e9c77` is an older filler commit (a
 mock_sql.py's `deploys` table, so `diff(b4e9c77, c9f2e41)` must span the
 whole window. The remaining filler commits (docs/tests/lint/deps) carry
 neither "memory" nor "timeout" so they cannot be mistaken for evidence.
+
+Round-2 hardening: `f7d3b19` / PR #49 "tune JVM heap flags for search-api"
+(erin@raiko.dev, 2026-06-27) is a second, memory-ADJACENT decoy for a
+DIFFERENT service — it never touches checkout-api or its k8s memory limit,
+so it never satisfies any checkout-api grader; x2_which_pr_broke tolerates
+it being named only to be rejected, same as PR #45.
 """
 import copy
 
@@ -36,6 +42,26 @@ DEFAULT_SEED = {
                 "       limits:\n"
                 "-        memory: 512Mi\n"
                 "+        memory: 128Mi\n"
+            ),
+        },
+        {
+            # Memory-adjacent decoy (round-2 hardening): a JVM heap tuning PR
+            # for a DIFFERENT service (search-api, not checkout-api) merged
+            # the day before the incident. It never touches checkout-api's
+            # k8s memory limit, so an agent that pattern-matches on "memory"
+            # instead of tracing the actual checkout-api commit/PR (#47 /
+            # c9f2e41) will misattribute the incident to it.
+            "hash": "f7d3b19",
+            "date": "2026-06-27",
+            "author": "erin@raiko.dev",
+            "message": "PR #49: tune JVM heap flags for search-api",
+            "files": ["config/jvm.conf"],
+            "diff": (
+                "--- a/config/jvm.conf\n"
+                "+++ b/config/jvm.conf\n"
+                "@@\n"
+                "-Xmx512m -Xms256m\n"
+                "+Xmx768m -Xms384m\n"
             ),
         },
         {
@@ -180,6 +206,17 @@ DEFAULT_SEED = {
             "commit": "d8c3b72",
             "files": ["README.md"],
             "body": "Refreshes onboarding instructions in the README.",
+        },
+        {
+            "number": 49,
+            "title": "tune JVM heap flags for search-api",
+            "author": "erin@raiko.dev",
+            "state": "merged",
+            "merged_at": "2026-06-27",
+            "commit": "f7d3b19",
+            "files": ["config/jvm.conf"],
+            "body": "Increases the JVM heap size for search-api to reduce GC pause "
+                    "frequency under load.",
         },
         {
             "number": 48,

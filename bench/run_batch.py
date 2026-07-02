@@ -13,6 +13,7 @@ at the end, to the matching report_hard --dir/--tasks-module.
 import argparse
 import json
 import os
+import subprocess
 import sys
 import threading
 
@@ -28,6 +29,7 @@ import run_frontier
 from run_hard_atlassian import run_model, _nano_key
 
 console = Console()
+BENCH_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def _mcp_call(url, name, args):          # seam for tests
@@ -40,6 +42,25 @@ def _run_one(client, model, label):      # seam for tests (HARD tier)
 
 def _run_one_frontier(client, model, label):     # seam for tests (FRONTIER tier)
     return run_frontier.run_model(client, model, label)
+
+
+def _run_remote_cli(tier, run, label):   # seam for tests (subprocess isolation for remote runs)
+    """Run one remote rep as a subprocess invocation of the tier runner CLI.
+
+    `run_suite` (in run_frontier/run_hard_atlassian) does `os.chdir(root)` per
+    task; cwd is process-wide. When the remote campaign ran in-thread it shared
+    the process (and cwd) with the local rotation, so `write_file` results
+    could land in the wrong sandbox. A subprocess gets its own process-wide
+    cwd, so this isolates remote runs from whatever the local rotation is
+    doing at the same time. Raises (via subprocess.run(check=True)) on a
+    non-zero exit, which the caller's daemon thread captures as the remote
+    campaign's error.
+    """
+    script = "run_frontier.py" if tier == "frontier" else "run_hard_atlassian.py"
+    cmd = [sys.executable, script, "--model", run["model"], "--url", run["url"], "--label", label]
+    if run["provider"] == "nano":
+        cmd.append("--nano")
+    subprocess.run(cmd, cwd=BENCH_DIR, check=True)
 
 
 def _switch_local(mcp_url, alias):
@@ -62,16 +83,23 @@ def _client_for(run, manifest):
 
 def _campaign(runs, manifest, reps, remote=False, tier="hard"):
     # Looked up by name (not bound at def-time) so tests can monkeypatch
-    # rb._run_one / rb._run_one_frontier before calling rb.main(...).
+    # rb._run_one / rb._run_one_frontier / rb._run_remote_cli before calling
+    # rb.main(...).
     run_one = _run_one_frontier if tier == "frontier" else _run_one
     for run in runs:
+        client = None
         if not remote:
             _switch_local(manifest["mcp_url"], run["model"])
-        client = _client_for(run, manifest)
+            client = _client_for(run, manifest)
         for n in range(1, reps + 1):
             label = f"{run['label']}-r{n}"
             console.print(f"[bold]▶ {label}[/] ({run['model']})")
-            run_one(client, run["model"], label)
+            if remote:
+                # Remote runs go through a subprocess (see _run_remote_cli's
+                # docstring) so they never share the local rotation's cwd.
+                _run_remote_cli(tier, run, label)
+            else:
+                run_one(client, run["model"], label)
 
 
 def main(argv=None):

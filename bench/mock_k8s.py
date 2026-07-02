@@ -56,6 +56,29 @@ DEFAULT_SEED = {
             "last_exit": "-",
         },
         {
+            # Second NON-Running pod in prod, but a DIFFERENT service from the
+            # incident (orders-api, not checkout-api): a naive "count all
+            # non-Running pods in prod" now gives the wrong answer (2) for
+            # x1_vault_service_pods, which must be scoped to the service named
+            # by the Vault secret (checkout-api, still 1).
+            "name": "orders-api-4f8e2-w7y3q",
+            "namespace": "prod",
+            "status": "Evicted",
+            "restarts": 0,
+            "image": "orders-api:5.2.1",
+            "mem_limit": "256Mi",
+            "last_exit": "Evicted (node disk pressure)",
+        },
+        {
+            "name": "orders-api-4f8e2-b2c8d",
+            "namespace": "prod",
+            "status": "Running",
+            "restarts": 3,
+            "image": "orders-api:5.2.1",
+            "mem_limit": "256Mi",
+            "last_exit": "-",
+        },
+        {
             "name": "checkout-api-59e2a1b77-s6w4z",
             "namespace": "staging",
             "status": "Running",

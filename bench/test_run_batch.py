@@ -60,7 +60,7 @@ def test_batch_remote_runs_do_not_switch(monkeypatch, tmp_path):
     import run_batch as rb
     switched, runs = [], []
     monkeypatch.setattr(rb, "_mcp_call", lambda *a, **k: switched.append(a))
-    monkeypatch.setattr(rb, "_run_one", lambda client, model, label: runs.append(label))
+    monkeypatch.setattr(rb, "_run_remote_cli", lambda tier, run, label: runs.append(label))
     manifest = {"mcp_url": "http://x/mcp", "local_url": "http://x/v1", "reps": 1,
                 "runs": [{"provider": "nano", "model": "deepseek/x", "label": "ds",
                           "url": "https://nano.example/v1"}]}
@@ -123,9 +123,9 @@ def test_batch_remote_failure_aborts_and_skips_report(monkeypatch, tmp_path):
     monkeypatch.setattr(rb, "_mcp_call", lambda *a, **k: (_ for _ in ()).throw(
         AssertionError("no local runs, _mcp_call should not be called")))
 
-    def _boom(client, model, label):
+    def _boom(tier, run, label):
         raise RuntimeError("remote task exploded")
-    monkeypatch.setattr(rb, "_run_one", _boom)
+    monkeypatch.setattr(rb, "_run_remote_cli", _boom)
     manifest = {"mcp_url": "http://x/mcp", "local_url": "http://x/v1", "reps": 1,
                 "runs": [{"provider": "nano", "model": "deepseek/x", "label": "ds",
                           "url": "https://nano.example/v1"}]}
@@ -135,3 +135,26 @@ def test_batch_remote_failure_aborts_and_skips_report(monkeypatch, tmp_path):
     with pytest.raises(SystemExit):
         rb.main(["--manifest", str(p)])
     assert report_calls == []
+
+
+def test_run_remote_cli_builds_nano_frontier_argv(monkeypatch):
+    import run_batch as rb
+    captured = {}
+
+    def _fake_run(cmd, cwd=None, check=None):
+        captured["cmd"] = cmd
+        captured["cwd"] = cwd
+        captured["check"] = check
+
+        class _CP:
+            returncode = 0
+        return _CP()
+
+    monkeypatch.setattr(rb.subprocess, "run", _fake_run)
+    run = {"provider": "nano", "model": "deepseek/deepseek-v4-flash", "label": "ds",
+           "url": "https://nano-gpt.com/api/v1"}
+    rb._run_remote_cli("frontier", run, "ds-r1")
+    assert "run_frontier.py" in captured["cmd"]
+    assert "--nano" in captured["cmd"]
+    assert "ds-r1" in captured["cmd"]
+    assert captured["check"] is True

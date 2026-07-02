@@ -116,6 +116,10 @@ DEFAULT_SEED = {
         (27, "search-api", "3.0.5", "2026-06-10T09:00", "1a2b3c4", "erin@raiko.dev"),
         (28, "billing-api", "1.2.0", "2026-06-12T11:15", "5d6e7f8", "frank@raiko.dev"),
         (29, "notifications-api", "0.9.1", "2026-06-15T08:45", "9c8b7a6", "grace@raiko.dev"),
+        # Round-2 hardening: two more decoy rows, neither for checkout-api, so
+        # "latest checkout-api deploy" (id 31, c9f2e41) is unaffected.
+        (33, "orders-api", "5.2.1", "2026-06-27T11:00", "9e2f4c1", "erin@raiko.dev"),
+        (34, "search-api", "3.1.0", "2026-06-26T16:20", "f7d3b19", "erin@raiko.dev"),
     ],
     "incidents": [
         (7, "checkout-api", "2026-06-28T14:30", "sev1", "OPS-812"),

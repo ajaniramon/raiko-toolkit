@@ -145,6 +145,20 @@ def test_grader_hardening(tmp_path):
     assert tasks["x2_bad_version"]["check"](
         "Version 2.3.9 is the culprit (2.4.1 is fine)", c) is False
 
+    # (b2) round-2 decoy PR #49 (search-api JVM heap tuning) gets the same
+    # allowance as #45: named only to be rejected passes, blaming it fails.
+    assert tasks["x2_which_pr_broke"]["check"](
+        "PR #47 caused it, not #45 and not #49 (unrelated search-api heap tuning).", c) is True
+    assert tasks["x2_which_pr_broke"]["check"]("Root cause is PR #49", c) is False
+
+    # (b3) x2_why_crashloop hardening: naming the mechanism (memory/OOM)
+    # WITHOUT tying it to the cause (limit/#47/c9f2e41/128) is not enough.
+    c5 = _ctx(str(tmp_path))
+    c5.jira.comment("OPS-812", "OOM")
+    assert tasks["x2_why_crashloop"]["check"]("", c5) is False
+    c5.jira.comment("OPS-812", "OOM after the memory limit dropped to 128Mi")
+    assert tasks["x2_why_crashloop"]["check"]("", c5) is True
+
     # (c) "revision 12" without the colon is an equally correct phrasing;
     # "revision 120" is not (word boundary).
     c2 = _ctx(str(tmp_path))
@@ -263,3 +277,11 @@ def test_x4_rejects_documented_value(tmp_path):
     c3 = _ctx(str(tmp_path))
     c3.jira.comment("OPS-812", "sev1, not sev2 as the notes say")
     assert tasks["x4_severity_live"]["check"]("", c3) is True
+
+    # Presence-only fix (round 2): a comment that correctly dismisses the
+    # stale sev2 without an explicit "not" near it (e.g. "incorrectly
+    # lists") used to be rejected by the old sev2-absence clause even
+    # though it names the live value; it must pass now.
+    c4 = _ctx(str(tmp_path))
+    c4.jira.comment("OPS-812", "page incorrectly lists sev2, actual is sev1")
+    assert tasks["x4_severity_live"]["check"]("", c4) is True

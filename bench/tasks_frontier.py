@@ -112,8 +112,8 @@ ACCEPTANCE = {
     "x1_incident_sev_page": "Page 'Incident Severity OPS-812' exists with a body containing sev1 (case-insensitive).",
     "x1_commit_msg_file": "File commitmsg.txt contains 'reduce memory limits' (case-insensitive), the message of the deploy commit that broke checkout-api.",
     # X2 — root-cause identification
-    "x2_why_crashloop": "OPS-812 gets a comment mentioning memory or OOM as the root cause, and never mentions timeout.",
-    "x2_which_pr_broke": "The answer names PR #47 as the root cause; PR #45 is either absent or named only to be rejected.",
+    "x2_why_crashloop": "OPS-812 gets a comment naming memory or OOM as the mechanism AND tying it to the cause (128, 'limit', PR #47 or commit c9f2e41) — a bare 'OOM' alone is not enough.",
+    "x2_which_pr_broke": "The answer names PR #47 as the root cause; the decoys PR #45 and PR #49 are each either absent or named only to be rejected.",
     "x2_bad_version": "The answer names 2.4.1 as the version that introduced the crashloop; 2.3.9 is either absent or named only to be rejected.",
     "x2_fix_plan_page": "Page 'Fix Plan' exists with a body containing 512, the memory limit to restore.",
     "x2_impact": "The answer contains the number 37 (failed orders) and sev1 (incident severity).",
@@ -140,7 +140,7 @@ ACCEPTANCE = {
     "x4_still_failing": "OPS-812 gets a comment 'still failing' (the live pod state), with no genuine 'resolved' claim, despite the ticket's stale To Do/resolved-sounding status.",
     "x4_replicas_live": "File replicas-live.txt contains the live value 2, not the documented 4 — the digit 2 and no other digits.",
     "x4_image_live": "OPS-812 gets a comment containing the live value 2.4.1; naming the stale 2.3.9 only to correct it is fine.",
-    "x4_severity_live": "OPS-812 gets a comment with the live value sev1, not the documented sev2.",
+    "x4_severity_live": "OPS-812 gets a comment containing sev1; naming the stale sev2 to dismiss it is allowed.",
     "x4_live_summary": "Page 'Live State checkout-api' exists in ENG with a body containing the three live values 17, 128 and 2.4.1.",
 }
 
@@ -183,16 +183,17 @@ def _extend_chains(add):
     C = "frontier_chain"
 
     add("x1_ticket_pod_deploy", C,
-        "Read OPS-812, check the actual state of the pod it mentions, and if "
-        "the live state differs from the ticket, find the latest checkout-api "
-        "deploy in the `deploys` table and comment its commit_hash on OPS-812.",
+        "Find the Jira incident about crashlooping pods in prod, check the "
+        "live state of the pod it mentions, and if the live state differs "
+        "from the ticket, comment the commit_hash of the deploy that caused "
+        "the crashloop on that issue.",
         ["jira_get", "k8s_get_pod", "sql_query", "jira_comment"],
         lambda a, c: _has_comment(c, "OPS-812", "c9f2e41"))
 
     add("x1_pod_pr_comment", C,
-        "Find why the crashing checkout-api pod was killed (its last exit "
-        "reason), locate the merged PR that changed that setting, and comment "
-        "'culprit: PR #<n>' on OPS-812.",
+        "A checkout-api pod keeps getting killed in prod. Find out why from "
+        "the cluster, identify the merged PR that introduced the problem, and "
+        "comment 'culprit: PR #<n>' on the incident ticket.",
         ["k8s_get_pod", "gh_pr_list", "gh_pr_view", "jira_comment"],
         lambda a, c: _has_comment(c, "OPS-812", "PR #47"))
 
@@ -204,23 +205,23 @@ def _extend_chains(add):
             (rf(c.root, "cause.txt") or "").lower()))
 
     add("x1_deploy_author_assign", C,
-        "Find who authored the deploy that broke checkout-api (deploys table) "
-        "and assign OPS-812 to that person.",
+        "Assign the Jira incident about the prod crashloop to the person who "
+        "shipped the deploy that caused it.",
         ["sql_query", "jira_assign"],
         lambda a, c: c.jira.issue("OPS-812")["assignee"] == "dan@raiko.dev")
 
     add("x1_sql_orders_comment", C,
-        "Count orders with status 'failed' created after the OPS-812 incident "
-        "started (see the incidents table) and comment 'failed orders: <n>' "
-        "on OPS-812.",
+        "Quantify the customer impact of the checkout incident: count how "
+        "many orders failed after the incident started and comment 'failed "
+        "orders: <n>' on the incident ticket.",
         ["sql_query", "jira_comment"],
         # Word boundary: "OOMKilled (137)" must not satisfy the count of 37.
         lambda a, c: _has_comment_re(c, "OPS-812", r"\b37\b"))
 
     add("x1_runbook_escalate", C,
-        "Open the 'Checkout Service Runbook', find the incident escalation "
-        "contact, and comment that person's email (<firstname>@raiko.dev) on "
-        "OPS-812.",
+        "Escalate the checkout incident per its runbook: find the escalation "
+        "contact and comment that person's email (<firstname>@raiko.dev) on "
+        "the incident ticket.",
         ["confluence_get", "jira_comment"],
         lambda a, c: _has_comment(c, "OPS-812", "erin@raiko.dev"))
 
@@ -248,16 +249,15 @@ def _extend_chains(add):
                 lambda a, c: "512" in (rf(c.root, "limits.txt") or "")))
 
     add("x1_revision_comment", C,
-        "Get the rollout status of the checkout-api deployment in prod and "
-        "comment 'revision: <n>' on OPS-812.",
+        "Find which deployment revision the crashing prod service is "
+        "currently on and comment 'revision: <n>' on the incident ticket.",
         ["k8s_rollout_status", "jira_comment"],
         # Accept both "revision: 12" and "revision 12"; reject "revision 120".
         lambda a, c: _has_comment_re(c, "OPS-812", r"revision:?\s*12\b"))
 
     add("x1_incident_sev_page", C,
-        "Look up the severity of the incident linked to OPS-812 in the "
-        "`incidents` table and create a page 'Incident Severity OPS-812' in "
-        "ENG whose body contains it.",
+        "Create a page 'Incident Severity OPS-812' in ENG whose body states "
+        "the severity recorded for that incident in the incident database.",
         ["sql_query", "confluence_create"],
         _all_of(lambda a, c: c.conf.page_by_title("Incident Severity OPS-812") is not None,
                 lambda a, c: "sev1" in _page_body(c, "Incident Severity OPS-812").lower()))
@@ -281,15 +281,20 @@ def _extend_rootcause(add):
         "Investigate why checkout-api is crashlooping in prod and comment the "
         "root cause on OPS-812 (one line).",
         ["k8s_get_pod", "k8s_logs", "jira_comment"],
-        lambda a, c: (_has_comment(c, "OPS-812", "memory") or _has_comment(c, "OPS-812", "OOM"))
-        and not _has_comment(c, "OPS-812", "timeout"))
+        # Mechanism AND cause: naming memory/OOM alone (without tying it to
+        # the limit change that caused it) is no longer enough — round-1
+        # evidence showed a bare "OOM" comment used to pass.
+        lambda a, c: (_has_comment(c, "OPS-812", "memory") or _has_comment(c, "OPS-812", "oom"))
+        and _has_comment_re(c, "OPS-812", r"128|limit|#47|c9f2e41"))
 
     add("x2_which_pr_broke", C,
         "Which merged PR is the actual root cause of OPS-812? Answer with the "
         "PR number and one sentence of evidence.",
         ["git_log", "gh_pr_list", "gh_pr_view"],
-        # The decoy may be mentioned only to be rejected ("#47, not #45").
-        lambda a, c: "#47" in a and ("#45" not in a or _negates_near(a, "#45")))
+        # Both decoys (#45 the timeout PR, #49 the unrelated search-api JVM
+        # heap PR) may be mentioned only to be rejected ("#47, not #45/#49").
+        lambda a, c: "#47" in a and ("#45" not in a or _negates_near(a, "#45"))
+        and ("#49" not in a or _negates_near(a, "#49")))
 
     add("x2_bad_version", C,
         "Which checkout-api version introduced the crashloop? Answer the "
@@ -500,8 +505,12 @@ def _extend_conflict(add):
         "The 'Checkout Scaling Notes' page says OPS-812 is sev2. Check "
         "the incidents table and comment the ACTUAL severity on OPS-812.",
         ["confluence_get", "sql_query", "jira_comment"],
-        lambda a, c: _has_comment(c, "OPS-812", "sev1")
-        and not _comment_asserts(c, "OPS-812", "sev2"))
+        # Presence-only, like its 4 sibling X4 graders (x4_runbook_limit,
+        # x4_deploy_log_fix, x4_image_live, x4_live_summary): round-1
+        # evidence showed both top models correctly wrote "page incorrectly
+        # lists sev2, actual is sev1" and were failed by the stricter
+        # sev2-absence clause this used to have.
+        lambda a, c: _has_comment(c, "OPS-812", "sev1"))
 
     add("x4_live_summary", C,
         "Create a page 'Live State checkout-api' in ENG with the three "
