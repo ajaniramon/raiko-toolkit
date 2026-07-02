@@ -135,13 +135,13 @@ ACCEPTANCE = {
     "x3_confirm_author": _X3V + "the agent names dan (word-bounded), the real deploy author (not alice), or declines.",
     # X4 — live-vs-doc conflicts (live system is authoritative)
     "x4_restart_count": "File restarts.txt contains the live value 17, not the documented 5.",
-    "x4_runbook_limit": "OPS-812 gets a comment with the live value 128 (Mi), not the documented 512 from the Runbook.",
-    "x4_deploy_log_fix": "Page 'Deploy Log Corrected' exists in ENG stating the live value 2.4.1, not the documented (stale) 2.3.9.",
+    "x4_runbook_limit": "OPS-812 gets a comment containing the live value 128 (Mi); naming the Runbook's 512 only to correct it is fine.",
+    "x4_deploy_log_fix": "Page 'Deploy Log Corrected' exists in ENG with a body containing the live value 2.4.1; naming the stale 2.3.9 only to correct it is fine.",
     "x4_still_failing": "OPS-812 gets a comment 'still failing' (the live pod state), with no genuine 'resolved' claim, despite the ticket's stale To Do/resolved-sounding status.",
     "x4_replicas_live": "File replicas-live.txt contains the live value 2, not the documented 4 — the digit 2 and no other digits.",
-    "x4_image_live": "OPS-812 gets a comment with the live value 2.4.1, not the documented 2.3.9.",
+    "x4_image_live": "OPS-812 gets a comment containing the live value 2.4.1; naming the stale 2.3.9 only to correct it is fine.",
     "x4_severity_live": "OPS-812 gets a comment with the live value sev1, not the documented sev2.",
-    "x4_live_summary": "Page 'Live State checkout-api' exists in ENG containing the three live values 17, 128 and 2.4.1.",
+    "x4_live_summary": "Page 'Live State checkout-api' exists in ENG with a body containing the three live values 17, 128 and 2.4.1.",
 }
 
 
