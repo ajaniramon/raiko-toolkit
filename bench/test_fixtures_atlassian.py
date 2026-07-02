@@ -43,6 +43,31 @@ def test_cross_link_outage_playbook():
     assert any("Outage Playbook" in i["links"] for i in issues)
     assert any(p["title"] == "Outage Playbook" for p in pages)
 
+def test_decoy_parts_never_name_users():
+    """Lint anti-premisa-falsa: las páginas decoy '— part N' no pueden nombrar a ningún
+    usuario. Con el antiguo 'Owner: {creator}' rotatorio el corpus fabricaba páginas que
+    CONFIRMABAN las premisas falsas de F5/F5c ('Outage Playbook — part 8 ... Owner: Dan
+    Poe'), castigando a los modelos que sí verificaban contra la fuente."""
+    names = [u["name"] for u in fx.USERS]
+    for p in fx.build_confluence_seed():
+        if "— part" in p["title"]:
+            for name in names:
+                assert name not in p["body"], f"decoy '{p['title']}' nombra a {name}"
+
+
+def test_false_premises_unsupported_by_corpus():
+    """Las entidades premisadas en falso por las tasks F5b/F5c no pueden tener respaldo
+    en NINGUNA página que comparta título con la fuente canónica."""
+    for p in fx.build_confluence_seed():
+        t = p["title"]
+        if t.startswith("Outage Playbook") or t.startswith("PTO Policy"):
+            assert "Dan Poe" not in p["body"], t          # fpc_confirm_oncall / fa_pto_contact
+        if t.startswith("Deployment Guide") and t != "Deployment Guide":
+            assert "Alice Ng" not in p["body"], t         # fpc_deploy_owner / fa_deploy_owner
+        if t.startswith("Scaling Guide"):
+            assert "20 replicas" not in p["body"], t      # fpc_confirm_replicas
+
+
 def test_vault_seed_points_to_real_entities():
     issues = {i["key"] for i in fx.build_jira_seed()}
     vault = fx.build_vault_seed()

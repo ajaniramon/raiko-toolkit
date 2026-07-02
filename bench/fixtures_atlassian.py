@@ -89,8 +89,18 @@ def build_confluence_seed():
             title = base_title if k < len(titles) else f"{base_title} — part {k}"
             creator = USERS[k % len(USERS)]["name"]
             editor = USERS[(k + 2) % len(USERS)]["name"]
-            body = bodies.get(title, f"{title}: reference notes for the {space} space. "
-                                     f"Owner: {creator}. See related runbooks.")
+            if title in bodies:
+                body = bodies[title]
+            elif k < len(titles):
+                body = (f"{title}: reference notes for the {space} space. "
+                        f"Owner: {creator}. See related runbooks.")
+            else:
+                # Las páginas decoy "— part N" NUNCA nombran usuarios: con el antiguo
+                # "Owner: {creator}" rotatorio el corpus fabricaba páginas que CONFIRMABAN
+                # premisas falsas de F5/F5c (p. ej. 'Outage Playbook — part 8 ... Owner:
+                # Dan Poe'), castigando a los modelos que sí verificaban.
+                body = (f"{title}: archived reference notes for the {space} space. "
+                        f"See the main '{base_title}' page for current guidance.")
             links = ["OPS-777"] if title == "Outage Playbook" else []
             pages.append({
                 "id": str(pid), "space": space, "title": title, "body": body,

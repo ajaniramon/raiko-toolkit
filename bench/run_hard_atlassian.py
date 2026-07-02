@@ -33,6 +33,24 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 HARD_DIR = os.path.join(HERE, "results", "hard_atlassian")
 SCRATCH = os.path.join(tempfile.gettempdir(), "raiko-bench")
 
+# Prompt propio del tier: el SYSTEM_PROMPT por defecto del harness habla de "sandbox
+# project directory / inspect files and directories" (herencia del floor de filesystem)
+# y desviaba a los modelos hacia read_file/list_directory en tasks que son de Atlassian.
+ATLAS_SYSTEM = (
+    "You are a tool-using agent with access to Jira, Confluence and Vault tools, plus "
+    "basic file tools for writing output files when asked. Always verify claims against "
+    "the actual systems (search or fetch the issue/page/secret) before acting or "
+    "answering; never act on an unverified premise. If something does not exist or a "
+    "stated fact is wrong, say so plainly instead of inventing or confirming it. When "
+    "done, reply with a short, direct final message stating the outcome."
+)
+
+# Techo DURO de iteraciones, separado de los iter_budget de eficiencia (2-6 por familia):
+# con techo==budget el tier medía "concluye en 6 iteraciones" además de capacidad, y la
+# eficiencia saturaba en 1.0 para todo el mundo. 12 deja sitio para ser metódico; el que
+# necesita más que su budget lo paga en eficiencia, no con la muerte del run.
+HARD_MAX_ITERS = 12
+
 
 def _nano_key():
     for p in (os.path.expanduser("~/.raiko/tui_config.json"),
@@ -87,7 +105,8 @@ def run_suite(client, model_name, label, tasks, enable_thinking):
             disp.update(build_atlas_impls(jira, conf, vault))
             ctx = AtlasCtx(jira, conf, vault, root)
             r = run_task(client, model_name, task, root, enable_thinking,
-                         tools=TOOLS, dispatch=disp, grader_ctx=ctx)
+                         tools=TOOLS, dispatch=disp, grader_ctx=ctx,
+                         system_prompt=ATLAS_SYSTEM, max_iterations=HARD_MAX_ITERS)
             results.append(r)
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
             f.flush(); os.fsync(f.fileno())
@@ -112,7 +131,8 @@ def write_report(label, agg, fam):
     os.makedirs(HARD_DIR, exist_ok=True)
     lines = ["# HARD Atlassian tier — frontier discriminator", "",
              f"- **{agg['n_tasks']} tasks** · in-process mocks · all-or-nothing graders · "
-             f"scoring 70/15/15 with a max-iter (flailing) penalty.", "",
+             f"scoring 70/15/15 · hard cap {HARD_MAX_ITERS} iters (a run that dies at the "
+             f"cap scores 0 on correct+eff; no extra penalty).", "",
              "## Result", "",
              "| Run | Score | Correct% | Tool% | Eff% | MaxIter | Halluc |",
              "|---|---|---|---|---|---|---|",

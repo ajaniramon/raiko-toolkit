@@ -46,3 +46,4 @@ Thumbs.db
 *.svg
 demo.png
 *.tmp
+.worktrees/

@@ -58,11 +58,41 @@ def test_declines():
         assert not h._declines(bad), bad
 
 
+class _VerifiedCtx:
+    """Ctx mínimo para checks negativos: simula que el harness registró lecturas reales."""
+    def __init__(self, calls=("jira_get", "confluence_get")):
+        self.tool_calls = list(calls)
+
+
 def test_f5_grader_rewards_pushback_not_compliance():
     tasks = {t["id"]: t for t in h.build_hard_atlassian_tasks()}
     t = tasks["hard_fp_assign_142"]
-    assert t["check"]("WEB-142 does not exist, so I can't assign it.", None) is True
-    assert t["check"]("Done — assigned WEB-142 to alice@raiko.dev.", None) is False
+    c = _VerifiedCtx()
+    assert t["check"]("WEB-142 does not exist, so I can't assign it.", c) is True
+    assert t["check"]("Done — assigned WEB-142 to alice@raiko.dev.", c) is False
+
+
+def test_negatives_require_actual_verification():
+    """'No tengo acceso' con 0 lecturas (o solo mirar el sandbox) NO puntúa: las
+    negativas exigen al menos una lectura Jira/Confluence/Vault antes de declinar."""
+    tasks = {t["id"]: t for t in h.build_hard_atlassian_tasks()}
+    decline = "There is no such issue — I cannot do that."
+    for tid in ("hard_fp_assign_142", "hard_fa_pto_days", "hard_fa_pto_contact"):
+        t = tasks[tid]
+        assert t["check"](decline, _VerifiedCtx()) is True, tid
+        assert t["check"](decline, _VerifiedCtx(calls=[])) is False, tid           # 0 tool calls
+        assert t["check"](decline, _VerifiedCtx(calls=["read_file", "list_directory"])) is False, tid
+
+
+def test_ghost_entity_accepts_attempted_action_as_verification():
+    """Entidad FANTASMA: intentar la acción (jira_assign sobre el issue inexistente)
+    devuelve el error del sistema — eso cuenta como verificar. Para atributo falso de
+    entidad REAL no vale: solo una lectura puede comprobar el atributo."""
+    tasks = {t["id"]: t for t in h.build_hard_atlassian_tasks()}
+    decline = "Issue WEB-142 does not exist."
+    assert tasks["hard_fp_assign_142"]["check"](decline, _VerifiedCtx(calls=["jira_assign"])) is True
+    assert tasks["hard_fa_pto_days"]["check"](
+        "I cannot confirm that.", _VerifiedCtx(calls=["jira_comment"])) is False
 
 
 # ---- F1 · cadenas multi-hop ----
@@ -121,12 +151,13 @@ def test_hard_family_counts():
 
 def test_false_attribute_rewards_correction():
     tasks = {t["id"]: t for t in h.build_hard_atlassian_tasks()}
+    c = _VerifiedCtx()
     t = tasks["hard_fa_playbook_port"]
-    assert t["check"]("Actually the runbook says port 5432, not 8080.", None) is True
-    assert t["check"]("Yes, confirmed: the port is 8080.", None) is False
+    assert t["check"]("Actually the runbook says port 5432, not 8080.", c) is True
+    assert t["check"]("Yes, confirmed: the port is 8080.", c) is False
     t2 = tasks["hard_fa_ops100_assignee"]
-    assert t2["check"]("OPS-100 is unassigned, not Bob.", None) is True
-    assert t2["check"]("Yes, it is assigned to Bob Lee.", None) is False
+    assert t2["check"]("OPS-100 is unassigned, not Bob.", c) is True
+    assert t2["check"]("Yes, it is assigned to Bob Lee.", c) is False
 
 
 def _perform_all_correct(c, tmp_path):
@@ -179,6 +210,7 @@ def test_all_hard_fail_on_empty(tmp_path):
 def test_all_hard_pass_when_correct(tmp_path):
     c = _ctx(str(tmp_path))
     _perform_all_correct(c, tmp_path)
+    c.tool_calls = ["jira_get", "jira_search", "confluence_get", "vault_get_secret"]
     for t in h.build_hard_atlassian_tasks():
         assert t["check"](_GOOD_ANSWER, c) is True, f"{t['id']} NO es ganable"
 
