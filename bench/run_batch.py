@@ -76,9 +76,14 @@ def main(argv=None):
     remote = [r for r in manifest["runs"] if r["provider"] != "local"]
 
     thread = None
+    remote_error = []  # holder: daemon threads swallow exceptions, so capture them here
     if remote and not args.no_remote_parallel:
-        thread = threading.Thread(target=_campaign, args=(remote, manifest, reps, True),
-                                  daemon=True)
+        def _remote_worker():
+            try:
+                _campaign(remote, manifest, reps, True)
+            except Exception as exc:
+                remote_error.append(exc)
+        thread = threading.Thread(target=_remote_worker, daemon=True)
         thread.start()
     _campaign(local, manifest, reps)
     if remote and args.no_remote_parallel:
@@ -86,6 +91,9 @@ def main(argv=None):
     if thread is not None:
         console.print("[dim]waiting for remote campaign…[/]")
         thread.join()
+    if remote_error:
+        console.print(f"[red]remote campaign failed:[/] {remote_error[0]}")
+        raise SystemExit(1)
     if not args.no_report:
         report_hard.main([])
         console.print("[bold green]campaign complete — report regenerated[/]")

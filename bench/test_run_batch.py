@@ -1,4 +1,5 @@
 import os, sys, json
+import pytest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -49,3 +50,24 @@ def test_batch_remote_runs_do_not_switch(monkeypatch, tmp_path):
     p = tmp_path / "b.json"; p.write_text(json.dumps(manifest))
     rb.main(["--manifest", str(p), "--no-report", "--no-remote-parallel"])
     assert switched == [] and runs == ["ds-r1"]
+
+
+def test_batch_remote_failure_aborts_and_skips_report(monkeypatch, tmp_path):
+    import run_batch as rb
+    report_calls = []
+    monkeypatch.setattr(rb.report_hard, "main", lambda *a, **k: report_calls.append((a, k)))
+    monkeypatch.setattr(rb, "_mcp_call", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("no local runs, _mcp_call should not be called")))
+
+    def _boom(client, model, label):
+        raise RuntimeError("remote task exploded")
+    monkeypatch.setattr(rb, "_run_one", _boom)
+    manifest = {"mcp_url": "http://x/mcp", "local_url": "http://x/v1", "reps": 1,
+                "runs": [{"provider": "nano", "model": "deepseek/x", "label": "ds",
+                          "url": "https://nano.example/v1"}]}
+    p = tmp_path / "b.json"; p.write_text(json.dumps(manifest))
+    # no --no-remote-parallel -> exercises the daemon-thread path; no --no-report ->
+    # the report seam must NOT be invoked because the remote campaign failed
+    with pytest.raises(SystemExit):
+        rb.main(["--manifest", str(p)])
+    assert report_calls == []
