@@ -146,6 +146,25 @@ def write_report(label, agg, fam):
     open(os.path.join(HARD_DIR, f"report_{label}.md"), "w", encoding="utf-8").write("\n".join(lines))
 
 
+def run_model(client, model_name, label, think=False, limit=0):
+    """Run the full HARD suite for one model/label. Returns the aggregate dict."""
+    os.makedirs(SCRATCH, exist_ok=True)
+    tasks = build_hard_atlassian_tasks()
+    if limit:
+        tasks = tasks[:limit]
+    console.print(f"[bold]HARD Atlassian:[/] {len(tasks)} tasks · model={model_name} · label={label}")
+    results, agg = run_suite(client, model_name, label, tasks, think)
+    fam = by_family(results)
+    os.chdir(HERE)
+    json.dump({"model": model_name, "label": label, "aggregate": agg, "by_family": fam,
+               "tasks": [{k: v for k, v in r.items() if k != "transcript"} for r in results]},
+              open(os.path.join(HARD_DIR, f"{label}.json"), "w", encoding="utf-8"),
+              indent=2, ensure_ascii=False)
+    write_report(label, agg, fam)
+    console.print("[bold]by family:[/] " + "  ".join(f"{c}={v}" for c, v in fam.items()))
+    return agg
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True, help="model name/alias sent to the API")
@@ -156,12 +175,7 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="only the first N tasks (smoke)")
     args = ap.parse_args()
 
-    os.makedirs(SCRATCH, exist_ok=True)
     label = args.label or args.model.replace("/", "_")
-    tasks = build_hard_atlassian_tasks()
-    if args.limit:
-        tasks = tasks[:args.limit]
-    console.print(f"[bold]HARD Atlassian:[/] {len(tasks)} tasks · model={args.model}")
 
     proc = None
     try:
@@ -177,14 +191,7 @@ def main():
             proc = serve.start_server(model, log=console.print)
             client = OpenAI(base_url=serve.base_url(), api_key="sk-noop")
 
-        results, agg = run_suite(client, args.model, label, tasks, args.think)
-        fam = by_family(results)
-        os.chdir(HERE)
-        json.dump({"model": args.model, "label": label, "aggregate": agg, "by_family": fam,
-                   "tasks": [{k: v for k, v in r.items() if k != "transcript"} for r in results]},
-                  open(os.path.join(HARD_DIR, f"{label}.json"), "w", encoding="utf-8"),
-                  indent=2, ensure_ascii=False)
-        write_report(label, agg, fam)
+        agg = run_model(client, args.model, label, args.think, args.limit)
 
         t = Table(title=f"HARD Atlassian — {label}")
         for col in ["Score", "Correct%", "Tool%", "Eff%", "MaxIter", "Halluc"]:
@@ -192,7 +199,6 @@ def main():
         t.add_row(str(agg["final_score"]), str(agg["correctness_pct"]), str(agg["tool_accuracy_pct"]),
                   str(agg["efficiency_pct"]), str(agg["max_iter"]), str(agg["hallucinations"]))
         console.print(t)
-        console.print("[bold]by family:[/] " + "  ".join(f"{c}={v}" for c, v in fam.items()))
     finally:
         if proc is not None:
             import serve
