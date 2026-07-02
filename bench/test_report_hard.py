@@ -76,6 +76,37 @@ def test_render_escapes_answers(tmp_path):
     assert "&lt;script&gt;" in out
 
 
+def test_collect_skips_file_without_label(tmp_path):
+    all_ids = {t["id"] for t in rh.build_hard_atlassian_tasks()}
+    _fake_run(str(tmp_path), "m1-r1", "model-one", _rows(all_ids))
+    # Foreign-looking file: has "aggregate"/"tasks" (passes the first guard)
+    # but no "label" — must not raise a KeyError on runs[d["label"]].
+    agg = {"n_tasks": 1, "final_score": 50.0, "correctness_pct": 50.0,
+           "max_iter": 1, "hallucinations": 0}
+    json.dump({"aggregate": agg, "tasks": []}, open(tmp_path / "no-label.json", "w"))
+    data = rh.collect(str(tmp_path))
+    assert [m["base"] for m in data["models"]] == ["m1"]
+
+
+def test_collect_excludes_mismatched_task_count_from_group(tmp_path, capsys):
+    all_ids = {t["id"] for t in rh.build_hard_atlassian_tasks()}
+    _fake_run(str(tmp_path), "m1-r1", "model-one", _rows(all_ids), score=72.5)
+    # A stale rep for the same base label, but from a run of a different
+    # (larger) task suite — must be dropped instead of corrupting the group.
+    extra_rows = _rows(all_ids) + [
+        {"id": f"fake_extra_{i}", "category": "hard_multihop", "correct": True,
+         "status": "ok", "iterations": 1, "negative": False}
+        for i in range(3)
+    ]
+    _fake_run(str(tmp_path), "m1-r2", "model-one", extra_rows, score=99.0)
+    data = rh.collect(str(tmp_path))
+    assert len(data["models"]) == 1
+    m = data["models"][0]
+    assert m["reps"] == ["m1-r1"]
+    assert m["mean_score"] == 72.5
+    assert "skipping m1-r2" in capsys.readouterr().err
+
+
 def test_cli_writes_file(tmp_path):
     all_ids = {t["id"] for t in rh.build_hard_atlassian_tasks()}
     _fake_run(str(tmp_path), "m1-r1", "model-one", _rows(all_ids))

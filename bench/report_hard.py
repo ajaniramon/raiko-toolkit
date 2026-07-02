@@ -26,25 +26,46 @@ def _mean(xs):
 
 
 def collect(results_dir):
+    # Hoisted above the loop: needed both to size-check run files below and,
+    # further down, to build per-task/family stats.
+    tasks = build_hard_atlassian_tasks()
+    n_tasks = len(tasks)
+
     runs = {}
     for path in sorted(glob.glob(os.path.join(results_dir, "*.json"))):
+        # Foreign/malformed files (not our run format) are silently skipped;
+        # everything from parsing to key access for one file lives in this
+        # try block so any structural surprise just drops that file, instead
+        # of killing report generation for every other run.
         try:
             d = json.load(open(path, encoding="utf-8"))
+            if not isinstance(d, dict) or "aggregate" not in d or "tasks" not in d or "label" not in d:
+                continue
+            # Touch the aggregate fields the rest of collect() depends on so an
+            # incomplete-but-otherwise-valid run file is skipped here, not with
+            # a raw KeyError deep in the per-model aggregation below.
+            agg = d["aggregate"]
+            agg["final_score"], agg["correctness_pct"], agg["max_iter"], agg["hallucinations"]
+            # Stale runs from a different task suite (e.g. after a task-count
+            # change) must not silently merge into the current suite's rep
+            # groups and skew the means — drop them with a visible warning.
+            if len(d["tasks"]) != n_tasks:
+                print(f"skipping {d['label']}: {len(d['tasks'])} tasks != current suite {n_tasks}",
+                      file=sys.stderr)
+                continue
+            answers = {}
+            jsonl = path[:-5] + ".jsonl"
+            if os.path.exists(jsonl):
+                for line in open(jsonl, encoding="utf-8"):
+                    try:
+                        r = json.loads(line)
+                        answers[r["id"]] = r.get("answer") or ""
+                    except Exception:
+                        pass
+            d["_answers"] = answers
+            runs[d["label"]] = d
         except Exception:
             continue
-        if not isinstance(d, dict) or "aggregate" not in d or "tasks" not in d:
-            continue
-        answers = {}
-        jsonl = path[:-5] + ".jsonl"
-        if os.path.exists(jsonl):
-            for line in open(jsonl, encoding="utf-8"):
-                try:
-                    r = json.loads(line)
-                    answers[r["id"]] = r.get("answer") or ""
-                except Exception:
-                    pass
-        d["_answers"] = answers
-        runs[d["label"]] = d
 
     groups = {}
     for label, d in runs.items():
@@ -54,7 +75,6 @@ def collect(results_dir):
     for g in groups.values():
         g.sort(key=lambda d: d["label"])
 
-    tasks = build_hard_atlassian_tasks()
     models = []
     for base, g in groups.items():
         aggs = [d["aggregate"] for d in g]
