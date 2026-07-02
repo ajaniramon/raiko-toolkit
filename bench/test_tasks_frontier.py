@@ -22,7 +22,7 @@ def _ctx(root):
 
 def test_build_and_fields():
     ts = tf.build_frontier_tasks()
-    assert len(ts) == 20
+    assert len(ts) == 40
     for t in ts:
         for f in ("id", "category", "difficulty", "prompt", "expect_tools", "check", "negative", "setup"):
             assert f in t, f"{t.get('id')} missing {f}"
@@ -34,6 +34,18 @@ def test_x1_x2_present():
     c = Counter(t["category"] for t in tf.build_frontier_tasks())
     assert c["frontier_chain"] == 12
     assert c["frontier_rootcause"] == 8
+
+
+def test_x3_x4_counts():
+    c = Counter(t["category"] for t in tf.build_frontier_tasks())
+    assert c["frontier_false_premise"] == 12
+    assert c["frontier_conflict"] == 8
+
+
+def test_x3_all_negative():
+    x3 = [t for t in tf.build_frontier_tasks() if t["category"] == "frontier_false_premise"]
+    assert len(x3) == 12
+    assert all(t["negative"] for t in x3)
 
 
 def test_ids_unique():
@@ -68,6 +80,17 @@ def _perform_all_correct(ctx, tmp_path):
     ctx.conf.create("ENG", "Fix Plan", "Restore the memory limit to 512Mi.")
     (tmp_path / "timeline.txt").write_text(
         "deploy at 2026-06-28T14:12, incident started at 2026-06-28T14:30")
+    # X4 — live-vs-doc conflicts (state-based; the live values win over the
+    # stale Jira/Confluence numbers planted by fixtures_frontier).
+    (tmp_path / "restarts.txt").write_text("17")
+    ctx.jira.comment("OPS-812", "actual memory limit: 128Mi")
+    ctx.conf.create("ENG", "Deploy Log Corrected", "Latest checkout-api deploy: 2.4.1.")
+    ctx.jira.comment("OPS-812", "still failing")
+    (tmp_path / "replicas-live.txt").write_text("2")
+    ctx.jira.comment("OPS-812", "actual image: 2.4.1")
+    ctx.jira.comment("OPS-812", "actual severity: sev1")
+    ctx.conf.create("ENG", "Live State checkout-api",
+                     "Live values: 17 restarts, 128Mi limit, image 2.4.1.")
 
 
 _GOOD_ANSWER = (
@@ -78,12 +101,27 @@ _GOOD_ANSWER = (
     "payments-api-66c8d-p4q1r is not the cause."
 )
 
+# X3 answers are all negative (the correct move is to decline); this single
+# answer satisfies every X3 grader's "or" branches (declines, names the real
+# author, names the real live state) so one shared stub covers all 12.
+_GOOD_ANSWER_X3 = (
+    "None of those exist: the pod, PR, table, column, commit, namespace and "
+    "secret do not exist, so I cannot comment or act on any of them. "
+    "checkout-api in prod is actually in CrashLoopBackOff, not healthy and Running. "
+    "The checkout-api 2.4.1 release was deployed by dan, not alice."
+)
+
 
 def test_all_winnable(tmp_path):
     c = _ctx(str(tmp_path))
     _perform_all_correct(c, tmp_path)
+    # X3 verification is read-only; stub tool_calls covering every domain
+    # (k8s/git/sql/vault) cited across the 12 false-premise tasks.
+    c.tool_calls = ["k8s_get_pod", "k8s_list_pods", "git_log", "gh_pr_view",
+                    "sql_query", "vault_get_secret"]
     for t in tf.build_frontier_tasks():
-        assert t["check"](_GOOD_ANSWER, c) is True, f"{t['id']} is NOT winnable"
+        answer = _GOOD_ANSWER_X3 if t["category"] == "frontier_false_premise" else _GOOD_ANSWER
+        assert t["check"](answer, c) is True, f"{t['id']} is NOT winnable"
 
 
 def test_grader_hardening(tmp_path):
@@ -142,3 +180,49 @@ def test_used_helper():
     class _Empty:
         pass
     assert tf._used(_Empty(), "k8s_get_pod") is False
+
+
+def test_verified_in_helper():
+    class _C:
+        tool_calls = ["git_log"]
+    assert tf._verified_in(_C(), "git_log", "git_show") is True
+    assert tf._verified_in(_C(), "k8s_get_pod") is False
+
+    class _Empty:
+        pass
+    assert tf._verified_in(_Empty(), "sql_query") is False
+
+
+def test_x3_require_verification(tmp_path):
+    """Every X3 task must require a real read in the cited domain: a decline
+    with ZERO tool calls does not count as having checked the premise."""
+    c = _ctx(str(tmp_path))
+    c.tool_calls = []
+    for t in tf.build_frontier_tasks():
+        if t["category"] == "frontier_false_premise":
+            assert t["check"](_GOOD_ANSWER_X3, c) is False, \
+                f"{t['id']} passes without any verification tool call"
+
+
+def test_acceptance_complete():
+    for t in tf.build_frontier_tasks():
+        assert isinstance(t.get("accept"), str) and len(t["accept"]) > 15, t["id"]
+
+
+def test_x4_rejects_documented_value(tmp_path):
+    """The stale, documented value alone (without the live one) must NOT pass."""
+    tasks = {t["id"]: t for t in tf.build_frontier_tasks()}
+
+    c = _ctx(str(tmp_path))
+    (tmp_path / "restarts.txt").write_text("5")
+    assert tasks["x4_restart_count"]["check"]("", c) is False
+    (tmp_path / "restarts.txt").write_text("17")
+    assert tasks["x4_restart_count"]["check"]("", c) is True
+
+    c2 = _ctx(str(tmp_path))
+    c2.jira.comment("OPS-812", "sev2")
+    assert tasks["x4_severity_live"]["check"]("", c2) is False
+
+    c3 = _ctx(str(tmp_path))
+    c3.jira.comment("OPS-812", "sev1, not sev2 as the notes say")
+    assert tasks["x4_severity_live"]["check"]("", c3) is True
