@@ -18,3 +18,34 @@ def test_run_model_is_importable_and_injectable(tmp_path, monkeypatch):
     agg = rha.run_model(_Client(), "fake-model", "smoke", think=False, limit=2)
     assert agg["n_tasks"] == 2
     assert os.path.exists(tmp_path / "smoke.json")
+
+
+def test_batch_switches_and_runs_reps(monkeypatch, tmp_path):
+    import run_batch as rb
+    calls = {"switch": [], "runs": []}
+    monkeypatch.setattr(rb, "_mcp_call", lambda url, name, args: (
+        calls["switch"].append(args["alias"]),
+        json.dumps({"ok": True, "loaded_model": args["alias"]}))[-1])
+    monkeypatch.setattr(rb, "_run_one",
+                        lambda client, model, label: calls["runs"].append((model, label)))
+    manifest = {"mcp_url": "http://x/mcp", "local_url": "http://x/v1", "reps": 2,
+                "runs": [{"provider": "local", "model": "qwythos", "label": "qt"},
+                         {"provider": "local", "model": "gemma4-12b", "label": "gm"}]}
+    p = tmp_path / "b.json"; p.write_text(json.dumps(manifest))
+    rb.main(["--manifest", str(p), "--no-report"])
+    assert calls["switch"] == ["qwythos", "gemma4-12b"]       # one switch per model
+    assert calls["runs"] == [("qwythos", "qt-r1"), ("qwythos", "qt-r2"),
+                             ("gemma4-12b", "gm-r1"), ("gemma4-12b", "gm-r2")]
+
+
+def test_batch_remote_runs_do_not_switch(monkeypatch, tmp_path):
+    import run_batch as rb
+    switched, runs = [], []
+    monkeypatch.setattr(rb, "_mcp_call", lambda *a, **k: switched.append(a))
+    monkeypatch.setattr(rb, "_run_one", lambda client, model, label: runs.append(label))
+    manifest = {"mcp_url": "http://x/mcp", "local_url": "http://x/v1", "reps": 1,
+                "runs": [{"provider": "nano", "model": "deepseek/x", "label": "ds",
+                          "url": "https://nano.example/v1"}]}
+    p = tmp_path / "b.json"; p.write_text(json.dumps(manifest))
+    rb.main(["--manifest", str(p), "--no-report", "--no-remote-parallel"])
+    assert switched == [] and runs == ["ds-r1"]
