@@ -510,5 +510,20 @@ def render(data, artifact=False):
             f"</head><body>{frag}</body></html>")
 
 
-# NOTE: no CLI/main() here by design — the batch runner (a later task) owns the
-# entrypoint that writes DEFAULT_OUT; this module only exposes collect()/render().
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Generate the HARD tier HTML report")
+    ap.add_argument("--dir", default=DEFAULT_DIR)
+    ap.add_argument("--out", default=DEFAULT_OUT)
+    ap.add_argument("--artifact", action="store_true",
+                    help="emit artifact fragment (no doctype/html/body wrapper)")
+    args = ap.parse_args(argv)
+    data = collect(args.dir)
+    if not data["models"]:
+        raise SystemExit(f"no result runs found in {args.dir}")
+    out = os.path.abspath(args.out)
+    open(out, "w", encoding="utf-8").write(render(data, artifact=args.artifact))
+    print(f"report: {out}  ({len(data['models'])} models, {data['n_reps_max']} reps)")
+
+
+if __name__ == "__main__":
+    main()

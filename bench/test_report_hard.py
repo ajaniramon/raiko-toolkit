@@ -74,3 +74,11 @@ def test_render_escapes_answers(tmp_path):
     out = rh.render(rh.collect(str(tmp_path)))
     assert "<script>alert(1)</script>" not in out
     assert "&lt;script&gt;" in out
+
+
+def test_cli_writes_file(tmp_path):
+    all_ids = {t["id"] for t in rh.build_hard_atlassian_tasks()}
+    _fake_run(str(tmp_path), "m1-r1", "model-one", _rows(all_ids))
+    out = tmp_path / "rep.html"
+    rh.main(["--dir", str(tmp_path), "--out", str(out)])
+    assert out.exists() and "raiko HARD tier" in out.read_text()
