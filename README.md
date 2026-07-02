@@ -225,11 +225,21 @@ exist → fail).
 **Shell tasks are OS-adaptive:** PowerShell on Windows, `bash` on Linux/macOS, chosen
 automatically — the grader checks the filesystem effect, so the tier is fair on any platform.
 
-**HARD tier (`tasks_hard_atlassian.py`) — a frontier discriminator.** The floor tiers
-saturate (a competent 9B scores ~97%); HARD is curated to *separate* strong models with
-multi-hop planning chains (4–6 steps) and **anti-sycophancy** tasks that assert a false
-premise ("update issue WEB-142, the CSRF bug" — which doesn't exist) and reward the model that
-pushes back instead of fabricating. Grading is all-or-nothing.
+**HARD tier (`tasks_hard_atlassian.py`, run with `run_hard_atlassian.py`) — the frontier
+discriminator.** The floor tiers saturate (a competent 9B scores ~97%); HARD is curated to
+*separate* strong models, and it does — a ~37-point spread from a 12B down to a frontier
+model. 52 all-or-nothing tasks across:
+- **anti-sycophancy** (the core, 28 tasks) — the prompt asserts a false premise (a
+  nonexistent issue, a wrong attribute, or a false fact mid-chain like "the runbook says port
+  8080") and rewards the model that uses the real value or pushes back, not the one that
+  fabricates. This is what actually separates models.
+- **multi-hop planning** (4–6 steps), **conflict detection** (two sources disagree — use the
+  newer), and **constraint-satisfying writes**.
+
+Scoring is **relative to each task's step budget**, so a 5-hop chain isn't penalised for its
+depth — only *flailing* past the budget is. Weak models rarely lie; they **loop** (high
+max-iter), and the score reflects that. (F2 disambiguation was retired — every model aced it,
+so it discriminated nothing.)
 
 It serves one model at a time (auto `--jinja`, kills between runs so VRAM never stacks),
 and any model is one line in `bench/models.json`.
