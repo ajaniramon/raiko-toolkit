@@ -61,6 +61,14 @@ def build_hard_atlassian_tasks():
     _extend_constraints(add)      # F4
     _extend_false_premise(add)    # F5 (entidad inexistente)
     _extend_false_attribute(add)  # F5b (entidad real, atributo falso)
+
+    # Presupuesto de iteraciones por familia: la eficiencia penaliza SOLO lo que pasa de aquí,
+    # así que las cadenas multi-hop no sufren por su profundidad inherente y las de premisa
+    # falsa deben concluir rápido (declinar sin dar vueltas = decisión).
+    _BUDGET = {"hard_multihop": 6, "hard_constraint": 4, "hard_conflict": 3,
+               "hard_disambiguation": 3, "hard_false_premise": 2}
+    for t in tasks:
+        t["iter_budget"] = _BUDGET.get(t["category"], 4)
     return tasks
 
 

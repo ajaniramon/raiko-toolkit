@@ -178,8 +178,12 @@ def run_task(client, model_name, task, root, enable_thinking, tools=None,
     tool_ok = any(n in task["expect_tools"] for n in tool_calls_made)
     hallucinated = bool(task.get("negative")) and used_tool is not None and not correct and bool((answer or "").strip())
 
-    # efficiency: penalizes extra iterations (weight bumped to 15% — flailing must cost)
-    eff = 1.0 if iterations_used <= 2 else max(0.0, 1.0 - (iterations_used - 2) * 0.2)
+    # efficiency: penalizes iterations BEYOND what the task legitimately needs. A task can
+    # declare `iter_budget` (e.g. a 5-hop chain sets 5-6); default 2 keeps the old behaviour
+    # for the floor tiers. This stops multi-hop tasks being penalised for their inherent depth
+    # while still punishing flailing (looping past the budget).
+    free = max(1, int(task.get("iter_budget", 2)))
+    eff = 1.0 if iterations_used <= free else max(0.0, 1.0 - (iterations_used - free) * 0.2)
     per_task_score = (0.70 * (1.0 if correct else 0.0)
                       + 0.15 * (1.0 if tool_ok else 0.0)
                       + 0.15 * eff)

@@ -188,3 +188,11 @@ def test_all_hard_pass_when_correct(tmp_path):
     _perform_all_correct(c, tmp_path)
     for t in h.build_hard_atlassian_tasks():
         assert t["check"](_GOOD_ANSWER, c) is True, f"{t['id']} NO es ganable"
+
+
+def test_iter_budget_per_family():
+    ts = h.build_hard_atlassian_tasks()
+    assert all("iter_budget" in t for t in ts)
+    bud = {t["category"]: t["iter_budget"] for t in ts}
+    assert bud["hard_multihop"] == 6      # cadenas profundas: no penalizar la profundidad
+    assert bud["hard_false_premise"] == 2  # premisa falsa: concluir rápido (decisión)
