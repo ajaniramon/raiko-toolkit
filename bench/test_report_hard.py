@@ -43,3 +43,33 @@ def test_collect_ignores_archive_subdirs(tmp_path):
     _fake_run(str(tmp_path), "m1-r1", "model-one", _rows(set()))
     data = rh.collect(str(tmp_path))
     assert [m["base"] for m in data["models"]] == ["m1"]
+
+
+def test_render_full_and_artifact_forms(tmp_path):
+    all_ids = {t["id"] for t in rh.build_hard_atlassian_tasks()}
+    _fake_run(str(tmp_path), "m1-r1", "model-one", _rows(all_ids))
+    data = rh.collect(str(tmp_path))
+    full = rh.render(data)
+    frag = rh.render(data, artifact=True)
+    assert full.lstrip().lower().startswith("<!doctype html>")
+    assert frag.lstrip().startswith("<title>")
+    for bad in ("<html", "<head", "<body"):
+        assert bad not in frag.lower()
+    assert "hard_ch_postmortem" in full
+    assert "ACCEPTANCE" in full
+    assert "Postmortem OPS-777" in full          # acceptance text made it in
+    assert "http://" not in full and "https://" not in full   # CSP: no external refs
+    assert full.count("model-one") >= 1
+
+
+def test_render_escapes_answers(tmp_path):
+    rows = _rows(set())
+    _fake_run(str(tmp_path), "m1-r1", "model-one", rows)
+    # poison one answer with markup
+    lines = open(tmp_path / "m1-r1.jsonl").read().splitlines()
+    r0 = json.loads(lines[0]); r0["answer"] = "<script>alert(1)</script>"
+    lines[0] = json.dumps(r0)
+    open(tmp_path / "m1-r1.jsonl", "w").write("\n".join(lines))
+    out = rh.render(rh.collect(str(tmp_path)))
+    assert "<script>alert(1)</script>" not in out
+    assert "&lt;script&gt;" in out
