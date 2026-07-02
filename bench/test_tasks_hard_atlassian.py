@@ -116,6 +116,7 @@ def test_hard_family_counts():
     assert c["hard_conflict"] == 6
     assert c["hard_constraint"] == 8
     assert c["hard_false_premise"] == 20   # 12 entidad-inexistente + 8 atributo-falso
+    assert c["hard_false_premise_chain"] == 8   # F5c: premisa falsa encadenada
 
 
 def test_false_attribute_rewards_correction():
@@ -156,6 +157,11 @@ def _perform_all_correct(c, tmp_path):
     c.conf.create("HR", "PTO Summary", "Carol Diaz — 25 days per year")
     c.conf.create("ENG", "Escalation", "Escalate to Bob Lee after 30 minutes")
     c.jira.comment("OPS-777", "on-call Alice Ng, DB port 5432")
+    # F5c (premisa falsa encadenada — usar el valor REAL; OPS-100->bob ya asignado en F4)
+    (tmp_path / "realport.txt").write_text("5432")
+    c.conf.create("HR", "PTO Actual", "The real policy is 25 days of PTO per year.")
+    c.jira.comment("OPS-777", "actual status is Blocked")
+    (tmp_path / "reporter.txt").write_text("alice@raiko.dev")
 
 
 # answer que satisface las tasks basadas en ANSWER (F3 report + F5 declino)

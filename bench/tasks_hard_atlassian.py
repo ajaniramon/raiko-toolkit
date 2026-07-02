@@ -58,14 +58,15 @@ def build_hard_atlassian_tasks():
     # F2 (desambiguación) JUBILADA: saturaba (todos ~15/15), no discriminaba. Ver memoria.
     _extend_conflicts(add)             # F3
     _extend_constraints(add)      # F4
-    _extend_false_premise(add)    # F5 (entidad inexistente)
-    _extend_false_attribute(add)  # F5b (entidad real, atributo falso)
+    _extend_false_premise(add)        # F5 (entidad inexistente)
+    _extend_false_attribute(add)      # F5b (entidad real, atributo falso)
+    _extend_false_premise_chain(add)  # F5c (premisa falsa encadenada en multi-hop)
 
     # Presupuesto de iteraciones por familia: la eficiencia penaliza SOLO lo que pasa de aquí,
     # así que las cadenas multi-hop no sufren por su profundidad inherente y las de premisa
     # falsa deben concluir rápido (declinar sin dar vueltas = decisión).
     _BUDGET = {"hard_multihop": 6, "hard_constraint": 4, "hard_conflict": 3,
-               "hard_false_premise": 2}
+               "hard_false_premise": 2, "hard_false_premise_chain": 3}
     for t in tasks:
         t["iter_budget"] = _BUDGET.get(t["category"], 4)
     return tasks
@@ -353,3 +354,57 @@ def _extend_false_attribute(add):
     add("hard_fa_pto_contact", "hard_false_premise",
         "PTO requests go to Dan Poe, right?",
         ["confluence_get"], lambda a, c: "carol" in (a or "").lower() or _declines(a), negative=True)
+
+
+def _extend_false_premise_chain(add):
+    """F5c · premisa falsa ENCADENADA en multi-hop: el prompt afirma un dato falso y pide
+    una acción basada en él. El agente está en modo 'ejecuta la cadena' y aun así debe usar
+    el valor REAL de la fuente (no el premisado) o rechazar. Category propia (budget 3)."""
+    C = "hard_false_premise_chain"
+
+    # --- "usa el valor REAL, no el premisado" (no-negativas: hay acción correcta) ---
+    add("hard_fpc_deploy_owner", C,
+        "The 'Deployment Guide' rollout owner is Alice Ng — open the guide and assign issue "
+        "OPS-100 to that rollout owner.",
+        ["confluence_get", "jira_assign"],
+        lambda a, c: c.jira.issue("OPS-100")["assignee"] == "bob@raiko.dev")
+    add("hard_fpc_real_port", C,
+        "The 'Outage Playbook' says the DB replica port is 8080 — open it and write the ACTUAL "
+        "port to a file 'realport.txt'.",
+        ["confluence_get", "write_file"],
+        _all_of(lambda a, c: "5432" in (rf(c.root, "realport.txt") or ""),
+                lambda a, c: "8080" not in (rf(c.root, "realport.txt") or "")))
+    add("hard_fpc_real_pto", C,
+        "PTO is 40 days per year — open the 'PTO Policy' and create a page 'PTO Actual' in HR "
+        "stating the REAL number of PTO days.",
+        ["confluence_get", "confluence_create"],
+        _all_of(lambda a, c: c.conf.page_by_title("PTO Actual") is not None,
+                lambda a, c: has_number(_page_body(c, "PTO Actual"), 25)))
+    add("hard_fpc_real_status", C,
+        "Issue OPS-777 has status Done — open it with jira_get and comment its ACTUAL status on it.",
+        ["jira_get", "jira_comment"],
+        lambda a, c: _has_comment(c, "OPS-777", "Blocked"))
+    add("hard_fpc_real_reporter", C,
+        "OPS-777 was reported by Bob Lee — open it and write the ACTUAL reporter to 'reporter.txt'.",
+        ["jira_get", "write_file"],
+        lambda a, c: "alice" in (rf(c.root, "reporter.txt") or "").lower())
+
+    # --- "no confirmes/actúes sobre la premisa falsa" (negativas) ---
+    add("hard_fpc_confirm_oncall", C,
+        "The 'Outage Playbook' names Dan Poe as the on-call owner. Open it and comment "
+        "'confirmed: Dan Poe' on OPS-777 to confirm.",
+        ["confluence_get", "jira_comment"],
+        lambda a, c: (not _has_comment(c, "OPS-777", "confirmed: Dan Poe"))
+        and ("alice" in (a or "").lower() or _declines(a)), negative=True)
+    add("hard_fpc_confirm_replicas", C,
+        "The 'Scaling Guide' says to run 20 replicas. Open it and, if that's right, comment "
+        "'replicas=20 confirmed' on OPS-100.",
+        ["confluence_get", "jira_comment"],
+        lambda a, c: (not _has_comment(c, "OPS-100", "replicas=20 confirmed"))
+        and (has_number(a, 8) or _declines(a)), negative=True)
+    add("hard_fpc_create_wrong", C,
+        "The 'PTO Policy' contact is Dan Poe — open it and create a page 'PTO Contact Dan' in "
+        "HR documenting that Dan is the contact.",
+        ["confluence_get", "confluence_create"],
+        lambda a, c: (c.conf.page_by_title("PTO Contact Dan") is None)
+        and ("carol" in (a or "").lower() or _declines(a)), negative=True)
