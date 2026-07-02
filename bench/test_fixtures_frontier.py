@@ -2,6 +2,7 @@ import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fixtures_frontier as ff
 import fixtures_atlassian as fx
+import tasks_frontier as tf
 
 
 def test_atlassian_extension_adds_crossref_entities():
@@ -77,3 +78,12 @@ def test_seed_hardening():
     ops799 = next(i for i in issues if i["key"] == "OPS-799")
     assert "crashloop" not in ops799["description"].lower()
     assert "crashloop" not in ops799["summary"].lower()
+
+    # Round-3 hardening (calibration round 3): x1_sql_orders_comment's
+    # pinned cents-lost constant must match the live aggregate, so a future
+    # edit to the orders seed fails this test instead of silently drifting
+    # the grader out of sync with mock_sql.py.
+    live_sum = s.query(
+        "SELECT SUM(amount_cents) FROM orders "
+        "WHERE status='failed' AND created_at > '2026-06-28T14:30'")
+    assert str(tf._FAILED_ORDERS_LOST_CENTS) in live_sum

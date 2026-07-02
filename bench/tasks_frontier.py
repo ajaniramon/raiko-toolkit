@@ -64,6 +64,19 @@ def _negates_near(answer, word, window=40):
 # fixtures_frontier.py), so for X3's ghost entities a real read IS the only
 # way to have checked the premise — there is no "attempted write" fallback
 # the way _touched_atlas allows for Atlassian ghost entities.
+#
+# Pinned aggregate for x1_sql_orders_comment: total amount_cents lost across
+# the 37 orders that failed after the checkout incident started (see
+# mock_sql.py's `_generate_orders`/`DEFAULT_SEED` docstring for how the 37
+# count and each row's deterministic `amount_cents` are built). Derived by
+# running, against a live MockSQL instance:
+#   SELECT SUM(amount_cents) FROM orders
+#   WHERE status='failed' AND created_at > '2026-06-28T14:30'
+# -> 150627 (verified 2026-07-03 in a scratch snippet; also asserted live
+# against MockSQL in test_fixtures_frontier.py::test_seed_hardening, so a
+# future seed edit that changes this sum fails loudly instead of silently).
+_FAILED_ORDERS_LOST_CENTS = 150627
+
 _K8S = ("k8s_get_pod", "k8s_list_pods", "k8s_logs", "k8s_events", "k8s_rollout_status")
 _GIT = ("git_log", "git_show", "git_diff", "gh_pr_list", "gh_pr_view")
 _SQL = ("sql_tables", "sql_query")
@@ -101,12 +114,12 @@ ACCEPTANCE = {
     # X1 — cross-domain chains
     "x1_ticket_pod_deploy": "OPS-812 gets a comment containing c9f2e41, the commit hash of the checkout-api deploy matching the live pod state.",
     "x1_pod_pr_comment": "OPS-812 gets a comment containing 'PR #47', the PR that changed the setting behind the pod's last exit reason.",
-    "x1_logs_file": "File cause.txt contains 'out of memory' or 'oom' (the previous-container crash root cause).",
+    "x1_logs_file": "File cause.txt contains the verbatim root-cause line: 'out of memory' or 'oom' AND the memory limit 128 (a bare 'OOM' paraphrase without 128 no longer passes).",
     "x1_deploy_author_assign": "OPS-812 ends up assigned to dan@raiko.dev, the author of the deploy that broke checkout-api.",
-    "x1_sql_orders_comment": "OPS-812 gets a comment containing the number 37 (word-bounded).",
+    "x1_sql_orders_comment": "OPS-812 gets a comment containing both the number 37 (failed orders, word-bounded) and 150627 (cents lost in those orders, word-bounded).",
     "x1_runbook_escalate": "OPS-812 gets a comment containing erin@raiko.dev, the Runbook's escalation contact.",
     "x1_vault_service_pods": "File podcount.txt contains the digit 1 (the number of non-Running checkout-api pods in prod) and no other digits.",
-    "x1_pr_diff_page": "Page 'Postmortem checkout-api' exists with a body naming both 128 (the new memory limit) and k8s.yaml (the changed file).",
+    "x1_pr_diff_page": "Page 'Postmortem checkout-api' exists with a body naming 128 (the new memory limit), k8s.yaml (the changed file), and 47 (the PR number).",
     "x1_staging_compare": "File limits.txt contains both 128 (prod) and 512 (staging) memory limits.",
     "x1_revision_comment": "OPS-812 gets a comment matching 'revision 12' or 'revision: 12' (word-boundary 12, not e.g. 120).",
     "x1_incident_sev_page": "Page 'Incident Severity OPS-812' exists with a body containing sev1 (case-insensitive).",
@@ -136,7 +149,7 @@ ACCEPTANCE = {
     # X4 — live-vs-doc conflicts (live system is authoritative)
     "x4_restart_count": "File restarts.txt contains the live value 17, not the documented 5.",
     "x4_runbook_limit": "OPS-812 gets a comment containing the live value 128 (Mi); naming the Runbook's 512 only to correct it is fine.",
-    "x4_deploy_log_fix": "Page 'Deploy Log Corrected' exists in ENG with a body containing the live value 2.4.1; naming the stale 2.3.9 only to correct it is fine.",
+    "x4_deploy_log_fix": "Page 'Deploy Log Corrected' exists in ENG with a body containing the live version 2.4.1 AND either the deploy date 2026-06-28 or the commit hash c9f2e41; naming the stale 2.3.9 only to correct it is fine.",
     "x4_still_failing": "OPS-812 gets a comment 'still failing' (the live pod state), with no genuine 'resolved' claim, despite the ticket's stale To Do/resolved-sounding status.",
     "x4_replicas_live": "File replicas-live.txt contains the live value 2, not the documented 4 — the digit 2 and no other digits.",
     "x4_image_live": "OPS-812 gets a comment containing the live value 2.4.1; naming the stale 2.3.9 only to correct it is fine.",
@@ -185,8 +198,8 @@ def _extend_chains(add):
     add("x1_ticket_pod_deploy", C,
         "Find the Jira incident about crashlooping pods in prod, check the "
         "live state of the pod it mentions, and if the live state differs "
-        "from the ticket, comment the commit_hash of the deploy that caused "
-        "the crashloop on that issue.",
+        "from the ticket, comment the commit_hash of the deploy that was "
+        "live for that service when the incident started.",
         ["jira_get", "k8s_get_pod", "sql_query", "jira_comment"],
         lambda a, c: _has_comment(c, "OPS-812", "c9f2e41"))
 
@@ -198,11 +211,17 @@ def _extend_chains(add):
         lambda a, c: _has_comment(c, "OPS-812", "PR #47"))
 
     add("x1_logs_file", C,
-        "Get the previous-container logs of the crashing checkout-api pod and "
-        "write the root-cause line to a file 'cause.txt'.",
+        "Get the previous-container logs of the pod that OPS-812 is about "
+        "and write the exact root-cause line to a file 'cause.txt'.",
         ["k8s_logs", "write_file"],
-        lambda a, c: (lambda t: "out of memory" in t or "oom" in t)(
-            (rf(c.root, "cause.txt") or "").lower()))
+        # The verbatim seed line (mock_k8s.py) is "...heap limit 128Mi
+        # exceeded...": digits and letters are both \w, so a plain \b128\b
+        # would NOT match "128Mi" (no word/non-word transition between "8"
+        # and "M"). Use a negative lookahead for a following digit instead,
+        # so "128Mi"/"128 "/"128," all pass but "1280"/"45128" (embedded in
+        # a larger number) do not.
+        lambda a, c: (lambda f: (("out of memory" in f.lower()) or ("oom" in f.lower()))
+                      and bool(re.search(r"\b128(?!\d)", f)))(rf(c.root, "cause.txt") or ""))
 
     add("x1_deploy_author_assign", C,
         "Assign the Jira incident about the prod crashloop to the person who "
@@ -211,12 +230,16 @@ def _extend_chains(add):
         lambda a, c: c.jira.issue("OPS-812")["assignee"] == "dan@raiko.dev")
 
     add("x1_sql_orders_comment", C,
-        "Quantify the customer impact of the checkout incident: count how "
-        "many orders failed after the incident started and comment 'failed "
-        "orders: <n>' on the incident ticket.",
+        "Quantify the customer impact of the checkout incident: how many "
+        "orders failed after it started, and how many cents were lost in "
+        "those orders? Comment 'failed orders: <n>, lost: <cents> cents' on "
+        "the incident ticket.",
         ["sql_query", "jira_comment"],
         # Word boundary: "OOMKilled (137)" must not satisfy the count of 37.
-        lambda a, c: _has_comment_re(c, "OPS-812", r"\b37\b"))
+        # The cents figure is the pinned _FAILED_ORDERS_LOST_CENTS constant
+        # (see its derivation comment above), also word-bounded.
+        lambda a, c: _has_comment_re(c, "OPS-812", r"\b37\b")
+        and _has_comment_re(c, "OPS-812", rf"\b{_FAILED_ORDERS_LOST_CENTS}\b"))
 
     add("x1_runbook_escalate", C,
         "Escalate the checkout incident per its runbook: find the escalation "
@@ -235,11 +258,12 @@ def _extend_chains(add):
     add("x1_pr_diff_page", C,
         "Open the diff of the PR that changed checkout-api's memory limits "
         "and create a Confluence page 'Postmortem checkout-api' in ENG naming "
-        "the changed file and the new limit.",
+        "the changed file, the new limit, and the PR number.",
         ["gh_pr_view", "git_diff", "confluence_create"],
         _all_of(lambda a, c: c.conf.page_by_title("Postmortem checkout-api") is not None,
                 lambda a, c: "128" in _page_body(c, "Postmortem checkout-api"),
-                lambda a, c: "k8s.yaml" in _page_body(c, "Postmortem checkout-api")))
+                lambda a, c: "k8s.yaml" in _page_body(c, "Postmortem checkout-api"),
+                lambda a, c: bool(re.search(r"\b47\b", _page_body(c, "Postmortem checkout-api")))))
 
     add("x1_staging_compare", C,
         "Compare the checkout-api memory limit between prod and staging pods "
@@ -473,12 +497,15 @@ def _extend_conflict(add):
         lambda a, c: _has_comment(c, "OPS-812", "128"))
 
     add("x4_deploy_log_fix", C,
-        "The 'Deploy Log 2026-06' page may be stale. Check the deploys "
-        "table and create a page 'Deploy Log Corrected' in ENG with the "
-        "actual latest checkout-api version.",
+        "The 'Deploy Log 2026-06' page may be stale. Check the deploy "
+        "records and create a page 'Deploy Log Corrected' in ENG with the "
+        "actual latest checkout-api version, its deploy date and commit "
+        "hash.",
         ["confluence_get", "sql_query", "confluence_create"],
         _all_of(lambda a, c: c.conf.page_by_title("Deploy Log Corrected") is not None,
-                lambda a, c: "2.4.1" in _page_body(c, "Deploy Log Corrected")))
+                lambda a, c: "2.4.1" in _page_body(c, "Deploy Log Corrected"),
+                lambda a, c: "2026-06-28" in _page_body(c, "Deploy Log Corrected")
+                or "c9f2e41" in _page_body(c, "Deploy Log Corrected")))
 
     add("x4_still_failing", C,
         "OPS-812 is marked To Do. If the checkout-api pod is still "

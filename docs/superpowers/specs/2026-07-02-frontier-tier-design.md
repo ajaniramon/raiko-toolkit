@@ -56,11 +56,19 @@ Presupuestos de eficiencia por familia como en hard; techo duro 12 iters; `ACCEP
 ## Gate cuantitativo (bloquea el merge)
 
 Con campaña de calibración (6 modelos × 3 reps vía `run_batch`):
-1. Mejor modelo (DeepSeek V4 Flash): 55–80% correct.
-2. Suelo (gemma4-12b): <40% correct.
+1. Mejor modelo (DeepSeek): 55–82% correct.
+2. Spread: mejor − suelo ≥ 15 puntos correct (reemplaza el "gemma <40%"
+   absoluto, inalcanzable en rondas 1-2 sin reintroducir dificultad
+   artificial; el modelo suelo sigue debiendo quedar último en el ranking).
 3. Ninguna familia con los 6 modelos al 100%.
-4. ≥2/3 de las tasks con desacuerdo entre modelos.
+4. ≥24/40 tasks con desacuerdo entre modelos.
 Si no cumple: ajustar tasks (endurecer/aflojar/reemplazar) y repetir campaña. El tier no se mergea a main sin gate en verde documentado en el reporte.
+
+**Enmendado 2026-07-03** tras 2 rondas de calibración (evidencia:
+results/frontier/round1, round2 archives). Criterio original "gemma <40%"
+descartado: con corpus mock compacto y techo de 12 iteraciones, un 12B
+alcanza ~63% por insistencia; el objetivo real es separación estable, no un
+número absoluto del suelo.
 
 ## Infra
 

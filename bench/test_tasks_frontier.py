@@ -67,10 +67,10 @@ def _perform_all_correct(ctx, tmp_path):
     ctx.jira.comment("OPS-812", "culprit: PR #47")
     (tmp_path / "cause.txt").write_text("fatal: out of memory - heap limit 128Mi exceeded")
     ctx.jira.assign("OPS-812", "dan@raiko.dev")
-    ctx.jira.comment("OPS-812", "failed orders: 37")
+    ctx.jira.comment("OPS-812", "failed orders: 37, lost: 150627 cents")
     ctx.jira.comment("OPS-812", "escalation contact: erin@raiko.dev")
     (tmp_path / "podcount.txt").write_text("1")
-    ctx.conf.create("ENG", "Postmortem checkout-api", "Changed deploy/k8s.yaml memory limit to 128Mi.")
+    ctx.conf.create("ENG", "Postmortem checkout-api", "PR #47 changed deploy/k8s.yaml memory limit to 128Mi.")
     (tmp_path / "limits.txt").write_text("prod=128Mi staging=512Mi")
     ctx.jira.comment("OPS-812", "revision: 12")
     ctx.conf.create("ENG", "Incident Severity OPS-812", "Severity: sev1")
@@ -84,7 +84,8 @@ def _perform_all_correct(ctx, tmp_path):
     # stale Jira/Confluence numbers planted by fixtures_frontier).
     (tmp_path / "restarts.txt").write_text("17")
     ctx.jira.comment("OPS-812", "actual memory limit: 128Mi")
-    ctx.conf.create("ENG", "Deploy Log Corrected", "Latest checkout-api deploy: 2.4.1.")
+    ctx.conf.create("ENG", "Deploy Log Corrected",
+                     "Latest checkout-api deploy: 2.4.1, deployed 2026-06-28T14:12, commit c9f2e41.")
     ctx.jira.comment("OPS-812", "still failing")
     (tmp_path / "replicas-live.txt").write_text("2")
     ctx.jira.comment("OPS-812", "actual image: 2.4.1")
@@ -131,11 +132,14 @@ def test_grader_hardening(tmp_path):
 
     # (a) "OOMKilled (137)" alone must NOT satisfy the failed-orders count
     # (a bare substring check matched the 37 inside 137); the exact
-    # "failed orders: 37" comment must.
+    # "failed orders: 37" comment must — but (round 3) is no longer
+    # sufficient on its own: the cents-lost sum is now also required.
     c = _ctx(str(tmp_path))
     c.jira.comment("OPS-812", "OOMKilled (137)")
     assert tasks["x1_sql_orders_comment"]["check"]("", c) is False
     c.jira.comment("OPS-812", "failed orders: 37")
+    assert tasks["x1_sql_orders_comment"]["check"]("", c) is False
+    c.jira.comment("OPS-812", "failed orders: 37, lost: 150627 cents")
     assert tasks["x1_sql_orders_comment"]["check"]("", c) is True
 
     # (b) naming the decoy only to REJECT it must pass; blaming it must not.
@@ -173,7 +177,28 @@ def test_grader_hardening(tmp_path):
     assert tasks["x1_incident_sev_page"]["check"]("", c2) is True
     assert tasks["x2_impact"]["check"]("37 orders failed; severity SEV1.", c2) is True
 
-    # (e) commit-message comparison is case-insensitive on both sides.
+    # (e) round 3: x1_logs_file now also requires the memory limit 128 in
+    # cause.txt — a bare "OOM error" paraphrase without it must fail, but
+    # the verbatim seed log line ("...heap limit 128Mi exceeded...") passes
+    # despite "128Mi" not being \b-delimited on its trailing side.
+    c6 = _ctx(str(tmp_path))
+    (tmp_path / "cause.txt").write_text("OOM error")
+    assert tasks["x1_logs_file"]["check"]("", c6) is False
+    (tmp_path / "cause.txt").write_text(
+        "fatal: out of memory - heap limit 128Mi exceeded during cart serialization")
+    assert tasks["x1_logs_file"]["check"]("", c6) is True
+
+    # (f) round 3: x4_deploy_log_fix now also requires the deploy date or
+    # commit hash alongside the version — "2.4.1" alone is no longer enough.
+    c7 = _ctx(str(tmp_path))
+    c7.conf.create("ENG", "Deploy Log Corrected", "Latest checkout-api deploy: 2.4.1.")
+    assert tasks["x4_deploy_log_fix"]["check"]("", c7) is False
+    c8 = _ctx(str(tmp_path))
+    c8.conf.create("ENG", "Deploy Log Corrected",
+                    "Latest checkout-api deploy: 2.4.1, deployed 2026-06-28, commit c9f2e41.")
+    assert tasks["x4_deploy_log_fix"]["check"]("", c8) is True
+
+    # (g) commit-message comparison is case-insensitive on both sides.
     (tmp_path / "commitmsg.txt").write_text("PR #47: Reduce Memory Limits to cut infra costs")
     assert tasks["x1_commit_msg_file"]["check"]("", c) is True
 
