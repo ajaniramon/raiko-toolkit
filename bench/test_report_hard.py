@@ -2,6 +2,7 @@ import os, sys, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import report_hard as rh
+import tasks_frontier as tfr
 
 
 def _fake_run(dir, label, model, task_rows, score=70.0):
@@ -19,6 +20,13 @@ def _fake_run(dir, label, model, task_rows, score=70.0):
 
 def _rows(ok_ids):
     tasks = rh.build_hard_atlassian_tasks()
+    return [{"id": t["id"], "category": t["category"], "correct": t["id"] in ok_ids,
+             "status": "ok", "iterations": 3, "negative": t["negative"]}
+            for t in tasks]
+
+
+def _frontier_rows(ok_ids):
+    tasks = tfr.build_frontier_tasks()
     return [{"id": t["id"], "category": t["category"], "correct": t["id"] in ok_ids,
              "status": "ok", "iterations": 3, "negative": t["negative"]}
             for t in tasks]
@@ -113,3 +121,42 @@ def test_cli_writes_file(tmp_path):
     out = tmp_path / "rep.html"
     rh.main(["--dir", str(tmp_path), "--out", str(out)])
     assert out.exists() and "raiko HARD tier" in out.read_text()
+
+
+# --- tier-aware: --tasks-module / collect(tasks=...) with the FRONTIER suite ---
+
+def test_resolve_task_builder_frontier():
+    builder, tier_label = rh.resolve_task_builder("tasks_frontier")
+    assert tier_label == "FRONTIER"
+    assert len(builder()) == 40
+
+
+def test_resolve_task_builder_default_hard():
+    builder, tier_label = rh.resolve_task_builder("tasks_hard_atlassian")
+    assert tier_label == "HARD"
+    assert builder is rh.build_hard_atlassian_tasks
+
+
+def test_collect_groups_frontier_tasks(tmp_path):
+    all_ids = {t["id"] for t in tfr.build_frontier_tasks()}
+    assert len(all_ids) == 40
+    ok = all_ids - {"x1_logs_file"}
+    _fake_run(str(tmp_path), "m1-r1", "model-one", _frontier_rows(ok), score=64.0)
+    data = rh.collect(str(tmp_path), tfr.build_frontier_tasks())
+    assert data["n_tasks"] == 40
+    assert len(data["models"]) == 1
+    m = data["models"][0]
+    assert m["base"] == "m1" and m["mean_score"] == 64.0
+    assert m["per_task"]["x1_logs_file"]["passes"] == 0
+    assert m["per_task"]["x1_ticket_pod_deploy"]["passes"] == 1
+
+
+def test_cli_writes_frontier_report_with_tasks_module(tmp_path):
+    all_ids = {t["id"] for t in tfr.build_frontier_tasks()}
+    _fake_run(str(tmp_path), "m1-r1", "model-one", _frontier_rows(all_ids))
+    out = tmp_path / "rep.html"
+    rh.main(["--dir", str(tmp_path), "--out", str(out), "--tasks-module", "tasks_frontier"])
+    text = out.read_text()
+    assert "raiko FRONTIER tier" in text
+    assert "x1_ticket_pod_deploy" in text
+    assert "Chains (X1)" in text

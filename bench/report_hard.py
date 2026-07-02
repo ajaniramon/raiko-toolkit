@@ -1,12 +1,13 @@
-"""HARD-tier HTML report generator.
+"""Tier-aware HTML report generator (HARD by default, FRONTIER via --tasks-module).
 
-Reads results/hard_atlassian/*.json (+ .jsonl for literal answers), groups rep runs
+Reads results/<tier>/*.json (+ .jsonl for literal answers), groups rep runs
 by the `-rN` label suffix, computes mean and min-max spread across reps, and renders
 a single self-contained HTML file (no external assets — artifact-CSP safe).
 """
 import argparse
 import glob
 import html as _html
+import importlib
 import json
 import os
 import re
@@ -18,6 +19,7 @@ from tasks_hard_atlassian import build_hard_atlassian_tasks  # noqa: E402
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DIR = os.path.join(HERE, "results", "hard_atlassian")
 DEFAULT_OUT = os.path.join(HERE, "..", "docs", "hard-report.html")
+DEFAULT_TASKS_MODULE = "tasks_hard_atlassian"
 _REP_RE = re.compile(r"^(?P<base>.+)-r(?P<n>\d+)$")
 
 
@@ -25,10 +27,26 @@ def _mean(xs):
     return sum(xs) / len(xs) if xs else 0.0
 
 
-def collect(results_dir):
+def resolve_task_builder(module_name):
+    """Import `module_name` and return (builder_fn, tier_label).
+
+    `tier_label` is derived from the matched function name's first
+    underscore-separated segment after "build_" (e.g. build_hard_atlassian_tasks
+    -> "HARD", build_frontier_tasks -> "FRONTIER"), used to title the report.
+    """
+    mod = importlib.import_module(module_name)
+    for name in sorted(dir(mod)):
+        if name.startswith("build_") and name.endswith("_tasks"):
+            tier_label = name[len("build_"):-len("_tasks")].split("_")[0].upper()
+            return getattr(mod, name), tier_label
+    raise SystemExit(f"no build_*_tasks() function found in module {module_name!r}")
+
+
+def collect(results_dir, tasks=None):
     # Hoisted above the loop: needed both to size-check run files below and,
     # further down, to build per-task/family stats.
-    tasks = build_hard_atlassian_tasks()
+    if tasks is None:
+        tasks = build_hard_atlassian_tasks()
     n_tasks = len(tasks)
 
     runs = {}
@@ -135,7 +153,9 @@ def collect(results_dir):
 
 _FAM_LABEL = {"hard_multihop": "Multi-hop (F1)", "hard_conflict": "Conflicts (F3)",
               "hard_constraint": "Constraints (F4)", "hard_false_premise": "False premise (F5)",
-              "hard_false_premise_chain": "Chained false premise (F5c)"}
+              "hard_false_premise_chain": "Chained false premise (F5c)",
+              "frontier_chain": "Chains (X1)", "frontier_rootcause": "Root cause (X2)",
+              "frontier_false_premise": "False premise (X3)", "frontier_conflict": "Live conflict (X4)"}
 
 
 def _esc(s):
@@ -183,7 +203,7 @@ def _bar_html(m):
             f'<span class="bar-fill" style="width:{mean:.1f}%"></span>{dots}</div>')
 
 
-def _render_header(data):
+def _render_header(data, title):
     M, k = data["models"], data["kpis"]
     sub = f'{data["n_tasks"]} tasks &middot; {len(M)} models &middot; {data["n_reps_max"]} reps'
     chip = lambda n, label: (f'<div class="chip"><span class="chip-n">{n}</span>'
@@ -198,7 +218,7 @@ def _render_header(data):
                "&middot; hard cap 12 iters")
     # NOTE: intentionally a <div>, not <header> — the artifact-fragment test
     # asserts the literal substring "<head" is absent, which "<header" contains.
-    return (f'<div class="hdr"><h1>raiko HARD tier &mdash; full results</h1>'
+    return (f'<div class="hdr"><h1>{_esc(title)}</h1>'
             f'<p class="sub">{sub}</p>'
             f'<div class="chips">{chips}</div>'
             f'<p class="scoring">{scoring}</p></div>')
@@ -512,14 +532,14 @@ a{color:var(--cyan)}
 """
 
 
-def render(data, artifact=False):
+def render(data, artifact=False, title="raiko HARD tier — full results"):
     M, T = data["models"], data["tasks"]
     css = _CSS                                   # single inline <style> string
-    head = f"<title>raiko HARD tier — full results</title>\n<style>{css}</style>"
+    head = f"<title>{_esc(title)}</title>\n<style>{css}</style>"
     # 1. header + KPI chips  2. verdict callout  3. leaderboard  4. family heatmap
     # 5. per-family task cards  — each section is a small helper returning HTML,
     # all text interpolated through _esc(), all numbers preformatted in Python.
-    body_inner = "\n".join([_render_header(data), _render_verdict(M), _render_board(M),
+    body_inner = "\n".join([_render_header(data, title), _render_verdict(M), _render_board(M),
                             _render_heatmap(M), _render_tasks(M, T)])
     body = f'<div class="wrap">{body_inner}</div>'
     frag = f"{head}\n{body}"
@@ -531,17 +551,21 @@ def render(data, artifact=False):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Generate the HARD tier HTML report")
+    ap = argparse.ArgumentParser(description="Generate a tier-aware HTML report (HARD by default)")
     ap.add_argument("--dir", default=DEFAULT_DIR)
     ap.add_argument("--out", default=DEFAULT_OUT)
+    ap.add_argument("--tasks-module", default=DEFAULT_TASKS_MODULE,
+                    help="module exposing a build_*_tasks() function (default: tasks_hard_atlassian)")
     ap.add_argument("--artifact", action="store_true",
                     help="emit artifact fragment (no doctype/html/body wrapper)")
     args = ap.parse_args(argv)
-    data = collect(args.dir)
+    builder, tier_label = resolve_task_builder(args.tasks_module)
+    data = collect(args.dir, builder())
     if not data["models"]:
         raise SystemExit(f"no result runs found in {args.dir}")
     out = os.path.abspath(args.out)
-    open(out, "w", encoding="utf-8").write(render(data, artifact=args.artifact))
+    title = f"raiko {tier_label} tier — full results"
+    open(out, "w", encoding="utf-8").write(render(data, artifact=args.artifact, title=title))
     print(f"report: {out}  ({len(data['models'])} models, {data['n_reps_max']} reps)")
 
 
