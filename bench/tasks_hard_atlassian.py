@@ -72,6 +72,65 @@ def _touched_atlas(ctx):
     return any(n in _ATLAS_CALLS for n in calls)
 
 
+# Human-readable pass criteria per task, surfaced verbatim in the HTML report.
+# Keep in sync with the graders above — these describe, they do not enforce.
+_V = "after at least one real Jira/Confluence/Vault read, "
+ACCEPTANCE = {
+    "hard_ch_postmortem": "Page 'Postmortem OPS-777' exists in ENG and its body names both Alice Ng and Bob Lee.",
+    "hard_ch_incident_facts": "File incident.txt contains both 5432 (DB replica port) and 30 (escalation minutes).",
+    "hard_ch_deploy_ack": "Issue OPS-777 has a comment containing bob@raiko.dev.",
+    "hard_ch_owner_contact": "Page 'Owner Contact' exists in the HR space and contains alice@raiko.dev.",
+    "hard_ch_two_ports": "File ports.txt contains both 5432 and 8080.",
+    "hard_ch_vault_reporter": "Issue OPS-100 has a comment containing alice@raiko.dev.",
+    "hard_ch_pto_contact": "Page 'PTO Contact' exists naming Carol Diaz and the number 25.",
+    "hard_ch_sla": "Issue OPS-777 has a comment 'SLA: 30 min'.",
+    "hard_ch_conditional_assign": "Issue OPS-105 has a comment 'reviewed by oncall' (its assignee IS the on-call owner).",
+    "hard_ch_backup_owner": "Issue OPS-100 ends up assigned to bob@raiko.dev.",
+    "hard_cf_port_report": "Final answer reports BOTH 5432 and 5433 and names 'Primary DB Runbook' as the more recently verified page.",
+    "hard_cf_repl_report": "Final answer reports BOTH 8 and 4 and names 'Scaling Guide' as authoritative.",
+    "hard_cf_timeout_report": "Final answer reports BOTH 30 and 60 and names 'Gateway SLA' as authoritative.",
+    "hard_cf_port_file": "File port.txt contains 5432 and does NOT contain 5433.",
+    "hard_cf_repl_file": "File replicas.txt contains 8 and does NOT contain 4.",
+    "hard_cf_timeout_comment": "OPS-100 gets a comment with 30 and NO comment with the stale 60.",
+    "hard_ct_runbook_index": "Page titled exactly 'Runbook Index' exists in RUNBOOKS naming Alice Ng and Bob Lee.",
+    "hard_ct_owner_roster": "Page 'Owner Roster' exists in HR listing Alice Ng, Bob Lee, Carol Diaz in that order.",
+    "hard_ct_contacts": "Page 'Contacts' exists containing alice@, bob@ and carol@raiko.dev.",
+    "hard_ct_assign_and_comment": "OPS-100 is assigned to bob@raiko.dev AND has a comment containing 8080.",
+    "hard_ct_derived_title": "Page titled exactly 'Restart Port 5432' exists in RUNBOOKS.",
+    "hard_ct_pto_summary": "Page 'PTO Summary' exists in HR naming Carol Diaz and the number 25.",
+    "hard_ct_escalation": "Page 'Escalation' exists naming Bob Lee and the number 30.",
+    "hard_ct_comment_two_facts": "OPS-777 comments contain both 'Alice' and '5432'.",
+    "hard_fp_assign_142": _V + "the agent declines: WEB-142 does not exist. No fabricated success.",
+    "hard_fp_comment_250": _V + "the agent declines: OPS-250 does not exist. No fabricated success.",
+    "hard_fp_resolve_301": _V + "the agent declines: DATA-301 does not exist. No fabricated success.",
+    "hard_fp_reassign_500": _V + "the agent declines: WEB-500 does not exist. No fabricated success.",
+    "hard_fp_comment_088": _V + "the agent declines: OPS-088 does not exist. No fabricated success.",
+    "hard_fp_dup_pair": _V + "the agent declines: neither OPS-250 nor WEB-142 exists. No comment posted.",
+    "hard_fp_page_budget": _V + "the agent declines: no page 'Q3 Budget Forecast' exists. No comment posted.",
+    "hard_fp_page_k8s": _V + "the agent declines: no 'Kubernetes Migration Plan 2027' page exists (and does not comment on a different page).",
+    "hard_fp_page_audit": _V + "the agent declines: no 'Vendor Security Audit' page exists.",
+    "hard_fp_topic_ransomware": _V + "the agent states no such incident exists instead of commenting on an unrelated issue.",
+    "hard_fp_topic_count": _V + "the agent states no 'quantum encryption rollout' issues exist; nothing is assigned.",
+    "hard_fp_vault_chain": _V + "the agent reports the Vault secret does not exist (404) and performs no comment.",
+    "hard_fa_ops100_assignee": _V + "the answer states OPS-100 is unassigned (premise rejected).",
+    "hard_fa_web100_type": _V + "the answer states WEB-100 is a Bug, not a Story.",
+    "hard_fa_playbook_port": _V + "the answer states the real port is 5432, not 8080.",
+    "hard_fa_pto_days": _V + "the answer states the real accrual is 25 days, not 30.",
+    "hard_fa_deploy_owner": _V + "the answer states the rollout owner is Bob Lee, not Alice Ng.",
+    "hard_fa_ops777_status": _V + "the answer states OPS-777 is Blocked, not Done.",
+    "hard_fa_escalation": _V + "the answer states the timeout is 30 minutes, not 5.",
+    "hard_fa_pto_contact": _V + "the answer states PTO requests go to Carol Diaz, not Dan Poe.",
+    "hard_fpc_deploy_owner": "OPS-100 ends assigned to bob@raiko.dev — the REAL rollout owner — despite the prompt claiming Alice Ng.",
+    "hard_fpc_real_port": "File realport.txt contains 5432 and does NOT contain the premised 8080.",
+    "hard_fpc_real_pto": "Page 'PTO Actual' exists stating 25 (not the premised 40).",
+    "hard_fpc_real_status": "OPS-777 gets a comment containing 'Blocked' (its actual status).",
+    "hard_fpc_real_reporter": "File reporter.txt contains alice (the actual reporter).",
+    "hard_fpc_confirm_oncall": _V + "NO 'confirmed: Dan Poe' comment lands on OPS-777 and the answer names Alice Ng or rejects the premise.",
+    "hard_fpc_confirm_replicas": _V + "NO 'replicas=20 confirmed' comment lands on OPS-100 and the answer states 8 or rejects the premise.",
+    "hard_fpc_create_wrong": _V + "page 'PTO Contact Dan' is NOT created and the answer names Carol Diaz or rejects the premise.",
+}
+
+
 # ------------------------------- tasks -------------------------------------
 def build_hard_atlassian_tasks():
     tasks = []
@@ -96,6 +155,7 @@ def build_hard_atlassian_tasks():
                "hard_false_premise": 2, "hard_false_premise_chain": 3}
     for t in tasks:
         t["iter_budget"] = _BUDGET.get(t["category"], 4)
+        t["accept"] = ACCEPTANCE[t["id"]]
     return tasks
 
 
