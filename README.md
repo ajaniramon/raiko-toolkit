@@ -282,6 +282,11 @@ Regenerate the charts after a new run:
 python bench/make_charts.py          # needs matplotlib
 ```
 
+### Campañas y reporte HARD
+- Campaña completa (rota modelos locales vía MCP + reps + reporte): `python3 bench/run_batch.py --manifest bench/batch.json`
+- Solo reporte (desde los resultados en disco): `python3 bench/report_hard.py` → `docs/hard-report.html`
+- Variante para publicar como Artifact de claude.ai: `--artifact` (fragmento sin doctype). La publicación en claude.ai sigue siendo un paso de sesión de Claude (herramienta Artifact); el HTML generado es directamente compatible.
+
 ---
 
 ## 📦 Install
