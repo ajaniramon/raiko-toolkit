@@ -4,8 +4,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import report_hard as rh
 
 
-def _fake_run(dir, label, model, task_rows):
-    agg = {"n_tasks": len(task_rows), "final_score": 70.0, "correctness_pct": 75.0,
+def _fake_run(dir, label, model, task_rows, score=70.0):
+    agg = {"n_tasks": len(task_rows), "final_score": score, "correctness_pct": 75.0,
            "max_iter": 1, "hallucinations": 0, "tool_accuracy_pct": 90.0,
            "efficiency_pct": 80.0}
     fam = {}
@@ -26,12 +26,13 @@ def _rows(ok_ids):
 
 def test_collect_groups_reps_and_averages(tmp_path):
     all_ids = {t["id"] for t in rh.build_hard_atlassian_tasks()}
-    for rep, ok in (("r1", all_ids), ("r2", all_ids - {"hard_ch_sla"})):
-        _fake_run(str(tmp_path), f"m1-{rep}", "model-one", _rows(ok))
+    for rep, ok, score in (("r1", all_ids, 72.5), ("r2", all_ids - {"hard_ch_sla"}, 68.0)):
+        _fake_run(str(tmp_path), f"m1-{rep}", "model-one", _rows(ok), score=score)
     data = rh.collect(str(tmp_path))
     assert len(data["models"]) == 1
     m = data["models"][0]
     assert m["base"] == "m1" and m["reps"] == ["m1-r1", "m1-r2"]
+    assert m["scores"] == [72.5, 68.0]  # per-rep final_score, ascending label order
     assert m["per_task"]["hard_ch_sla"]["passes"] == 1
     assert m["per_task"]["hard_ch_sla"]["reps"] == 2
     assert any("answer-m1-r2" in a["answer"] for a in m["per_task"]["hard_ch_sla"]["answers"])

@@ -84,6 +84,8 @@ def collect(results_dir):
             "mean_score": round(_mean([a["final_score"] for a in aggs]), 1),
             "min_score": min(a["final_score"] for a in aggs),
             "max_score": max(a["final_score"] for a in aggs),
+            # Per-rep final scores, ascending label order (same order as "reps").
+            "scores": [a["final_score"] for a in aggs],
             "mean_correct": round(_mean([a["correctness_pct"] for a in aggs]), 1),
             "min_correct": min(a["correctness_pct"] for a in aggs),
             "max_correct": max(a["correctness_pct"] for a in aggs),
@@ -117,7 +119,9 @@ _FAM_LABEL = {"hard_multihop": "Multi-hop (F1)", "hard_conflict": "Conflicts (F3
 
 
 def _esc(s):
-    return _html.escape(s or "", quote=False)
+    # quote=True: text also lands inside title="..."/aria-label="..." attributes,
+    # so quotes must be escaped too (plan-owner decision over the brief's quote=False).
+    return _html.escape(s or "", quote=True)
 
 
 def _heat(frac):
@@ -144,15 +148,15 @@ def _fmt_ok(x):
 
 
 def _bar_html(m):
-    """Leaderboard bar: gradient fill (mean), whisker span (min-max), end dots."""
+    """Leaderboard bar: gradient fill (mean), whisker span (min-max), per-rep dots."""
     lo = max(0.0, min(100.0, m["min_score"]))
     hi = max(0.0, min(100.0, m["max_score"]))
     mean = max(0.0, min(100.0, m["mean_score"]))
-    if hi > lo:
-        dots = (f'<span class="bar-dot" style="left:{lo:.1f}%" title="min {lo:.1f}"></span>'
-                f'<span class="bar-dot" style="left:{hi:.1f}%" title="max {hi:.1f}"></span>')
-    else:
-        dots = f'<span class="bar-dot" style="left:{mean:.1f}%" title="{mean:.1f}"></span>'
+    reps = m.get("reps", [])
+    dots = "".join(
+        f'<span class="bar-dot" style="left:{max(0.0, min(100.0, s)):.1f}%" '
+        f'title="{_esc(reps[i]) if i < len(reps) else f"rep {i + 1}"}: {s:.1f}"></span>'
+        for i, s in enumerate(m.get("scores", [])))
     return (f'<div class="bar-wrap" role="img" '
             f'aria-label="mean score {mean:.1f} of 100, range {lo:.1f} to {hi:.1f}">'
             f'<span class="bar-whisker" style="left:{lo:.1f}%;width:{max(hi - lo, 0):.1f}%"></span>'
