@@ -29,6 +29,13 @@ def _has_comment(ctx, key, text):
     return bool(i) and any(text.lower() in x.lower() for x in i["comments"])
 
 
+def _has_comment_re(ctx, key, pattern):
+    """Like _has_comment but matches a regex (case-insensitive) against each
+    comment — for graders that need word boundaries or optional punctuation."""
+    i = ctx.jira.issue(key)
+    return bool(i) and any(re.search(pattern, x, re.IGNORECASE) for x in i["comments"])
+
+
 def _used(ctx, *tools):
     """True if any of the named tools appears in ctx.tool_calls."""
     calls = getattr(ctx, "tool_calls", None) or []
@@ -114,7 +121,8 @@ def _extend_chains(add):
         "started (see the incidents table) and comment 'failed orders: <n>' "
         "on OPS-812.",
         ["sql_query", "jira_comment"],
-        lambda a, c: _has_comment(c, "OPS-812", "37"))
+        # Word boundary: "OOMKilled (137)" must not satisfy the count of 37.
+        lambda a, c: _has_comment_re(c, "OPS-812", r"\b37\b"))
 
     add("x1_runbook_escalate", C,
         "Open the 'Checkout Service Runbook', find the incident escalation "
@@ -150,7 +158,8 @@ def _extend_chains(add):
         "Get the rollout status of the checkout-api deployment in prod and "
         "comment 'revision: <n>' on OPS-812.",
         ["k8s_rollout_status", "jira_comment"],
-        lambda a, c: _has_comment(c, "OPS-812", "revision: 12"))
+        # Accept both "revision: 12" and "revision 12"; reject "revision 120".
+        lambda a, c: _has_comment_re(c, "OPS-812", r"revision:?\s*12\b"))
 
     add("x1_incident_sev_page", C,
         "Look up the severity of the incident linked to OPS-812 in the "
@@ -158,13 +167,13 @@ def _extend_chains(add):
         "ENG whose body contains it.",
         ["sql_query", "confluence_create"],
         _all_of(lambda a, c: c.conf.page_by_title("Incident Severity OPS-812") is not None,
-                lambda a, c: "sev1" in _page_body(c, "Incident Severity OPS-812")))
+                lambda a, c: "sev1" in _page_body(c, "Incident Severity OPS-812").lower()))
 
     add("x1_commit_msg_file", C,
         "Take the commit_hash of the latest checkout-api deploy from SQL, "
         "look it up in git, and write the commit message to 'commitmsg.txt'.",
         ["sql_query", "git_show", "write_file"],
-        lambda a, c: "reduce memory limits" in (rf(c.root, "commitmsg.txt") or ""))
+        lambda a, c: "reduce memory limits" in (rf(c.root, "commitmsg.txt") or "").lower())
 
 
 # ============================ X2 · root cause ================================
@@ -186,13 +195,15 @@ def _extend_rootcause(add):
         "Which merged PR is the actual root cause of OPS-812? Answer with the "
         "PR number and one sentence of evidence.",
         ["git_log", "gh_pr_list", "gh_pr_view"],
-        lambda a, c: "#47" in a and "#45" not in a)
+        # The decoy may be mentioned only to be rejected ("#47, not #45").
+        lambda a, c: "#47" in a and ("#45" not in a or _negates_near(a, "#45")))
 
     add("x2_bad_version", C,
         "Which checkout-api version introduced the crashloop? Answer the "
         "version string.",
         ["k8s_get_pod", "sql_query"],
-        lambda a, c: "2.4.1" in a and "2.3.9" not in a)
+        # The stale version may be mentioned only to be rejected.
+        lambda a, c: "2.4.1" in a and ("2.3.9" not in a or _negates_near(a, "2.3.9")))
 
     add("x2_fix_plan_page", C,
         "Create a page 'Fix Plan' in ENG stating the config value to restore "
@@ -205,7 +216,7 @@ def _extend_rootcause(add):
         "Quantify the impact of OPS-812: how many orders failed since it "
         "started? Answer the number and the incident severity.",
         ["sql_query"],
-        lambda a, c: has_number(a, 37) and "sev1" in a)
+        lambda a, c: has_number(a, 37) and "sev1" in (a or "").lower())
 
     add("x2_not_the_noisy_pod", C,
         "payments-api-66c8d-p4q1r has 9 restarts. Is it the cause of OPS-812? "

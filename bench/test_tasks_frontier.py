@@ -86,6 +86,46 @@ def test_all_winnable(tmp_path):
         assert t["check"](_GOOD_ANSWER, c) is True, f"{t['id']} is NOT winnable"
 
 
+def test_grader_hardening(tmp_path):
+    """Adversarial cases from the grader review: substring traps must fail,
+    legitimate alternative phrasings must pass."""
+    tasks = {t["id"]: t for t in tf.build_frontier_tasks()}
+
+    # (a) "OOMKilled (137)" alone must NOT satisfy the failed-orders count
+    # (a bare substring check matched the 37 inside 137); the exact
+    # "failed orders: 37" comment must.
+    c = _ctx(str(tmp_path))
+    c.jira.comment("OPS-812", "OOMKilled (137)")
+    assert tasks["x1_sql_orders_comment"]["check"]("", c) is False
+    c.jira.comment("OPS-812", "failed orders: 37")
+    assert tasks["x1_sql_orders_comment"]["check"]("", c) is True
+
+    # (b) naming the decoy only to REJECT it must pass; blaming it must not.
+    assert tasks["x2_which_pr_broke"]["check"]("It's PR #47, not #45", c) is True
+    assert tasks["x2_which_pr_broke"]["check"]("Root cause is PR #45", c) is False
+    assert tasks["x2_bad_version"]["check"]("2.4.1 broke it, not 2.3.9", c) is True
+    assert tasks["x2_bad_version"]["check"](
+        "Version 2.3.9 is the culprit (2.4.1 is fine)", c) is False
+
+    # (c) "revision 12" without the colon is an equally correct phrasing;
+    # "revision 120" is not (word boundary).
+    c2 = _ctx(str(tmp_path))
+    c2.jira.comment("OPS-812", "revision 12")
+    assert tasks["x1_revision_comment"]["check"]("", c2) is True
+    c3 = _ctx(str(tmp_path))
+    c3.jira.comment("OPS-812", "revision 120")
+    assert tasks["x1_revision_comment"]["check"]("", c3) is False
+
+    # (d) severity checks are case-insensitive.
+    c2.conf.create("ENG", "Incident Severity OPS-812", "Severity: SEV1")
+    assert tasks["x1_incident_sev_page"]["check"]("", c2) is True
+    assert tasks["x2_impact"]["check"]("37 orders failed; severity SEV1.", c2) is True
+
+    # (e) commit-message comparison is case-insensitive on both sides.
+    (tmp_path / "commitmsg.txt").write_text("PR #47: Reduce Memory Limits to cut infra costs")
+    assert tasks["x1_commit_msg_file"]["check"]("", c) is True
+
+
 def test_negates_near():
     assert tf._negates_near("payments-api is not the cause.", "payments") is True
     assert tf._negates_near("payments-api is the actual cause.", "payments") is False
