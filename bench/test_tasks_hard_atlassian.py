@@ -112,7 +112,7 @@ def test_hard_family_counts():
     from collections import Counter
     c = Counter(t["category"] for t in h.build_hard_atlassian_tasks())
     assert c["hard_multihop"] == 10
-    assert c["hard_disambiguation"] == 15   # 10 clúster simple + 5 clúster denso (3-way)
+    assert c["hard_disambiguation"] == 0   # F2 jubilada (saturaba)
     assert c["hard_conflict"] == 6
     assert c["hard_constraint"] == 8
     assert c["hard_false_premise"] == 20   # 12 entidad-inexistente + 8 atributo-falso
@@ -142,19 +142,6 @@ def _perform_all_correct(c, tmp_path):
     c.conf.create("HR", "PTO Contact", "Carol Diaz — 25 days")
     c.jira.comment("OPS-777", "SLA: 30 min")
     c.jira.comment("OPS-105", "reviewed by oncall")
-    # F2 (comentar el correcto; assign el correcto)
-    for key, tx in [("WEB-900", "confirmed-A"), ("WEB-901", "confirmed-B"), ("WEB-902", "confirmed-C"),
-                    ("WEB-903", "confirmed-D"), ("WEB-904", "confirmed-E"), ("WEB-905", "confirmed-F")]:
-        c.jira.comment(key, tx)
-    c.jira.assign("WEB-902", "erin@raiko.dev")
-    c.jira.assign("WEB-903", "bob@raiko.dev")
-    c.jira.assign("WEB-901", "alice@raiko.dev")
-    c.jira.assign("WEB-900", "dan@raiko.dev")
-    # F2 hard (clúster denso, conjunción de 3)
-    for key, tx in [("OPS-910", "triage-1"), ("OPS-917", "triage-2"),
-                    ("OPS-913", "triage-3"), ("OPS-914", "triage-4")]:
-        c.jira.comment(key, tx)
-    c.jira.assign("OPS-912", "erin@raiko.dev")
     # F3 (fichero/comentario con el valor CURRENT)
     (tmp_path / "port.txt").write_text("5432")
     (tmp_path / "replicas.txt").write_text("8")

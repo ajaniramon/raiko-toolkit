@@ -55,8 +55,7 @@ def build_hard_atlassian_tasks():
                       "negative": negative, "setup": "atlassian"})
 
     _extend_multihop(add)              # F1
-    _extend_disambiguation(add)        # F2
-    _extend_disambiguation_hard(add)   # F2 hard (clúster denso, conjunción de 3)
+    # F2 (desambiguación) JUBILADA: saturaba (todos ~15/15), no discriminaba. Ver memoria.
     _extend_conflicts(add)             # F3
     _extend_constraints(add)      # F4
     _extend_false_premise(add)    # F5 (entidad inexistente)
@@ -66,7 +65,7 @@ def build_hard_atlassian_tasks():
     # así que las cadenas multi-hop no sufren por su profundidad inherente y las de premisa
     # falsa deben concluir rápido (declinar sin dar vueltas = decisión).
     _BUDGET = {"hard_multihop": 6, "hard_constraint": 4, "hard_conflict": 3,
-               "hard_disambiguation": 3, "hard_false_premise": 2}
+               "hard_false_premise": 2}
     for t in tasks:
         t["iter_budget"] = _BUDGET.get(t["category"], 4)
     return tasks
@@ -79,12 +78,6 @@ def _page_body(ctx, title):
 def _has_comment(ctx, key, text):
     i = ctx.jira.issue(key)
     return bool(i) and any(text.lower() in x.lower() for x in i["comments"])
-
-
-def _only_target_commented(ctx, target, siblings, text):
-    """El comentario está en el issue correcto Y en ninguno de sus casi-duplicados."""
-    return _has_comment(ctx, target, text) and not any(
-        _has_comment(ctx, k, text) for k in siblings if k != target)
 
 
 def _extend_multihop(add):
@@ -217,40 +210,6 @@ def _extend_false_premise(add):
         "Read the secret at 'secret/data/prod-db', take its 'issue' field, and comment "
         "'credentials rotated' on that Jira issue.",
         ["vault_get_secret"], lambda a, c: _declines(a), negative=True)
-
-
-# ============================ F2 · desambiguación ============================
-def _extend_disambiguation(add):
-    """F2 · casi-duplicados: mismo summary, distinta (status,assignee,type). El agente
-    debe elegir por CONJUNCIÓN de atributos y actuar solo sobre el correcto (los hermanos NO)."""
-    import fixtures_atlassian as fx
-    SIB = fx.DUPE_CLUSTER
-    S = "the 'checkout timeout regression under load' issues"
-
-    # comentar en el issue que cumple la conjunción (y solo en ese)
-    comments = [
-        ("hard_dis_c1", "WEB-900", f"Among {S}, comment 'confirmed-A' on the one that is In Review, assigned to Carol Diaz, and a Bug.", "confirmed-A"),
-        ("hard_dis_c2", "WEB-901", f"Among {S}, comment 'confirmed-B' on the one that is In Review and assigned to Dan Poe.", "confirmed-B"),
-        ("hard_dis_c3", "WEB-902", f"Among {S}, comment 'confirmed-C' on the one that is Blocked.", "confirmed-C"),
-        ("hard_dis_c4", "WEB-903", f"Among {S}, comment 'confirmed-D' on the one that is In Progress.", "confirmed-D"),
-        ("hard_dis_c5", "WEB-904", f"Among {S}, comment 'confirmed-E' on the one that is Done.", "confirmed-E"),
-        ("hard_dis_c6", "WEB-905", f"Among {S}, comment 'confirmed-F' on the Task that is In Review.", "confirmed-F"),
-    ]
-    for tid, target, prompt, text in comments:
-        add(tid, "hard_disambiguation", prompt, ["jira_search", "jira_comment"],
-            (lambda tg, tx: lambda a, c: _only_target_commented(c, tg, SIB, tx))(target, text),
-            )
-
-    # reasignar el issue que cumple la conjunción
-    assigns = [
-        ("hard_dis_a1", "WEB-902", "erin@raiko.dev", f"Among {S}, reassign the Blocked Bug to erin@raiko.dev."),
-        ("hard_dis_a2", "WEB-903", "bob@raiko.dev",  f"Among {S}, reassign the In Progress Task to bob@raiko.dev."),
-        ("hard_dis_a3", "WEB-901", "alice@raiko.dev", f"Among {S}, reassign the Bug assigned to Dan Poe to alice@raiko.dev."),
-        ("hard_dis_a4", "WEB-900", "dan@raiko.dev",  f"Among {S}, reassign the In Review Bug assigned to Carol Diaz to dan@raiko.dev."),
-    ]
-    for tid, target, who, prompt in assigns:
-        add(tid, "hard_disambiguation", prompt, ["jira_search", "jira_assign"],
-            (lambda tg, w: lambda a, c: c.jira.issue(tg)["assignee"] == w)(target, who))
 
 
 # ============================== F3 · conflictos ==============================
@@ -394,32 +353,3 @@ def _extend_false_attribute(add):
     add("hard_fa_pto_contact", "hard_false_premise",
         "PTO requests go to Dan Poe, right?",
         ["confluence_get"], lambda a, c: "carol" in (a or "").lower() or _declines(a), negative=True)
-
-
-def _extend_disambiguation_hard(add):
-    """F2 hard · clúster DENSO (8 issues, mismo summary): cada conjunción de 2 atributos
-    matchea 2 issues, así que hay que acertar los 3 (status+assignee+type) para elegir."""
-    import fixtures_atlassian as fx
-    SIB = fx.DENSE_CLUSTER
-    S = "the 'database outage during peak traffic' issues"
-
-    # (target, prompt-conjunción, texto) — conjunción de 3 atributos, target único
-    triples = [
-        ("OPS-910", "In Progress, assigned to Alice Ng, and a Bug", "triage-1"),
-        ("OPS-917", "Blocked, assigned to Bob Lee, and a Task", "triage-2"),
-        ("OPS-913", "In Progress, assigned to Bob Lee, and a Task", "triage-3"),
-        ("OPS-914", "Blocked, assigned to Alice Ng, and a Bug", "triage-4"),
-    ]
-    for n, (target, conj, text) in enumerate(triples, 1):
-        add(f"hard_dish_{n}", "hard_disambiguation",
-            f"Among {S}, comment '{text}' on the one that is {conj}. "
-            f"(Several share two of those attributes — you need all three.)",
-            ["jira_search", "jira_comment"],
-            (lambda tg, tx: lambda a, c: _only_target_commented(c, tg, SIB, tx))(target, text))
-
-    # variante assign: In Progress + Bob + Bug -> OPS-912
-    add("hard_dish_5", "hard_disambiguation",
-        f"Among {S}, reassign the one that is In Progress, assigned to Bob Lee, and a Bug "
-        f"to erin@raiko.dev. (Others share two of those three attributes.)",
-        ["jira_search", "jira_assign"],
-        lambda a, c: c.jira.issue("OPS-912")["assignee"] == "erin@raiko.dev")
