@@ -86,6 +86,12 @@ class Session:
         self.ask_permission = ask_permission
         self.skip_permissions = skip_permissions
         self.persist = persist          # False → never write session files (demo)
+        # tools refused outright on this frontend regardless of allowlists
+        # (e.g. run_* over the web when web.allow_exec is false)
+        self.blocked_tools = set()
+        # tools that must confirm EVERY call on this frontend: the allowlist and
+        # skip_permissions shortcuts do not apply (web exec/write hardening)
+        self.always_ask_tools = set()
 
         self.provider = None
         self.model = None
@@ -260,16 +266,18 @@ class Session:
         return results
 
     # ---------- permissions ----------
-    def _permit(self, tool, snippet, code, scope):
+    def _permit(self, tool, snippet, code, scope, force=False):
         """Gate a flagged operation. Honors the global skip, the persistent
         allow/deny lists in config, then asks the frontend hook. 'allow_always'
-        persists `tool` to the allowlist. Returns True to proceed."""
-        if self.skip_permissions:
+        persists `tool` to the allowlist. Returns True to proceed.
+        `force=True` (always_ask_tools) disables the skip/allowlist shortcuts so
+        the hook is consulted on every call; the deny list still wins."""
+        if self.skip_permissions and not force:
             return True
         perms = self.cfg.setdefault("permissions", {})
         if tool in (perms.get("deny") or []):
             return False
-        if tool in (perms.get("allow") or []):
+        if tool in (perms.get("allow") or []) and not force:
             return True
         if self.ask_permission is None:
             return False   # no one to ask → deny (headless safe default)
@@ -323,6 +331,9 @@ class Session:
         for permission (unless skip_permissions) and, if approved, runs with
         allow_unsafe. Every actual call is bounded by TOOL_TIMEOUT (the permission
         prompt is not)."""
+        if name in self.blocked_tools:
+            return (f"ERROR: tool '{name}' is disabled on this interface by policy "
+                    f"(it cannot be allowed from here)")
         if name in self.mcp_route:   # remote tool (MCP) → run on its server
             url, orig = self.mcp_route[name]
             return self._with_timeout(name, lambda: mcp_client.call_tool(url, orig, raw_args))
@@ -332,13 +343,16 @@ class Session:
             return self._with_timeout(name, lambda: call_tool(name, raw_args))
         if name in ("run_python", "run_powershell", "run_bash"):
             code = args.get("code") or args.get("command") or ""
-            if self.skip_permissions:
+            force = name in self.always_ask_tools
+            if self.skip_permissions and not force:
                 args["allow_unsafe"] = True
             else:
                 snip = danger_match(code)
-                if snip:
-                    if not self._permit(name, snip, code, scope="danger"):
-                        return f"DENIED by user: refused to run flagged operation '{snip}'"
+                if snip or force:
+                    if not self._permit(name, snip or f"exec on this interface: {name}",
+                                        code, scope="danger", force=force):
+                        return ("DENIED by user: refused to run flagged operation "
+                                f"'{snip or name}'")
                     args["allow_unsafe"] = True
         if name in ("jira_assign", "jira_comment"):
             key = args.get("key", "?")
@@ -349,7 +363,8 @@ class Session:
                 body = (args.get("body", "") or "")
                 snip = f"comment on {key}: {body[:80]}" + ("…" if len(body) > 80 else "")
                 code = f"jira issue comment add {key} \"{body[:300]}\""
-            if not self._permit(name, snip, code, scope="external_write"):
+            if not self._permit(name, snip, code, scope="external_write",
+                                force=name in self.always_ask_tools):
                 return f"DENIED by user: refused Jira write '{snip}'"
         if name in ("confluence_create", "confluence_comment"):
             body = (args.get("body", "") or "")
@@ -360,16 +375,22 @@ class Session:
             else:
                 snip = f"comment on page {args.get('page_id', '?')}: {body[:80]}" + ("…" if len(body) > 80 else "")
                 code = f"POST confluence comment · page={args.get('page_id', '')} · {body[:200]}"
-            if not self._permit(name, snip, code, scope="external_write"):
+            if not self._permit(name, snip, code, scope="external_write",
+                                force=name in self.always_ask_tools):
                 return f"DENIED by user: refused Confluence write '{snip}'"
         if name in ("write_file", "edit_file") and isinstance(args, dict) and args.get("path"):
             path = args["path"]
-            if not self._in_workspace(path):   # writes are confined to the workspace
-                snip = f"{name} OUTSIDE the workspace"
+            in_ws = self._in_workspace(path)   # writes are confined to the workspace
+            force = name in self.always_ask_tools
+            if not in_ws or force:
+                snip = (f"{name} OUTSIDE the workspace" if not in_ws
+                        else f"{name} on this interface")
                 code = f"target: {os.path.abspath(path)}\nworkspace: {self.workspace()}"
-                if not self._permit(name, snip, code, scope="workspace"):
+                if not self._permit(name, snip, code, scope="workspace", force=force):
                     return (f"DENIED by user: '{name}' targets a path outside the workspace "
-                            f"({path}). Set permissions.workspace or approve it.")
+                            f"({path}). Set permissions.workspace or approve it."
+                            if not in_ws else
+                            f"DENIED by user: '{name}' was not confirmed on this interface.")
             return self._run_with_diff(name, args)
         return self._with_timeout(name, lambda: call_tool(name, args))
 

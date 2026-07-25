@@ -2358,6 +2358,11 @@ class AgentTUI(App):
 
 
 def main():
+    # `raiko web` → headless engine server (WS + API + telemetry), no TUI.
+    if len(sys.argv) > 1 and sys.argv[1] == "web":
+        from web.server import main as web_main
+        web_main(sys.argv[2:])
+        return
     ap = argparse.ArgumentParser()
     ap.add_argument("--provider", choices=["nano", "local"])
     ap.add_argument("--model")
