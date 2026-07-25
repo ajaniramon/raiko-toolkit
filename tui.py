@@ -19,15 +19,12 @@ Optional flags (skip the wizard):
 import argparse
 import json
 import os
-import re
-import subprocess
 import sys
 import threading
 import time
 from collections import deque
 from datetime import datetime
 
-import psutil
 from openai import OpenAI
 from rich.console import Group
 from rich.markdown import Markdown
@@ -37,7 +34,7 @@ from rich.text import Text
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Center, Horizontal, Middle, Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen, Screen
 from textual.widgets import (Button, Footer, Input, LoadingIndicator, OptionList,
@@ -49,385 +46,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "ben
 
 import serve  # noqa: E402  (bench/serve.py)
 import models as registry  # noqa: E402  (bench/models.py)
-from tools import TOOLS, call_tool, danger_match  # noqa: E402
-import context  # noqa: E402  (token estimation helpers)
-from context import ContextTracker  # noqa: E402
-import mcp_client  # noqa: E402  (MCP client for remote tools)
-import pricing  # noqa: E402  (USD cost estimation)
+from context import ContextTracker  # noqa: E402  (demo mode only)
+import pricing  # noqa: E402  (USD formatting for the status bar)
 
-
-# ---- parsing of tool-calls emitted as TEXT (fallback) ----
-_TC_BLOCK = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)  # captures the WHOLE block
-_TC_OPEN = re.compile(r"<tool_call>\s*(\{.*)", re.DOTALL)                 # block without closing tag
-_TC_FUNC = re.compile(r"<function=([\w\-/.]+)>(.*?)</function>", re.DOTALL)
-_TC_PARAM = re.compile(r"<parameter=([\w\-]+)>(.*?)</parameter>", re.DOTALL)
-
-
-def _balanced_objects(s):
-    """Returns all top-level JSON objects {...} (with well-balanced nested
-    braces) found in s."""
-    objs, i, n = [], 0, len(s)
-    while i < n:
-        if s[i] == "{":
-            depth, start = 0, i
-            j = i
-            in_str = esc = False
-            while j < n:
-                ch = s[j]
-                if in_str:
-                    if esc:
-                        esc = False
-                    elif ch == "\\":
-                        esc = True
-                    elif ch == '"':
-                        in_str = False
-                elif ch == '"':
-                    in_str = True
-                elif ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        objs.append(s[start:j + 1])
-                        i = j
-                        break
-                j += 1
-        i += 1
-    return objs
-
-
-def _as_call(d):
-    if not isinstance(d, dict):
-        return None
-    name = d.get("name") or d.get("tool") or d.get("function")
-    if not name:
-        return None
-    a = d.get("arguments", d.get("parameters", d.get("args", {})))
-    return {"name": name, "arguments": a if isinstance(a, str) else json.dumps(a)}
-
-
-def parse_text_tool_calls(content):
-    """Recovers tool-calls that the model emitted as plain text. Supports:
-    - <tool_call>{...}</tool_call> with NESTED arguments (parsing by balanced braces),
-      several blocks, and blocks without a closing </tool_call>.
-    - <function=NAME><parameter=p>val</parameter></function>.
-    - Loose JSON {"name":...,"arguments":...} without tags."""
-    content = content or ""
-    out = []
-    blocks = _TC_BLOCK.findall(content)
-    if not blocks:
-        m = _TC_OPEN.search(content)
-        if m:
-            blocks = [m.group(1)]
-    for b in blocks:
-        for frag in (_balanced_objects(b) or [b]):
-            try:
-                call = _as_call(json.loads(frag))
-            except Exception:
-                call = None
-            if call:
-                out.append(call)
-    if out:
-        return out
-    # XML format <function=...>
-    for m in _TC_FUNC.finditer(content):
-        args = {p: v.strip() for p, v in _TC_PARAM.findall(m.group(2))}
-        out.append({"name": m.group(1), "arguments": json.dumps(args)})
-    if out:
-        return out
-    # loose JSON with "name" (without any tag)
-    if '"name"' in content:
-        for frag in _balanced_objects(content):
-            if '"name"' in frag:
-                try:
-                    call = _as_call(json.loads(frag))
-                except Exception:
-                    call = None
-                if call:
-                    out.append(call)
-    return out
-
-
-def strip_tool_call_text(content):
-    if not content:
-        return content
-    c = re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=re.DOTALL)
-    c = re.sub(r"<tool_call>\s*\{.*", "", c, flags=re.DOTALL)   # block without closing tag
-    c = _TC_FUNC.sub("", c)
-    return c.strip()
-
-def _app_home():
-    """Writable base dir for user data (config + sessions).
-
-    A frozen PyInstaller bundle runs from a read-only / relocatable directory, so
-    __file__ points inside the bundle — not a safe place to persist anything (the
-    user never finds it and a reinstall wipes it). Write under ~/.raiko instead, the
-    same home the optional-dependency installers already use. Source/dev runs keep
-    using the repo directory so an existing tui_config.json is still picked up.
-    Override either with the RAIKO_HOME env var.
-    """
-    env = os.environ.get("RAIKO_HOME")
-    if env:
-        base = env
-    elif getattr(sys, "frozen", False):
-        base = os.path.join(os.path.expanduser("~"), ".raiko")
-    else:
-        base = os.path.dirname(os.path.abspath(__file__))
-    try:
-        os.makedirs(base, exist_ok=True)
-    except Exception:
-        pass
-    return base
-
-
-CONFIG_PATH = os.path.join(_app_home(), "tui_config.json")
-MAX_ITERATIONS = 8
-# How many times to retry a turn when the model leaks its tool call into the
-# thinking and emits no real tool_call (qwen sometimes "thinks" the call and stops).
-THINK_RETRIES = 2
-# Hard ceiling for a single tool call so a hung tool / unreachable MCP can't freeze
-# the turn. Above every tool's own timeout (run_python 20s, powershell/shell 25s).
-TOOL_TIMEOUT = 60
-# Auto-compact the conversation once context usage crosses this fraction of the window.
-AUTO_COMPACT_PCT = 0.85
-
-DEFAULT_CONFIG = {
-    "nano": {"base_url": "https://nano-gpt.com/api/v1",
-             "api_key": "",   # set in tui_config.json (not versioned) or via the key prompt
-             "model": "xiaomi/mimo-v2.5-pro-ultraspeed",
-             "ctx_window": 131072},   # nano = frontier: we assume the model's max
-    "local": {"base_url": "http://localhost:25565/v1", "api_key": "sk-noop",
-              "model": "qwen35-9b", "enable_thinking": True},
-    "xai": {"base_url": "https://api.x.ai/v1", "api_key": "",
-            "model": "grok-4", "ctx_window": 256000},
-    "openrouter": {"base_url": "https://openrouter.ai/api/v1", "api_key": "",
-                   "model": "", "ctx_window": 131072},
-    "openai": {"base_url": "https://api.openai.com/v1", "api_key": "",
-               "model": "gpt-5", "ctx_window": 128000},
-    # Anthropic via its OpenAI-compatible endpoint (same openai SDK)
-    "anthropic": {"base_url": "https://api.anthropic.com/v1/", "api_key": "",
-                  "model": "claude-opus-4-8", "ctx_window": 200000,
-                  "models": ["claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
-                             "claude-sonnet-4-6", "claude-haiku-4-5", "claude-fable-5"]},
-    # Google Gemini via its OpenAI-compatible endpoint (same openai SDK)
-    "gemini": {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-               "api_key": "", "model": "gemini-2.5-flash", "ctx_window": 1048576,
-               "reasoning_effort": "low",   # off | low | medium | high (2.5 thinking budget)
-               "models": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite",
-                          "gemini-2.0-flash", "gemini-2.0-flash-lite"]},
-    # remote llama.cpp: the URL is requested on selection and remembered here
-    "remote": {"base_url": "", "api_key": "sk-noop", "model": "", "ctx_window": 16000},
-    # vLLM: an OpenAI-compatible server (vllm serve …). URL requested on selection.
-    "vllm": {"base_url": "", "api_key": "sk-noop", "model": "", "ctx_window": 131072},
-    # MCP client: connect raiko to external MCP servers. Each server's tools are
-    # exposed to the agent name-prefixed. Edit in tui_config.json:
-    #   "mcp": {"enabled": true, "servers": [{"name":"fs","url":"http://localhost:8765/mcp","prefix":"fs_"}]}
-    "mcp": {"enabled": False, "servers": []},
-    "tavily_api_key": "",   # for the web_search tool (free key at tavily.com)
-    "auto_compact": True,   # auto-summarize older turns when the context fills up
-    "max_iterations": 8,    # max tool-call rounds per turn (agent loop cap)
-    "budget_usd": 0,        # session spend cap in USD (0 = off); blocks new turns when hit
-    "pricing": {},          # override/extend the model price table: {"model-substr": [in$/1M, out$/1M]}
-    # tool permissions: `allow`/`deny` are tool names (Always-allow persists here);
-    # `workspace` confines write_file/edit_file (empty = the launch directory).
-    "permissions": {"allow": [], "deny": [], "workspace": ""},
-    # named system-prompt presets (persona text; "" = built-in default persona).
-    # TOOL_RULES are always appended. Edit/add here or via the F6 editor in-app.
-    "system_prompts": {"default": ""},
-    "active_system_prompt": "default",   # used for NEW sessions
-    "last": {"provider": None, "model": None},   # last used (default on startup)
-    "favorites": {"nano": [], "xai": [], "openrouter": [], "openai": [], "anthropic": [],
-                  "gemini": [], "remote": [], "vllm": []},
-}
-
-# OpenAI-compatible providers served via API (GPU sidebar OFF; model's ctx)
-CLOUD = {"nano", "xai", "openrouter", "openai", "anthropic", "gemini", "remote", "vllm"}
-# providers whose endpoint is a user-supplied URL (no API key, list models live)
-URL_PROVIDERS = {"remote", "vllm"}
-
-# The persona is user-configurable (via presets); TOOL_RULES are mechanical rules
-# that are ALWAYS appended so a custom persona can't break tool-calling.
-DEFAULT_PERSONA = (
-    "You are an agent with access to file, execution and system tools. Use them when needed. "
-    "Before each tool call, briefly explain in 1-2 sentences what you are about to do and why."
-)
-TOOL_RULES = (
-    "TOOL ARGUMENTS RULE: every tool call's arguments must be ONE valid JSON object — escape "
-    "newlines as \\n and double quotes as \\\". Keep run_python / run_shell code SHORT (a few "
-    "lines). If you need a longer or multi-line script, do NOT paste it as a tool argument: "
-    "first save it to a file with write_file, then run it with run_python or run_shell. This "
-    "avoids invalid-JSON errors from large code blocks.\n"
-    "When you have the answer, give it directly. Format your final answers in clean Markdown."
-)
-
-
-def build_system_prompt(persona):
-    """Effective system prompt = (persona or default) + the fixed TOOL_RULES."""
-    persona = (persona or "").strip() or DEFAULT_PERSONA
-    return f"{persona}\n{TOOL_RULES}"
-
-
-# back-compat alias (used as the built-in default)
-SYSTEM_PROMPT = build_system_prompt(DEFAULT_PERSONA)
-
-
-def load_config():
-    cfg = json.loads(json.dumps(DEFAULT_CONFIG))
-    if os.path.exists(CONFIG_PATH):
-        try:
-            user = json.load(open(CONFIG_PATH, encoding="utf-8"))
-            for k, v in user.items():
-                if isinstance(v, dict) and isinstance(cfg.get(k), dict):
-                    cfg[k].update(v)
-                else:
-                    cfg[k] = v
-        except Exception:
-            pass
-    else:
-        json.dump(DEFAULT_CONFIG, open(CONFIG_PATH, "w", encoding="utf-8"), indent=2)
-    cfg.setdefault("last", {"provider": None, "model": None})
-    cfg.setdefault("favorites", {})
-    sp = cfg.setdefault("system_prompts", {"default": ""})
-    if not isinstance(sp, dict) or not sp:
-        cfg["system_prompts"] = sp = {"default": ""}
-    if cfg.setdefault("active_system_prompt", "default") not in sp:
-        cfg["active_system_prompt"] = next(iter(sp))
-    # make the web_search tool's key available to tools.py without leaking it in source
-    if cfg.get("tavily_api_key") and not os.environ.get("TAVILY_API_KEY"):
-        os.environ["TAVILY_API_KEY"] = cfg["tavily_api_key"]
-    # same for the Jira CLI token, so the jira_search/jira_get tools work in-session
-    jira_cfg = cfg.get("jira", {}) if isinstance(cfg.get("jira"), dict) else {}
-    jira_token = jira_cfg.get("api_token")
-    if jira_token and not os.environ.get("JIRA_API_TOKEN"):
-        os.environ["JIRA_API_TOKEN"] = jira_token
-    if jira_cfg.get("cli_path") and not os.environ.get("JIRA_CLI"):
-        os.environ["JIRA_CLI"] = jira_cfg["cli_path"]
-    # Confluence reuses the same Atlassian token (account-scoped); it only needs the
-    # site base url + login email, which the confluence_* tools read from the env.
-    conf = cfg.get("confluence", {}) if isinstance(cfg.get("confluence"), dict) else {}
-    if conf.get("base_url") and not os.environ.get("CONFLUENCE_BASE_URL"):
-        os.environ["CONFLUENCE_BASE_URL"] = conf["base_url"]
-    if conf.get("email") and not os.environ.get("CONFLUENCE_EMAIL"):
-        os.environ["CONFLUENCE_EMAIL"] = conf["email"]
-    if conf.get("space") and not os.environ.get("CONFLUENCE_SPACE"):
-        os.environ["CONFLUENCE_SPACE"] = conf["space"]
-    return cfg
-
-
-def save_config(cfg):
-    """Persist config to CONFIG_PATH. Returns True on success, False on failure so
-    callers can surface it (a silent failure is how a 'saved' config vanishes)."""
-    try:
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=2)
-        return True
-    except Exception:
-        return False
-
-
-# A provider's API key can live in tui_config.json or in the conventional env var.
-_PROVIDER_ENV = {
-    "anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY",
-    "gemini": "GEMINI_API_KEY", "xai": "XAI_API_KEY",
-    "openrouter": "OPENROUTER_API_KEY", "nano": "NANO_GPT_API_KEY",
-}
-
-
-def resolve_key(provider, pcfg):
-    """API key for a provider: the config value, else the conventional env var
-    (so a key exported in the shell just works, without writing it to disk)."""
-    return (pcfg or {}).get("api_key") or os.environ.get(_PROVIDER_ENV.get(provider, ""), "") or ""
-
-
-# ------------------------------ session storage ------------------------------
-# One JSON file per saved conversation under sessions/ (gitignored). A session
-# stores its provider + model so it can be restored exactly.
-SESSIONS_DIR = os.path.join(_app_home(), "sessions")
-
-
-def _sessions_dir():
-    os.makedirs(SESSIONS_DIR, exist_ok=True)
-    return SESSIONS_DIR
-
-
-def list_sessions():
-    """All saved sessions (full dicts), newest-updated first."""
-    out = []
-    try:
-        for fn in os.listdir(_sessions_dir()):
-            if not fn.endswith(".json"):
-                continue
-            try:
-                out.append(json.load(open(os.path.join(SESSIONS_DIR, fn), encoding="utf-8")))
-            except Exception:
-                continue
-    except Exception:
-        pass
-    out.sort(key=lambda s: s.get("updated", ""), reverse=True)
-    return out
-
-
-def load_session(sid):
-    try:
-        return json.load(open(os.path.join(_sessions_dir(), sid + ".json"), encoding="utf-8"))
-    except Exception:
-        return None
-
-
-def write_session(sess):
-    try:
-        path = os.path.join(_sessions_dir(), sess["id"] + ".json")
-        json.dump(sess, open(path, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
-    except Exception:
-        pass
-
-
-def delete_session(sid):
-    try:
-        os.remove(os.path.join(_sessions_dir(), sid + ".json"))
-    except Exception:
-        pass
+from engine import protocol, telemetry  # noqa: E402
+from engine.config import (CONFIG_PATH, DEFAULT_CONFIG, CLOUD, URL_PROVIDERS,  # noqa: E402
+                           PROVIDER_ENV, load_config, save_config, resolve_key)
+from engine.session import Session, tool_arg_summary  # noqa: E402
+from engine.store import (list_sessions, load_session, delete_session,  # noqa: E402
+                          sessions_dir as _sessions_dir)
 
 
 # ----------------------------- render utilities -----------------------------
-
-class ThinkSplitter:
-    OPEN, CLOSE = "<think>", "</think>"
-
-    def __init__(self):
-        self.mode = "content"
-        self.buffer = ""
-
-    def feed(self, chunk):
-        self.buffer += chunk
-        out = []
-        while True:
-            tag = self.OPEN if self.mode == "content" else self.CLOSE
-            idx = self.buffer.find(tag)
-            if idx != -1:
-                if idx > 0:
-                    out.append((self.mode, self.buffer[:idx]))
-                self.buffer = self.buffer[idx + len(tag):]
-                self.mode = "thinking" if self.mode == "content" else "content"
-                continue
-            safe = len(self.buffer)
-            for i in range(min(len(tag) - 1, len(self.buffer)), 0, -1):
-                if self.buffer.endswith(tag[:i]):
-                    safe = len(self.buffer) - i
-                    break
-            if safe > 0:
-                out.append((self.mode, self.buffer[:safe]))
-                self.buffer = self.buffer[safe:]
-            break
-        return out
-
-    def flush(self):
-        if self.buffer:
-            out = [(self.mode, self.buffer)]
-            self.buffer = ""
-            return out
-        return []
-
 
 def bar(pct, width=18, color="green"):
     pct = max(0.0, min(100.0, pct))
@@ -672,7 +302,7 @@ class ModelScreen(Screen):
                 self.app.call_from_thread(self.set_cloud, list(fallback),
                                           f"⚠ live list failed ({reason}) · showing saved list")
                 return
-            hint = (f"set an api_key for '{self.provider}' (config or {_PROVIDER_ENV.get(self.provider, 'env')})"
+            hint = (f"set an api_key for '{self.provider}' (config or {PROVIDER_ENV.get(self.provider, 'env')})"
                     if not resolve_key(self.provider, cfg) else str(e))
             self.app.call_from_thread(lambda: self.query_one("#status", Static).update(
                 Text(f"error: {hint}", style="red")))
@@ -1579,7 +1209,7 @@ class Composer(TextArea):
             return
         if key == "escape" and getattr(self.app, "busy", False):
             event.prevent_default(); event.stop()
-            self.app._cancel.set()
+            self.app.session.interrupt()
             return
         if key in ("up", "down") and self.app.prompt_history:
             row = self.cursor_location[0]
@@ -1901,7 +1531,7 @@ class MainScreen(Screen):
         if app.is_local:
             self.set_interval(1.0, app.poll_usage)
             app.poll_usage()
-        if app.mcp_servers:
+        if app.session.mcp_servers:
             app.run_worker(app.load_mcp_tools, thread=True)
         self.query_one("#prompt", Composer).focus()
 
@@ -1914,7 +1544,7 @@ class MainScreen(Screen):
 
     def action_interrupt(self):
         if self.app.busy:
-            self.app._cancel.set()
+            self.app.session.interrupt()
 
     def action_settings(self):
         self.app.push_screen(SettingsScreen())
@@ -2010,51 +1640,56 @@ class AgentTUI(App):
         self.cli_demo = cli_demo
         self.cli_configure = cli_configure
         self.skip_permissions = skip_permissions
+        # the engine owns the turn loop / tools / permissions / sessions / cost;
+        # this app is a thin adapter: events -> widgets, keys -> commands.
+        self.session = Session(cfg, emit=self._emit_from_worker,
+                               ask_permission=self._ask_permission_hook,
+                               skip_permissions=skip_permissions,
+                               persist=not cli_demo)
         self.provider = None
         self.model = None
         self.is_local = False
-        self.client = None
-        self.tracker = None
-        self.messages = [{"role": "system", "content": build_system_prompt(self._active_persona())}]
         self.gpu_hist = deque([0] * 40, maxlen=40)
         self.cpu_hist = deque([0] * 40, maxlen=40)
         self.cur_think = self.cur_content = ""
-        self._think_leak_calls = []
         self.busy = False
-        self.mcp_servers = []     # [{name,url,prefix}] enabled MCP servers to consume
-        self.mcp_tools = []       # OpenAI tool schemas (prefixed names)
-        self.mcp_route = {}       # prefixed_name -> (url, original_name)
-        self.mcp_names = set()    # set(self.mcp_route)
         self._stream_chars = 0
         self._pending_ctx = None
         self.server_proc = None
         self.started_server = False
-        self._log_lines = []
-        self._turn_tokens = 0
         self._turn_start = 0.0
-        # cost accounting (session totals + current turn)
-        self.session_cost = 0.0
-        self.session_input = 0
-        self.session_output = 0
-        self._turn_cost = 0.0
-        self.session_id = None          # set on first save; reused on resume
         self._resume_messages = None    # carried into a (local) resume
         self.resumed = False            # MainScreen renders prior history when True
         self._prompt_chosen = False     # True once the prompt was set from the wizard
-        self._cancel = threading.Event()  # set to interrupt the running turn
         self.prompt_history = []        # submitted prompts (↑/↓ recall)
-        self._pending_diff = None       # (path, unified_diff) for the next tool result
         self._live = None               # current streaming AssistantBlock widget
         self._live_tool = None          # current ToolBlock awaiting its result
         self._phase = ""                # working-bar status: thinking/generating/running …
 
+    # engine state read by screens/widgets (single source of truth: the Session)
+    @property
+    def messages(self):
+        return self.session.messages
+
+    @property
+    def tracker(self):
+        return self.session.tracker
+
+    @property
+    def session_cost(self):
+        return self.session.session_cost
+
+    @property
+    def mcp_names(self):
+        return self.session.mcp_names
+
     def on_mount(self):
         self.title = "🤖 JJ agent"
         if getattr(self, "cli_demo", False):
-            self.provider = "local"
-            self.is_local = True
-            self.model = "qwen35-9b"
-            self.tracker = ContextTracker("qwen35-9b")
+            self.provider = self.session.provider = "local"
+            self.is_local = self.session.is_local = True
+            self.model = self.session.model = "qwen35-9b"
+            self.session.tracker = ContextTracker("qwen35-9b")
             self.push_screen(MainScreen())
             self.set_timer(0.6, self._demo_fill)
             return
@@ -2085,7 +1720,10 @@ class AgentTUI(App):
         self.update_live()
         self.commit_live()
         self.render_tool_call("find_files", '{"name_glob": "**/*.py", "path": "src"}')
-        self.render_tool_result("find_files", "src/app.py\nsrc/db.py\nsrc/orders.py\nsrc/parser.py")
+        self.render_tool_result(protocol.ToolCallResult(
+            call_id="demo", name="find_files", ok=True,
+            summary="src/app.py  ·  4 files",
+            result="src/app.py\nsrc/db.py\nsrc/orders.py\nsrc/parser.py"))
         self._start_assistant()
         self.cur_think = ""
         self.cur_content = ("## Result\n\nThere are **4** `.py` files in `src`:\n\n"
@@ -2113,19 +1751,84 @@ class AgentTUI(App):
     def configure(self, provider, model, ctx_limit=None):
         self.provider = provider
         self.is_local = provider == "local"
-        pc = self.cfg[provider]
-        self.base_url = serve.base_url() if self.is_local else pc["base_url"]
-        self.api_key = "sk-noop" if self.is_local else (resolve_key(provider, pc) or "sk-noop")
         self.model = model
-        self.enable_thinking = self.cfg["local"].get("enable_thinking", True)
-        self.client = OpenAI(base_url=self.base_url, api_key=self.api_key)
-        self.tracker = ContextTracker(self.model)
-        self.mcp_servers = self._mcp_servers_from_cfg()
-        if ctx_limit:
-            self.tracker.limit = ctx_limit
-        elif not self.is_local:
-            # nano = frontier: we use the model's maximum (assumed)
-            self.tracker.limit = pc.get("ctx_window", 131072)
+        self.session.configure(provider, model, ctx_limit=ctx_limit,
+                               base_url=serve.base_url() if self.is_local else None)
+
+    # ---------- engine events -> widgets ----------
+    def _emit_from_worker(self, event):
+        """Engine emit hook. Turns run in a worker thread, so hop to the UI
+        thread (and block until handled, preserving event order like the old
+        call_from_thread-per-update flow did). Some engine calls happen on the
+        app thread itself (configure/swap) — dispatch inline there, since
+        call_from_thread refuses to run from the app thread."""
+        if threading.get_ident() == getattr(self, "_thread_id", None):
+            self._handle_event(event)
+        else:
+            self.call_from_thread(self._handle_event, event)
+
+    def _handle_event(self, e):
+        if isinstance(e, protocol.TurnStarted):
+            self._chat_mount(UserMsg(e.text))
+        elif isinstance(e, protocol.ThinkingDelta):
+            if not self._live:
+                self._start_assistant()
+            self.cur_think += e.text
+            self._stream_chars += len(e.text)
+            self._phase = "thinking"
+            self.update_live()
+        elif isinstance(e, protocol.TextDelta):
+            if not self._live:
+                self._start_assistant()
+            self.cur_content += e.text
+            self._stream_chars += len(e.text)
+            self._phase = "generating"
+            self.update_live()
+        elif isinstance(e, protocol.SegmentEnd):
+            # final texts win (a text tool-call may have been stripped out)
+            self.cur_think, self.cur_content = e.thinking, e.content
+            if (e.thinking or e.content) and not self._live:
+                self._start_assistant()
+            self.commit_live()
+        elif isinstance(e, protocol.ToolCallStarted):
+            self._phase = f"running {e.name}"
+            self.render_tool_call(e.name, e.args)
+        elif isinstance(e, protocol.ToolCallResult):
+            self.render_tool_result(e)
+        elif isinstance(e, protocol.CostUpdate):
+            self.update_ctx()
+        elif isinstance(e, protocol.Compacted):
+            self._after_compact(e)
+        elif isinstance(e, protocol.Notice):
+            style = "dim yellow" if e.kind == "warning" else "dim"
+            self.write_log(Text(e.text, style=style))
+        elif isinstance(e, protocol.Error):
+            self.write_log(Panel(Text(e.message), title="[red]error[/]",
+                                 border_style="red", expand=False))
+        elif isinstance(e, protocol.TurnDone):
+            if e.reason == "interrupted":
+                self.write_log(Text.from_markup("[bold yellow]⏹ stopped[/]"))
+            elif e.reason == "max_iterations":
+                self.write_log(Panel("max iterations reached", border_style="red"))
+            cost = "" if self.provider in ("local", "remote", "vllm") else \
+                f" · {pricing.fmt_usd(e.turn_usd)} (session {pricing.fmt_usd(self.session_cost)})"
+            self.write_log(Text.from_markup(
+                f"[dim]⚡ {e.tok_s:.1f} tok/s · {e.output_tokens} output tokens · "
+                f"{e.elapsed_s:.1f}s{cost}[/]"))
+            self.update_ctx()
+
+    def _ask_permission_hook(self, req):
+        """Engine permission hook (runs in the turn worker): show the modal on the
+        UI thread and block until the user decides. Returns the protocol decision."""
+        box = {}
+        done = threading.Event()
+
+        def show():
+            self.push_screen(PermissionScreen(req.tool, req.action, req.detail),
+                             lambda v: (box.__setitem__("v", v or "deny"), done.set()))
+        self.call_from_thread(show)
+        done.wait()
+        return {"once": "allow_once", "always": "allow_always"}.get(box.get("v"), "deny")
 
     def _save_last(self, provider, model):
         self.cfg["last"] = {"provider": provider, "model": model}
@@ -2188,7 +1891,7 @@ class AgentTUI(App):
     def _apply_resume(self):
         """If a resume is pending, install its messages as the live conversation."""
         if self._resume_messages is not None:
-            self.messages = self._resume_messages
+            self.session.resume(self._resume_messages)
             self._resume_messages = None
             self.resumed = True
 
@@ -2198,9 +1901,7 @@ class AgentTUI(App):
         (a remote whose API is down will simply error on the next turn)."""
         provider = sess.get("provider")
         model = sess.get("model")
-        msgs = sess.get("messages") or [{"role": "system", "content": SYSTEM_PROMPT}]
         self.provider = provider
-        self.session_id = sess.get("id")
         if provider in URL_PROVIDERS:
             self.cfg.setdefault(provider, {})["base_url"] = (
                 sess.get("base_url") or self.cfg.get(provider, {}).get("base_url", ""))
@@ -2210,52 +1911,23 @@ class AgentTUI(App):
                 self.write_log(Panel(Text(f"Model '{model}' is no longer in the registry.",
                                           style="red"), border_style="red", expand=False))
                 return
-            self._resume_messages = msgs
+            self._resume_messages = sess
             self.choose_model(model)           # boots the server, then _apply_resume
             return
         # cloud + remote
         self.configure(provider, model)
-        if sess.get("ctx_window"):
-            self.tracker.limit = sess["ctx_window"]
-        self.messages = msgs
+        self.session.resume(sess)
         self.resumed = True
         self._save_last(provider, model)
         self._go_main()
 
     def save_session(self):
-        """Persist the current conversation (skipped for demo / empty sessions)."""
-        if self.cli_demo or not self.model or len(self.messages) <= 1:
-            return
-        if not self.session_id:
-            self.session_id = datetime.now().strftime("%Y%m%d-%H%M%S")
-        title = next((m.get("content") for m in self.messages
-                      if m.get("role") == "user" and m.get("content")), "(no prompt)")
-        sess = {
-            "id": self.session_id,
-            "updated": datetime.now().isoformat(timespec="seconds"),
-            "provider": self.provider,
-            "model": self.model,
-            "title": (title or "")[:70],
-            "ctx_window": getattr(self.tracker, "limit", None),
-            "messages": self.messages,
-        }
-        if self.provider in URL_PROVIDERS:
-            sess["base_url"] = self.cfg.get(self.provider, {}).get("base_url", "")
-        write_session(sess)
+        self.session.save()
 
     # ---------- system prompt (presets + live edit) ----------
-    def _active_persona(self):
-        sp = self.cfg.get("system_prompts") or {}
-        return sp.get(self.cfg.get("active_system_prompt", "default"), "")
-
     def apply_persona(self, persona):
         """Set the live system message (messages[0]); takes effect on the next turn."""
-        prompt = build_system_prompt(persona)
-        if self.messages and self.messages[0].get("role") == "system":
-            self.messages[0]["content"] = prompt
-        else:
-            self.messages.insert(0, {"role": "system", "content": prompt})
-        self.save_session()
+        self.session.apply_persona(persona)
 
     def save_preset(self, name, text):
         self.cfg.setdefault("system_prompts", {"default": ""})[name] = text
@@ -2278,8 +1950,8 @@ class AgentTUI(App):
         """Switch the model mid-session (cloud/remote only). History is kept."""
         old = self.model
         self.configure(self.provider, model_value)   # new client+tracker, messages untouched
+        self.session.save()
         self._save_last(self.provider, model_value)
-        self.save_session()
         if len(self.screen_stack) > 1:
             self.pop_screen()                        # back to MainScreen
         self.write_log(Panel(Text.from_markup(
@@ -2303,7 +1975,7 @@ class AgentTUI(App):
                     color = self._tool_color(fn.get("name", ""))
                     self._chat_mount(ToolBlock(Text.from_markup(
                         f"[{color}]⏺[/] [bold {color}]{fn.get('name', '?')}[/]"
-                        f"[dim]({self._tool_arg_summary(fn.get('name', ''), fn.get('arguments', ''))})[/]")))
+                        f"[dim]({tool_arg_summary(fn.get('name', ''), fn.get('arguments', ''))})[/]")))
             elif role == "tool":
                 note = " ".join((content or "").split())[:80]
                 self.write_log(Text.from_markup(f"  [dim]⎿ {note}[/]"))
@@ -2311,24 +1983,16 @@ class AgentTUI(App):
             self.write_log(Text.from_markup("[dim]— end of restored history —[/]"))
 
     # ---------- retry / edit / export ----------
-    def _last_user_index(self):
-        for i in range(len(self.messages) - 1, -1, -1):
-            if self.messages[i].get("role") == "user":
-                return i
-        return None
-
     def _rewind_to_last_user(self):
         """Drop the last user message and everything after it; re-render the trimmed
         conversation. Returns the dropped user text, or None if there's nothing to do."""
         if self.busy:
             return None
-        idx = self._last_user_index()
-        if idx is None:
+        text = self.session.rewind_last_user()
+        if text is None:
             self.write_log(Panel(Text("Nothing to retry/edit yet.", style="yellow"),
                                  border_style="yellow", expand=False))
             return None
-        text = self.messages[idx].get("content") or ""
-        self.messages = self.messages[:idx]
         self.action_clear_log()
         self.render_history(footer=False)
         return text
@@ -2374,7 +2038,7 @@ class AgentTUI(App):
                     lines += [f"> 🛠 `{fn.get('name', '?')}({args})`", ""]
             elif role == "tool":
                 lines += ["> ⎿ " + " ".join(content.split())[:500], ""]
-        fn = f"export-{self.session_id or datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
+        fn = f"export-{self.session.session_id or datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
         path = os.path.join(_sessions_dir(), fn)
         try:
             with open(path, "w", encoding="utf-8") as f:
@@ -2404,7 +2068,7 @@ class AgentTUI(App):
         let the user pick the system prompt first; resumes and single-preset setups go
         straight in. (The picker replaces itself with MainScreen on confirm.)"""
         presets = self.cfg.get("system_prompts") or {}
-        if (not self.resumed and not self.session_id and not self._prompt_chosen
+        if (not self.resumed and not self.session.session_id and not self._prompt_chosen
                 and len(presets) > 1):
             self.push_screen(SystemPromptScreen(start=True))
         else:
@@ -2500,74 +2164,19 @@ class AgentTUI(App):
         session. The previous session stays saved on disk."""
         if self.busy:
             return
-        sys_msg = (self.messages[0] if self.messages and self.messages[0].get("role") == "system"
-                   else {"role": "system", "content": build_system_prompt(self._active_persona())})
-        self.messages = [sys_msg]
-        self.session_id = None          # the cleared chat becomes a new session
-        self.session_cost = 0.0         # reset the spend tally with the conversation
-        self.session_input = self.session_output = 0
+        self.session.clear()
         self.action_clear_log()
         self.write_log(Panel(Text("Context cleared — fresh conversation (system prompt kept).",
                                   style="bold green"), border_style="green", expand=False))
         self.update_ctx()
 
     # ---------- compaction ----------
-    def _transcript(self, msgs):
-        """Flatten messages into a plain transcript for the summarizer (bounded)."""
-        lines = []
-        for m in msgs:
-            role = m.get("role")
-            if role == "user" and m.get("content"):
-                lines.append(f"USER: {m['content']}")
-            elif role == "assistant":
-                if m.get("content"):
-                    lines.append(f"ASSISTANT: {m['content']}")
-                for tc in (m.get("tool_calls") or []):
-                    fn = tc.get("function", {})
-                    lines.append(f"ASSISTANT called {fn.get('name')}"
-                                 f"({self._tool_arg_summary(fn.get('name'), fn.get('arguments', ''))})")
-            elif role == "tool":
-                lines.append(f"TOOL RESULT: {(m.get('content') or '')[:500]}")
-        txt = "\n".join(lines)
-        return txt[-24000:] if len(txt) > 24000 else txt
-
-    def _enough_to_compact(self):
-        real = [m for m in self.messages[1:] if m.get("role") in ("user", "assistant", "tool")]
-        return len(real) >= 4
-
-    def _do_compact(self, auto):
-        """Summarize older turns into a recap (keeps the system prompt). Runs in a
-        worker thread and pushes UI updates via call_from_thread; does NOT touch
-        self.busy — the caller owns that. Returns True on success."""
-        try:
-            instr = ("Summarize the conversation so far so it can be continued without the full "
-                     "history. Preserve the user's goals and decisions, key facts, file paths and "
-                     "edits, important tool results, and any open/unfinished tasks. Be concise but "
-                     "complete; use bullet points. Do not invent anything not in the conversation.")
-            resp = self.client.chat.completions.create(
-                model=self.model, stream=False, max_tokens=1200,
-                messages=[{"role": "system", "content": instr},
-                          {"role": "user", "content": self._transcript(self.messages[1:])}])
-            summary = (resp.choices[0].message.content or "").strip()
-            if not summary:
-                raise ValueError("empty summary")
-            before_n = len(self.messages)
-            self.messages = [self.messages[0],
-                             {"role": "user", "content": "[Summary of the earlier conversation]\n" + summary}]
-            self.call_from_thread(self._after_compact, before_n, len(self.messages), auto)
-            return True
-        except Exception as e:
-            self.call_from_thread(self.write_log, Panel(
-                Text(f"compaction failed: {type(e).__name__}: {e}", style="red"),
-                border_style="red", expand=False))
-            return False
-
     def compact(self, auto=False):
-        """/compact — manual entry point (main thread, while idle). Runs the
+        """/compact — manual entry point (main thread, while idle). Runs the engine
         summarization in its own worker and owns the busy flag for it."""
-        if self.busy or not self.client:
+        if self.busy or not self.session.client:
             return
-        if not self._enough_to_compact():
+        if not self.session.enough_to_compact():
             if not auto:
                 self.write_log(Panel(Text("Not enough conversation to compact yet.", style="yellow"),
                                      border_style="yellow", expand=False))
@@ -2577,127 +2186,37 @@ class AgentTUI(App):
 
         def _job():
             try:
-                self._do_compact(auto)
+                self.session.compact(auto)   # emits Compacted / Error events
             finally:
                 self.busy = False
         self.run_worker(_job, thread=True, exclusive=True)
 
-    def _after_compact(self, before_n, after_n, auto):
+    def _after_compact(self, e):
+        """React to the engine's Compacted event (manual /compact or auto)."""
         self.action_clear_log()
-        tag = "auto-compacted" if auto else "compacted"
+        tag = "auto-compacted" if e.auto else "compacted"
         self.write_log(Panel(Text.from_markup(
-            f"[bold green]✦ context {tag}[/] — {before_n} → {after_n} messages "
+            f"[bold green]✦ context {tag}[/] — {e.before_messages} → {e.after_messages} messages "
             f"(older turns summarized)"), border_style="green", expand=False))
-        self.write_log(Panel(ChatMarkdown(self.messages[1]["content"]),
+        self.write_log(Panel(ChatMarkdown(e.summary),
                              title="[bold magenta]summary[/]", border_style="magenta"))
         self.update_ctx()
-        self.save_session()
-
-    def _maybe_autocompact(self):
-        """Compact synchronously if the context is near full. Called inline at the
-        start of a turn (already inside the turn worker, busy=True) so a turn is
-        never interrupted mid-stream and no second worker races the call."""
-        if not self.cfg.get("auto_compact", True) or not self.client or not self.tracker:
-            return
-        if not self._enough_to_compact():
-            return
-        try:
-            used, _ = self.tracker.current(self.messages)
-            limit = self.tracker.limit or 0
-        except Exception:
-            return
-        if limit and used / limit >= AUTO_COMPACT_PCT:
-            self.call_from_thread(self.write_log, Text.from_markup(
-                "[dim]context is getting full — auto-compacting…[/]"))
-            self._do_compact(auto=True)
 
     # ---------- MCP (remote tools) ----------
-    def _mcp_servers_from_cfg(self):
-        """Build the list of enabled MCP servers from config. Supports a `servers`
-        list ([{name,url,prefix}]) and a legacy single {url, prefix} shape."""
-        mc = self.cfg.get("mcp", {}) or {}
-        if not mc.get("enabled"):
-            return []
-        servers = mc.get("servers")
-        if not servers and mc.get("url"):   # legacy single-server config (wizard)
-            servers = [{"name": "mcp", "url": mc["url"], "prefix": mc.get("prefix", "")}]
-        out = []
-        for i, s in enumerate(servers or []):
-            url = (s.get("url") or "").strip()
-            if url:
-                out.append({"name": s.get("name") or f"mcp{i + 1}",
-                            "url": url, "prefix": s.get("prefix", "")})
-        return out
-
     def load_mcp_tools(self):
-        """Connect to each configured MCP server and merge its tools (name-prefixed)."""
-        self.mcp_tools, self.mcp_route = [], {}
-        lines = []
-        for srv in self.mcp_servers:
-            raw, _ = mcp_client.list_tools_openai(srv["url"])
-            cnt = 0
-            for t in raw:
-                orig = t["function"]["name"]
-                pn = srv["prefix"] + orig
-                t = {**t, "function": {**t["function"], "name": pn}}
-                self.mcp_tools.append(t)
-                self.mcp_route[pn] = (srv["url"], orig)
-                cnt += 1
-            lines.append(f"[green]✓[/] {srv['name']}: {cnt} tools (prefix '{srv['prefix']}')" if cnt
-                         else f"[yellow]✗ {srv['name']}: none reachable at {srv['url']}[/]")
-        self.mcp_names = set(self.mcp_route)
-        if not lines:
+        """Worker: connect the engine to its MCP servers and render the summary."""
+        results = self.session.load_mcp_tools()
+        if not results:
             return
-        total = len(self.mcp_names)
+        lines = [f"[green]✓[/] {name}: {cnt} tools (prefix '{prefix}')" if cnt
+                 else f"[yellow]✗ {name}: none reachable at {url}[/]"
+                 for name, cnt, prefix, url in results]
+        total = len(self.session.mcp_names)
         self.call_from_thread(self.write_log, Panel(
             Text.from_markup("[bold]MCP[/] · " + str(total) + " tools\n" + "\n".join(lines)),
             border_style="green" if total else "yellow", expand=False))
 
-    # ---------- permissions + tool execution ----------
-    def ask_permission(self, tool, snippet, code):
-        """Blocks the worker thread until the user decides. Returns 'once'/'always'/'deny'."""
-        box = {}
-        ev = threading.Event()
-
-        def show():
-            self.push_screen(PermissionScreen(tool, snippet, code),
-                             lambda v: (box.__setitem__("v", v or "deny"), ev.set()))
-        self.call_from_thread(show)
-        ev.wait()
-        return box.get("v", "deny")
-
-    def _permit(self, tool, snippet, code):
-        """Gate a flagged operation. Honors the global skip, the persistent
-        allow/deny lists in config, then prompts. 'Always' persists `tool` to the
-        allowlist. Returns True to proceed, False if denied."""
-        if self.skip_permissions:
-            return True
-        perms = self.cfg.setdefault("permissions", {})
-        if tool in (perms.get("deny") or []):
-            return False
-        if tool in (perms.get("allow") or []):
-            return True
-        decision = self.ask_permission(tool, snippet, code)
-        if decision == "always":
-            allow = perms.setdefault("allow", [])
-            if tool not in allow:
-                allow.append(tool)
-                save_config(self.cfg)
-            return True
-        return decision == "once"
-
-    def _workspace(self):
-        ws = (self.cfg.get("permissions", {}) or {}).get("workspace") or ""
-        return os.path.abspath(ws) if ws else os.getcwd()
-
-    def _in_workspace(self, path):
-        """True if `path` resolves inside the workspace root (writes are confined there)."""
-        try:
-            root = self._workspace()
-            return os.path.commonpath([root, os.path.abspath(path)]) == root
-        except (ValueError, OSError):
-            return False   # different drive / bad path → treat as outside
-
+    # ---------- permissions ----------
     def show_permissions(self):
         """/permissions — show the allow/deny lists + workspace boundary."""
         p = self.cfg.get("permissions", {}) or {}
@@ -2708,325 +2227,21 @@ class AgentTUI(App):
             f"[bold]Permissions[/]{skip}\n"
             f"  [green]always-allow[/]: {allow}\n"
             f"  [red]deny[/]: {deny}\n"
-            f"  [cyan]workspace[/] (write/edit confined here): {self._workspace()}\n"
+            f"  [cyan]workspace[/] (write/edit confined here): {self.session.workspace()}\n"
             f"[dim]Edit in tui_config.json → permissions (F2). 'Always allow' in a prompt adds a tool here.[/]"),
             title="[bold cyan]🔐 permissions[/]", border_style="cyan", expand=False))
 
-    def _with_timeout(self, name, fn):
-        """Run a (blocking) tool call with a hard ceiling so a hung tool or an
-        unreachable MCP server can't freeze the turn. The work runs in a daemon
-        thread; on timeout we return an ERROR and move on (it keeps running in the
-        background but won't block the UI or process exit)."""
-        box = {}
-
-        def run():
-            try:
-                box["v"] = fn()
-            except Exception as e:
-                box["v"] = f"ERROR: {type(e).__name__}: {e}"
-
-        t = threading.Thread(target=run, daemon=True)
-        t.start()
-        t.join(TOOL_TIMEOUT)
-        if t.is_alive():
-            return (f"ERROR: tool '{name}' timed out after {TOOL_TIMEOUT}s "
-                    f"(it may still be running in the background; the turn continued)")
-        return box.get("v", "ERROR: tool produced no result")
-
-    def execute_tool(self, name, raw_args):
-        """Runs a tool; for run_python/run_powershell with a dangerous op it asks
-        for permission (unless skip_permissions) and, if approved, runs with allow_unsafe.
-        Every actual call is bounded by TOOL_TIMEOUT (the permission prompt is not)."""
-        if name in self.mcp_route:   # remote tool (MCP) → run on its server
-            url, orig = self.mcp_route[name]
-            return self._with_timeout(name, lambda: mcp_client.call_tool(url, orig, raw_args))
-        try:
-            args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
-        except Exception:
-            return self._with_timeout(name, lambda: call_tool(name, raw_args))
-        if name in ("run_python", "run_powershell", "run_bash"):
-            code = args.get("code") or args.get("command") or ""
-            if self.skip_permissions:
-                args["allow_unsafe"] = True
-            else:
-                snip = danger_match(code)
-                if snip:
-                    if not self._permit(name, snip, code):
-                        return f"DENIED by user: refused to run flagged operation '{snip}'"
-                    args["allow_unsafe"] = True
-        if name in ("jira_assign", "jira_comment"):
-            key = args.get("key", "?")
-            if name == "jira_assign":
-                snip = f"assign {key} → {args.get('assignee', '?')}"
-                code = f"jira issue assign {key} {args.get('assignee', '')}"
-            else:
-                body = (args.get("body", "") or "")
-                snip = f"comment on {key}: {body[:80]}" + ("…" if len(body) > 80 else "")
-                code = f"jira issue comment add {key} \"{body[:300]}\""
-            if not self._permit(name, snip, code):
-                return f"DENIED by user: refused Jira write '{snip}'"
-        if name in ("confluence_create", "confluence_comment"):
-            body = (args.get("body", "") or "")
-            if name == "confluence_create":
-                sp = args.get("space") or os.environ.get("CONFLUENCE_SPACE", "?")
-                snip = f"create page in {sp}: {args.get('title', '')}"
-                code = f"POST confluence page · space={sp} · title={args.get('title', '')}"
-            else:
-                snip = f"comment on page {args.get('page_id', '?')}: {body[:80]}" + ("…" if len(body) > 80 else "")
-                code = f"POST confluence comment · page={args.get('page_id', '')} · {body[:200]}"
-            if not self._permit(name, snip, code):
-                return f"DENIED by user: refused Confluence write '{snip}'"
-        if name in ("write_file", "edit_file") and isinstance(args, dict) and args.get("path"):
-            path = args["path"]
-            if not self._in_workspace(path):   # writes are confined to the workspace
-                snip = f"{name} OUTSIDE the workspace"
-                code = f"target: {os.path.abspath(path)}\nworkspace: {self._workspace()}"
-                if not self._permit(name, snip, code):
-                    return (f"DENIED by user: '{name}' targets a path outside the workspace "
-                            f"({path}). Set permissions.workspace or approve it.")
-            return self._run_with_diff(name, args)
-        return self._with_timeout(name, lambda: call_tool(name, args))
-
-    def _run_with_diff(self, name, args):
-        """Run a file-writing tool, capturing a before/after unified diff for the UI."""
-        import difflib
-        path = args.get("path")
-
-        def _read():
-            try:
-                return open(path, encoding="utf-8", errors="replace").read() if os.path.isfile(path) else ""
-            except Exception:
-                return ""
-
-        before = _read()
-        result = self._with_timeout(name, lambda: call_tool(name, args))
-        if not str(result).startswith("ERROR"):
-            after = _read()
-            if after != before:
-                self._pending_diff = (path, "".join(difflib.unified_diff(
-                    before.splitlines(keepends=True), after.splitlines(keepends=True),
-                    fromfile=f"{path} (before)", tofile=f"{path} (after)")))
-        return result
-
-    # ---------- agent (in thread) ----------
+    # ---------- agent (engine turn in a worker thread) ----------
     def agent_turn(self, text):
-        # Compact first if the context is nearly full, so a turn is never cut off
-        # mid-stream by compaction. Runs inline in this worker (no second worker
-        # racing the turn), and the new user message is mounted afterwards so it
-        # survives the post-compaction log clear.
-        self._maybe_autocompact()
-        self.call_from_thread(self._chat_mount, UserMsg(text))
-        self.messages.append({"role": "user", "content": text})
-        self._turn_tokens = 0
-        self._turn_cost = 0.0
+        """Worker: run one engine turn; the UI is updated by the event stream."""
+        self.cur_think = self.cur_content = ""
         self._stream_chars = 0
         self._turn_start = time.time()
-        self._cancel.clear()
+        self._phase = "thinking"
         try:
-            max_iters = int(self.cfg.get("max_iterations", MAX_ITERATIONS) or MAX_ITERATIONS)
-            for _ in range(max_iters):
-                msg = self.stream_one()
-                # If the model leaked the tool call into its thinking and produced
-                # no real tool_call, retry the whole turn (the discarded attempt is
-                # not added to history). Recover from the thinking as a last resort.
-                attempt = 0
-                while (self._think_leak_calls and not msg.get("tool_calls")
-                       and attempt < THINK_RETRIES and not self._cancel.is_set()):
-                    attempt += 1
-                    self.call_from_thread(self.write_log, Text.from_markup(
-                        f"[dim yellow]↻ tool call ended up in the thinking; retrying turn "
-                        f"({attempt}/{THINK_RETRIES})…[/]"))
-                    msg = self.stream_one()
-                if self._think_leak_calls and not msg.get("tool_calls"):
-                    msg["tool_calls"] = [
-                        {"id": f"tk_{i}", "type": "function",
-                         "function": {"name": tc["name"], "arguments": tc["arguments"]}}
-                        for i, tc in enumerate(self._think_leak_calls)]
-                    self.call_from_thread(self.write_log, Text.from_markup(
-                        "[dim yellow]↻ recovered the tool call from the thinking[/]"))
-                # An interrupt can end a segment with no content and no tool_calls;
-                # don't persist that — strict providers (e.g. Anthropic) 400 on an
-                # assistant message that has neither.
-                if msg.get("content") or msg.get("tool_calls"):
-                    self.messages.append(msg)
-                if self._cancel.is_set():
-                    self.call_from_thread(self.write_log, Text.from_markup("[bold yellow]⏹ stopped[/]"))
-                    break
-                tcs = msg.get("tool_calls")
-                if not tcs:
-                    break
-                for tc in tcs:
-                    if self._cancel.is_set():
-                        break
-                    name, args = tc["function"]["name"], tc["function"]["arguments"]
-                    self.call_from_thread(self.render_tool_call, name, args)
-                    result = self.execute_tool(name, args)
-                    self.call_from_thread(self.render_tool_result, name, result)
-                    self.messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
-                if self._cancel.is_set():
-                    self.call_from_thread(self.write_log, Text.from_markup("[bold yellow]⏹ stopped[/]"))
-                    break
-            else:
-                self.call_from_thread(self.write_log, Panel("max iterations reached", border_style="red"))
-        except Exception as e:
-            msg = str(e)
-            if "parse tool call" in msg.lower() or "failed to parse" in msg.lower():
-                short = ("the model emitted invalid JSON for the tool arguments (common with small "
-                         "models on big code blocks). Try a smaller step or rephrase the request.")
-            else:
-                short = msg if len(msg) <= 280 else msg[:280] + " …"
-            self.call_from_thread(self.write_log, Panel(
-                Text(f"{type(e).__name__}: {short}"), title="[red]error[/]", border_style="red", expand=False))
+            self.session.run_turn(text)
         finally:
             self.busy = False
-            elapsed = time.time() - self._turn_start
-            tps = self._turn_tokens / elapsed if elapsed > 0 else 0
-            cost = "" if self.provider in ("local", "remote", "vllm") else \
-                f" · {pricing.fmt_usd(self._turn_cost)} (session {pricing.fmt_usd(self.session_cost)})"
-            self.call_from_thread(self.write_log, Text.from_markup(
-                f"[dim]⚡ {tps:.1f} tok/s · {self._turn_tokens} output tokens · {elapsed:.1f}s{cost}[/]"))
-            self.call_from_thread(self.update_ctx)
-            if self.over_budget():
-                self.call_from_thread(self.write_log, Text.from_markup(
-                    f"[bold yellow]⚠ budget reached[/] — session {pricing.fmt_usd(self.session_cost)} ≥ "
-                    f"{pricing.fmt_usd(self.cfg.get('budget_usd'))}. New turns are blocked until you raise "
-                    f"[cyan]budget_usd[/] (F2) or /clear."))
-            self.save_session()   # persist the conversation after every turn
-
-    def _repair_history(self):
-        """Keep the message list valid for strict providers (e.g. Anthropic) after an
-        interrupt or when resuming a session saved mid-turn: drop assistant messages
-        with neither content nor tool_calls, and give every tool_call a matching tool
-        result (a placeholder if the turn was stopped before the tool ran)."""
-        kept = [m for m in self.messages
-                if not (m.get("role") == "assistant"
-                        and not m.get("content") and not m.get("tool_calls"))]
-        answered = {m.get("tool_call_id") for m in kept if m.get("role") == "tool"}
-        out = []
-        for m in kept:
-            out.append(m)
-            if m.get("role") == "assistant" and m.get("tool_calls"):
-                for tc in m["tool_calls"]:
-                    if tc.get("id") and tc["id"] not in answered:
-                        out.append({"role": "tool", "tool_call_id": tc["id"],
-                                    "content": "[interrupted]"})
-                        answered.add(tc["id"])
-        self.messages = out
-
-    def stream_one(self):
-        self._repair_history()
-        params = dict(model=self.model, messages=self.messages, tools=TOOLS + self.mcp_tools,
-                      tool_choice="auto", stream=True)
-        params["stream_options"] = {"include_usage": True}
-        if self.is_local:
-            params["extra_body"] = {"chat_template_kwargs": {"enable_thinking": self.enable_thinking}}
-        elif self.provider == "nano":
-            params["extra_body"] = {"reasoning": {"enabled": True}, "include_reasoning": True}
-        elif self.provider == "gemini":
-            # Gemini 2.5 "thinks". Map a reasoning toggle to a thinking budget and ask for
-            # the thought summaries (they stream as content flagged extra_content.google.thought).
-            eff = str((self.cfg.get("gemini", {}) or {}).get("reasoning_effort", "low")).lower()
-            budget = {"off": 0, "none": 0, "low": 512, "medium": 4096, "high": -1}.get(eff, 512)
-            tc = {"thinking_budget": budget}
-            if budget != 0:
-                tc["include_thoughts"] = True
-            params["extra_body"] = {"extra_body": {"google": {"thinking_config": tc}}}
-        # xai / openrouter / openai / anthropic / remote: standard OpenAI-compatible,
-        # without proprietary extra_body (Anthropic via its OpenAI-compat layer)
-        stream = self.client.chat.completions.create(**params)
-        content_parts, tool_calls = [], {}
-        splitter = ThinkSplitter()
-        self.cur_think = self.cur_content = ""
-        last_pricing = None
-        self._phase = "thinking"
-        self.call_from_thread(self._start_assistant)   # mount the live block for this segment
-
-        def emit(mode, t):
-            if not t:
-                return
-            self._stream_chars += len(t)   # for the live tok/s (estimated)
-            if mode == "thinking":
-                self.cur_think += t
-            else:
-                self.cur_content += t
-                content_parts.append(t)
-                self._phase = "generating"
-            self.call_from_thread(self.update_live)
-
-        for chunk in stream:
-            if self._cancel.is_set():
-                try:
-                    stream.close()
-                except Exception:
-                    pass
-                break
-            cd = chunk.model_dump(exclude_none=True)
-            if "x_nanogpt_pricing" in cd or cd.get("usage"):
-                last_pricing = cd
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-            rc = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
-            if not rc and getattr(delta, "model_extra", None):
-                rc = delta.model_extra.get("reasoning_content") or delta.model_extra.get("reasoning")
-            if rc:
-                emit("thinking", rc)
-            if delta.content:
-                # Gemini streams its thought summaries as content tagged
-                # extra_content.google.thought — route those to the thinking block.
-                ddict = (cd.get("choices") or [{}])[0].get("delta", {})
-                is_thought = bool((ddict.get("extra_content") or {}).get("google", {}).get("thought"))
-                if is_thought:
-                    emit("thinking", delta.content.replace("<thought>", "").replace("</thought>", ""))
-                else:
-                    for mode, t in splitter.feed(delta.content):
-                        emit(mode, t)
-            if delta.tool_calls:
-                for tcd in delta.tool_calls:
-                    slot = tool_calls.setdefault(tcd.index, {"id": "", "name": "", "arguments": ""})
-                    if tcd.id:
-                        slot["id"] = tcd.id
-                    if tcd.function:
-                        if tcd.function.name:
-                            slot["name"] += tcd.function.name
-                        if tcd.function.arguments:
-                            slot["arguments"] += tcd.function.arguments
-        for mode, t in splitter.flush():
-            emit(mode, t)
-        in_t = out_t = 0
-        if last_pricing:
-            self.tracker.update_from_chunk_dict(last_pricing)
-            in_t, out_t = self.tracker.last_input or 0, self.tracker.last_output or 0
-        if out_t == 0:   # provider returned no exact usage → estimate locally (tiktoken)
-            in_t = in_t or context.estimate_messages(self.messages)
-            out_t = context._ntok(self.cur_think + self.cur_content)
-        self._turn_tokens += out_t
-        self._account_cost(in_t, out_t, last_pricing or {})
-
-        # fallback: the model emitted the tool-call as plain text -> recover it
-        if not tool_calls:
-            fb = parse_text_tool_calls("".join(content_parts))
-            if fb:
-                for i, tc in enumerate(fb):
-                    tool_calls[i] = {"id": f"fb_{i}", "name": tc["name"], "arguments": tc["arguments"]}
-                cleaned = strip_tool_call_text(self.cur_content)
-                self.cur_content = cleaned
-                content_parts[:] = [cleaned] if cleaned else []
-                self.call_from_thread(self.write_log, Text.from_markup(
-                    "[dim yellow]↻ recovered a tool call the model emitted as plain text[/]"))
-
-        # detect a tool call leaked into the THINKING (qwen sometimes stops there
-        # and emits the call as part of its reasoning instead of a real tool_call)
-        self._think_leak_calls = parse_text_tool_calls(self.cur_think) if not tool_calls else []
-
-        self.call_from_thread(self.commit_live)
-
-        msg = {"role": "assistant", "content": "".join(content_parts) or None}
-        if tool_calls:
-            msg["tool_calls"] = [{"id": tc["id"], "type": "function",
-                                  "function": {"name": tc["name"], "arguments": tc["arguments"]}}
-                                 for _, tc in sorted(tool_calls.items())]
-        return msg
 
     # ---- tool-call rendering (compact colored bullets, Claude-Code style) ----
     _READONLY_TOOLS = {
@@ -3047,95 +2262,34 @@ class AgentTUI(App):
             return "cyan"
         return "white"
 
-    @staticmethod
-    def _tool_arg_summary(name, args):
-        """One-line, newline-free summary of the salient argument(s)."""
-        try:
-            d = json.loads(args) if isinstance(args, str) else dict(args or {})
-        except Exception:
-            d = None
-        if isinstance(d, dict):
-            for key in ("pattern", "name_glob", "command", "code", "query", "path", "local_path"):
-                if d.get(key):
-                    val = str(d[key])
-                    break
-            else:
-                val = ", ".join(f"{k}={v}" for k, v in d.items()) if d else ""
-        else:
-            val = str(args or "")
-        val = " ".join(val.split())
-        return val[:70] + "…" if len(val) > 70 else val
-
-    @staticmethod
-    def _result_summary(result):
-        """Short, newline-free note about a tool result (text, is_error)."""
-        r = (result or "").strip()
-        if r.startswith("ERROR"):
-            first = r.splitlines()[0]
-            return (first[:80] + "…" if len(first) > 80 else first), True
-        first = next((ln for ln in r.splitlines() if ln.strip()), "")
-        first = " ".join(first.split())
-        if not first:
-            return "(no output)", False
-        note = first[:80] + "…" if len(first) > 80 else first
-        if len(r) > len(first) + 10:
-            note += f"  ·  {len(r)} chars"
-        return note, False
-
     def render_tool_call(self, name, args):
-        self._phase = f"running {name}"
         color = self._tool_color(name)
-        summ = self._tool_arg_summary(name, args)
+        summ = tool_arg_summary(name, args)
         self._live_tool = ToolBlock(Text.from_markup(
             f"[{color}]⏺[/] [bold {color}]{name}[/][dim]({summ})[/]"))
         self._chat_mount(self._live_tool)
 
-    def render_tool_result(self, name, result):
+    def render_tool_result(self, e):
+        """Render a protocol.ToolCallResult under its ToolBlock (diff inline for
+        file writes; one-line note otherwise)."""
         tb = self._live_tool
         self._live_tool = None
-        diff = getattr(self, "_pending_diff", None)
-        if diff and name in ("write_file", "edit_file"):
-            self._pending_diff = None
-            path, text = diff
-            lines = text.splitlines()
+        if e.diff and e.name in ("write_file", "edit_file"):
+            lines = e.diff.splitlines()
             shown = lines[:60]
             body = "\n".join(shown) + (f"\n… (+{len(lines) - 60} more diff lines)" if len(lines) > 60 else "")
-            res = Group(Text.from_markup(f"  [dim]⎿[/] [green]edited[/] [cyan]{path}[/]"),
+            res = Group(Text.from_markup(f"  [dim]⎿[/] [green]edited[/] [cyan]{e.path}[/]"),
                         Syntax(body or "(no changes)", "diff", theme="monokai", background_color="default"))
         else:
-            note, err = self._result_summary(result)
-            style = "red" if err else "green"
-            res = Text.from_markup(f"  [dim]⎿[/] [{style}]{note}[/]")
+            style = "red" if not e.ok else "green"
+            res = Text.from_markup(f"  [dim]⎿[/] [{style}]{e.summary}[/]")
         if tb:
             tb.set_result(res)
         else:
             self.write_log(res)
 
-    def _account_cost(self, in_t, out_t, chunk_dict):
-        """Add one API call's tokens + USD cost to the turn/session totals. Each call
-        is billed its full prompt+completion; provider-reported cost (nano-gpt /
-        OpenRouter) wins, else we estimate from the price table. Self-hosted = free."""
-        self.session_input += in_t
-        self.session_output += out_t
-        if self.provider in ("local", "remote", "vllm"):
-            return  # self-hosted: no API cost
-        rep = None
-        np = chunk_dict.get("x_nanogpt_pricing") or {}
-        for k in ("cost", "totalCost", "totalCostUsd"):
-            if isinstance(np.get(k), (int, float)):
-                rep = float(np[k]); break
-        u = chunk_dict.get("usage") or {}
-        if rep is None and isinstance(u.get("cost"), (int, float)):
-            rep = float(u["cost"])   # OpenRouter
-        if rep is None:
-            rep = pricing.cost_usd(self.model, in_t, out_t, self.cfg.get("pricing"))
-        c = rep or 0.0
-        self._turn_cost += c
-        self.session_cost += c
-
     def over_budget(self):
-        cap = self.cfg.get("budget_usd") or 0
-        return cap > 0 and self.session_cost >= cap
+        return self.session.over_budget()
 
     def _cost_label(self):
         """Statusbar suffix: session cost (and budget, if set). Empty for self-hosted."""
@@ -3169,33 +2323,32 @@ class AgentTUI(App):
 
     # ---------- usage polling (local) ----------
     def poll_usage(self):
+        """Render one engine telemetry sample into the sidebar."""
+        t = telemetry.sample()
         try:
-            out = subprocess.run(
-                ["nvidia-smi", "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw",
-                 "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=3).stdout.strip()
-            name, util, mused, mtot, temp, power = [x.strip() for x in out.split(",")]
-            util, mused, mtot, temp = float(util), float(mused), float(mtot), float(temp)
-            self.gpu_hist.append(util)
-            vram_pct = 100 * mused / mtot if mtot else 0
-            self._q("#gpu_name", Static).update(Text(name, style="bold #00d7ff"))
-            self._q("#spark_gpu", Sparkline).data = list(self.gpu_hist)
-            self._q("#lbl_gpu", Static).update(bar(util, color=util_color(util)))
-            self._q("#lbl_vram", Static).update(Group(
-                bar(vram_pct, color=util_color(vram_pct)),
-                Text(f"{mused/1024:.1f} / {mtot/1024:.1f} GiB", style="#999999")))
-            self._q("#lbl_extra", Static).update(Text.from_markup(
-                f"[#00d7ff]temp[/] {temp:.0f}°C   [#00d7ff]power[/] {power} W"))
+            if t.gpu_util is not None:
+                self.gpu_hist.append(t.gpu_util)
+                vram_pct = 100 * t.vram_used_mb / t.vram_total_mb if t.vram_total_mb else 0
+                self._q("#gpu_name", Static).update(Text(t.gpu_name or "", style="bold #00d7ff"))
+                self._q("#spark_gpu", Sparkline).data = list(self.gpu_hist)
+                self._q("#lbl_gpu", Static).update(bar(t.gpu_util, color=util_color(t.gpu_util)))
+                self._q("#lbl_vram", Static).update(Group(
+                    bar(vram_pct, color=util_color(vram_pct)),
+                    Text(f"{t.vram_used_mb/1024:.1f} / {t.vram_total_mb/1024:.1f} GiB", style="#999999")))
+                power = f"{t.power_w:.0f}" if t.power_w is not None else "?"
+                self._q("#lbl_extra", Static).update(Text.from_markup(
+                    f"[#00d7ff]temp[/] {t.temp_c:.0f}°C   [#00d7ff]power[/] {power} W"))
         except Exception:
             pass
         try:
-            cpu = psutil.cpu_percent()
-            self.cpu_hist.append(cpu)
-            vm = psutil.virtual_memory()
-            self._q("#spark_cpu", Sparkline).data = list(self.cpu_hist)
-            self._q("#lbl_cpu", Static).update(bar(cpu, color=util_color(cpu)))
-            self._q("#lbl_ram", Static).update(Group(
-                bar(vm.percent, color=util_color(vm.percent)),
-                Text(f"{vm.used/1e9:.1f} / {vm.total/1e9:.1f} GB", style="#999999")))
+            if t.cpu is not None:
+                self.cpu_hist.append(t.cpu)
+                ram_pct = 100 * t.ram_used_gb / t.ram_total_gb if t.ram_total_gb else 0
+                self._q("#spark_cpu", Sparkline).data = list(self.cpu_hist)
+                self._q("#lbl_cpu", Static).update(bar(t.cpu, color=util_color(t.cpu)))
+                self._q("#lbl_ram", Static).update(Group(
+                    bar(ram_pct, color=util_color(ram_pct)),
+                    Text(f"{t.ram_used_gb:.1f} / {t.ram_total_gb:.1f} GB", style="#999999")))
             # live tok/s (estimated by characters ~4/token as the stream arrives)
             tps = (self._stream_chars / 4) / max(0.001, time.time() - self._turn_start) if self.busy else 0
             self._q("#lbl_toks", Static).update(Text.from_markup(

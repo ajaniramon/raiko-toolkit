@@ -20,7 +20,7 @@ Wire shape (web): every event/command serializes as a flat JSON object with a
 dataclass fields.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 # Bump on incompatible changes to any event/command below.
@@ -40,6 +40,13 @@ class SessionStarted:
 
 
 @dataclass
+class TurnStarted:
+    """A turn began (after any auto-compaction). Echoes the user text so UIs
+    mount the user message once compaction has already redrawn the log."""
+    text: str
+
+
+@dataclass
 class TextDelta:
     """A chunk of assistant answer text (streamed)."""
     text: str
@@ -49,6 +56,16 @@ class TextDelta:
 class ThinkingDelta:
     """A chunk of model reasoning (reasoning_content / <think> / Gemini thought)."""
     text: str
+
+
+@dataclass
+class SegmentEnd:
+    """One model response (stream) within the turn finished. `content`/`thinking`
+    are the FINAL texts for the segment — they can differ from the concatenated
+    deltas when a tool call emitted as plain text was recovered and stripped.
+    UIs finalize their live block here (e.g. render content as Markdown)."""
+    content: str
+    thinking: str
 
 
 @dataclass
@@ -205,8 +222,10 @@ class SetSystemPrompt:
 
 EVENT_TYPES = {
     "session_started": SessionStarted,
+    "turn_started": TurnStarted,
     "text_delta": TextDelta,
     "thinking_delta": ThinkingDelta,
+    "segment_end": SegmentEnd,
     "tool_call_started": ToolCallStarted,
     "tool_call_result": ToolCallResult,
     "permission_required": PermissionRequired,
