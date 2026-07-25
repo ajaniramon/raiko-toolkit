@@ -19,6 +19,13 @@ import sys
 import requests
 import websockets
 
+# Windows consoles default to cp1252, which can't print the arrows/icons below.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 
 async def run(base: str, token: str, provider: str, model: str, prompt: str):
     headers = {"Authorization": f"Bearer {token}"} if token else {}

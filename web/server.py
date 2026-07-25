@@ -324,13 +324,13 @@ def main(argv=None):
               f"Set web.token in tui_config.json (or bind 127.0.0.1).", file=sys.stderr)
         sys.exit(2)
     if not token:
-        print("⚠ no web.token configured — fine on 127.0.0.1, required for anything else.")
+        print("[!] no web.token configured — fine on 127.0.0.1, required for anything else.")
     if not web_cfg.get("allow_exec", False):
         print("exec tools (run_python/run_powershell/run_bash) are DISABLED over the web "
               "(web.allow_exec=false).")
     else:
-        print("⚠ web.allow_exec=true — exec tools are callable over this socket.")
-    print(f"raiko web · ws://{host}:{port}/ws/{{session_id}} · protocol v{protocol.PROTOCOL_VERSION}")
+        print("[!] web.allow_exec=true — exec tools are callable over this socket.")
+    print(f"raiko web | ws://{host}:{port}/ws/{{session_id}} | protocol v{protocol.PROTOCOL_VERSION}")
 
     uvicorn.run(build_app(cfg), host=host, port=port, log_level="info")
 
