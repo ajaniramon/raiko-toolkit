@@ -583,10 +583,11 @@ class Session:
                     self.emit(ev.ToolCallStarted(call_id=tc["id"], name=name, args=args))
                     result = self.execute_tool(name, args)
                     note, err = result_summary(result)
+                    ok = not err and not str(result).startswith("DENIED")
                     diff = self._pending_diff if name in ("write_file", "edit_file") else None
                     self._pending_diff = None
                     self.emit(ev.ToolCallResult(
-                        call_id=tc["id"], name=name, ok=not err, summary=note, result=result,
+                        call_id=tc["id"], name=name, ok=ok, summary=note, result=result,
                         diff=diff[1] if diff else None, path=diff[0] if diff else None))
                     self.messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
                 if self._cancel.is_set():

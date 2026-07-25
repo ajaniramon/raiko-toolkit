@@ -40,22 +40,44 @@ benchmark** that decides which local model is actually worth running.
 
 ## 🏗️ Architecture
 
+One agent loop, three skins. The **engine** (`engine/`) owns the turn loop, tool
+dispatch, permissions, sessions, cost/budget and compaction; it is UI- and
+transport-agnostic (events out, commands in — schema in `engine/protocol.py`,
+documented for external clients in `docs/ws-protocol.md`). The TUI, the headless
+CLI and `raiko web` are thin adapters over it.
+
 ```mermaid
 flowchart LR
   you([you]) --> tui["Textual TUI<br>tui.py"]
   cli["headless agent<br>agent.py"]
-  tui -->|OpenAI-compatible| P{provider}
-  cli -->|OpenAI-compatible| P
+  hl["HOMELAB panel<br>(separate repo)"] -->|"WS + API<br>docs/ws-protocol.md"| web["raiko web<br>web/server.py"]
+  tui -->|events/commands| E["engine/<br>turn loop · tools · permissions<br>sessions · cost · compaction"]
+  cli -->|events/commands| E
+  web -->|events/commands| E
+  E -->|OpenAI-compatible| P{provider}
   P --> nano[nano-gpt]
   P --> local["llama.cpp<br>local GPU"]
   P --> remote["llama.cpp<br>remote URL"]
   P --> cloud["OpenAI / Anthropic<br>xAI / OpenRouter"]
-  tui --> T["tools.py<br>read-only + exec tools"]
+  E --> T["tools.py<br>read-only + exec tools"]
   T --> A["Jira / Confluence<br>Atlassian token"]
-  tui -->|MCP client| M["external MCP server(s)<br>tools join the agent"]
+  E -->|MCP client| M["external MCP server(s)<br>tools join the agent"]
   M --> T2["tools on the host<br>file / shell / python"]
   B["benchmark<br>bench/"] --> local
 ```
+
+### 🌐 `raiko web` — headless engine server
+
+`raiko web` starts an ASGI server (default `127.0.0.1:8484`) that exposes the engine
+contract for external frontends — no UI is served. `WS /ws/{session_id}` streams
+events (text/thinking deltas, tool calls with diffs, permission prompts, cost,
+telemetry) and accepts commands; `GET/POST /api/sessions` lists/creates sessions.
+Full schema + security model: [`docs/ws-protocol.md`](docs/ws-protocol.md).
+
+Safe by default: refuses non-loopback binds without `web.token`, CORS is an explicit
+whitelist, `web.allow_exec=false` hard-disables `run_*` over the socket, and every
+exec/write requires an explicit `permission_response` even if allowlisted locally.
+Reference client / smoke: `python web/scripts/ws_smoke.py`.
 
 ---
 
@@ -350,11 +372,15 @@ No secrets, keys, IPs, or machine-specific paths live in the source — only in 
 
 ```
 raiko-toolkit/
-├─ tui.py              # Textual TUI (multi-provider, telemetry, MCP client)
-├─ agent.py           # headless agent loop (same providers via env)
+├─ engine/            # UI-agnostic agent core: turn loop, tools dispatch,
+│                     #   permissions, sessions, cost, compaction (protocol.py = contract)
+├─ tui.py              # Textual TUI — thin adapter over the engine
+├─ agent.py           # headless CLI adapter (same providers via env)
+├─ web/               # `raiko web`: WS + API + telemetry for the HOMELAB panel
 ├─ tools.py           # portable read-only + execution tool layer
 ├─ context.py         # token / context-window tracker
 ├─ mcp_client.py      # MCP client (attach external MCP servers)
+├─ docs/              # ws-protocol.md (shared WS contract), refactor-map.md
 ├─ bench/             # benchmark harness, tiers, graders, charts
 └─ assets/            # README charts
 ```
