@@ -290,12 +290,13 @@ class Session:
         return results
 
     # ---------- permissions ----------
-    def _permit(self, tool, snippet, code, scope, force=False):
+    def _permit(self, tool, snippet, code, scope, force=False, once_only=False):
         """Gate a flagged operation. Honors the global skip, the persistent
         allow/deny lists in config, then asks the frontend hook. 'allow_always'
         persists `tool` to the allowlist. Returns True to proceed.
         `force=True` (always_ask_tools) disables the skip/allowlist shortcuts so
-        the hook is consulted on every call; the deny list still wins."""
+        the hook is consulted on every call; the deny list still wins.
+        `once_only=True` removes the persistent allow option."""
         perms = self.cfg.setdefault("permissions", {})
         if tool in (perms.get("deny") or []):
             return False
@@ -305,10 +306,12 @@ class Session:
             return True
         if self.ask_permission is None:
             return False   # no one to ask → deny (headless safe default)
+        decisions = ("allow_once", "deny") if once_only else ("allow_once", "allow_always", "deny")
         req = ev.PermissionRequired(perm_id=uuid.uuid4().hex[:8], tool=tool,
-                                    action=snippet, detail=code, scope=scope)
+                                    action=snippet, detail=code, scope=scope,
+                                    allowed_decisions=decisions)
         decision = self.ask_permission(req) or "deny"
-        if decision == "allow_always":
+        if decision == "allow_always" and not once_only:
             allow = perms.setdefault("allow", [])
             if tool not in allow:
                 allow.append(tool)
@@ -411,6 +414,43 @@ class Session:
             if not self._permit(name, snip, code, scope="external_write",
                                 force=name in self.always_ask_tools):
                 return f"DENIED by user: refused Confluence write '{snip}'"
+        if name in ("vaultwarden_get_secret", "vaultwarden_copy_secret",
+                    "vaultwarden_create_secret"):
+            item = str(args.get("name") or "?")
+            field = str(args.get("field") or "password")
+            if (name == "vaultwarden_get_secret" and not self.is_local
+                    and not self.skip_permissions):
+                return (
+                    "DENIED by policy: revealing a Vaultwarden value is only allowed "
+                    "with Raiko's local provider in normal permission mode. Use "
+                    "vaultwarden_copy_secret, or explicitly use yolo mode."
+                )
+            if name == "vaultwarden_create_secret":
+                snip = f"create Vaultwarden item '{item}'"
+                source = (
+                    f"environment variable {args.get('source_env')}"
+                    if args.get("source_env") else "generated internally"
+                )
+                detail = (
+                    f"item={item}\nsource={source}\n"
+                    "The plaintext value is not present in this request."
+                )
+                scope = "external_write"
+            else:
+                verb = (
+                    "reveal to local model"
+                    if name == "vaultwarden_get_secret" else "copy to clipboard"
+                )
+                snip = f"{verb}: Vaultwarden '{item}' field '{field}'"
+                detail = (
+                    f"item={item}\nfield={field}\n"
+                    "Plaintext is not shown in this approval."
+                )
+                scope = "secret_read"
+            if (not self.skip_permissions
+                    and not self._permit(name, snip, detail, scope=scope,
+                                         force=True, once_only=True)):
+                return f"DENIED by user: refused sensitive Vaultwarden operation '{snip}'"
         if name in ("write_file", "edit_file") and isinstance(args, dict) and args.get("path"):
             path = args["path"]
             in_ws = self._in_workspace(path)   # writes are confined to the workspace
@@ -576,6 +616,7 @@ class Session:
         self._turn_start = time.time()
         self._cancel.clear()
         reason = "completed"
+        sensitive_values = []
         try:
             max_iters = int(self.cfg.get("max_iterations", MAX_ITERATIONS) or MAX_ITERATIONS)
             for _ in range(max_iters):
@@ -615,12 +656,22 @@ class Session:
                     name, args = tc["function"]["name"], tc["function"]["arguments"]
                     self.emit(ev.ToolCallStarted(call_id=tc["id"], name=name, args=args))
                     result = self.execute_tool(name, args)
-                    note, err = result_summary(result)
+                    if (name == "vaultwarden_get_secret"
+                            and not str(result).startswith(("ERROR", "DENIED"))):
+                        note, err = "sensitive Vaultwarden value retrieved (redacted)", False
+                        event_result = "[REDACTED: sensitive Vaultwarden value]"
+                        try:
+                            sensitive_values.append(str(json.loads(result)["value"]))
+                        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                            sensitive_values.append(str(result))
+                    else:
+                        note, err = result_summary(result)
+                        event_result = result
                     ok = not err and not str(result).startswith("DENIED")
                     diff = self._pending_diff if name in ("write_file", "edit_file") else None
                     self._pending_diff = None
                     self.emit(ev.ToolCallResult(
-                        call_id=tc["id"], name=name, ok=ok, summary=note, result=result,
+                        call_id=tc["id"], name=name, ok=ok, summary=note, result=event_result,
                         diff=diff[1] if diff else None, path=diff[0] if diff else None))
                     self.messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
                 if self._cancel.is_set():
@@ -648,6 +699,17 @@ class Session:
                     f"⚠ budget reached — session {pricing.fmt_usd(self.session_cost)} ≥ "
                     f"{pricing.fmt_usd(self.cfg.get('budget_usd'))}. New turns are blocked "
                     f"until you raise budget_usd or clear the conversation.")))
+            if sensitive_values:
+                # Values are available to the local model only for this turn. Never
+                # write them to Raiko's persisted conversation JSON.
+                for message in self.messages:
+                    content = message.get("content")
+                    if not isinstance(content, str):
+                        continue
+                    for value in sensitive_values:
+                        if value:
+                            content = content.replace(value, "[REDACTED_SECRET]")
+                    message["content"] = content
             self.save()   # persist the conversation after every turn
         return reason
 

@@ -111,7 +111,7 @@ class PermissionRequired:
     tool: str          # tool name (what "always allow" would persist)
     action: str        # short human snippet, e.g. the flagged fragment or write target
     detail: str        # full command/code/target to review
-    scope: str         # "danger" | "workspace" | "external_write" (jira/confluence)
+    scope: str         # "danger" | "workspace" | "external_write" | "secret_read"
     allowed_decisions: tuple[str, ...] = ("allow_once", "allow_always", "deny")
 
 

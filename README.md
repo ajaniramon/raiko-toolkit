@@ -132,7 +132,7 @@ python tui.py --dangerously-skip-permissions
 - **Setup wizard (`/configure`, `--configure`, or first run)**: a guided screen for
   provider keys, Jira/Confluence and MCP, with live **Validate** and a safe **Save** (a
   blank field never clears an existing value). It also has **optional one-click downloads**:
-  the Jira CLI + Vault binaries, and **llama-server auto-matched to your machine** (detects
+  the Jira CLI and **llama-server auto-matched to your machine** (detects
   OS/arch + CUDA and grabs the right llama.cpp build) — or just skip them.
 - **Slash commands**: `/clear` (reset) · `/compact` (summarize older turns) · `/retry`
   (regenerate) · `/edit` (edit & resend) · `/export` (to Markdown) · `/system` (prompt
@@ -165,9 +165,11 @@ A portable, stdlib-only tool layer shared by the TUI and the headless CLI.
 
 **Read-only:** `read_file` · `list_dir` · `get_current_directory` · `grep` · `find_files`
 · `read_lines` · `head` · `tail` · `count_lines` · `stat_path` · `tree` · `find_in_files`
+· `vaultwarden_status`
 
 **Write / execute (gated):** `write_file` · `edit_file` · `run_python` · `run_powershell`
-· `run_bash` · `vault_get_secret`
+· `run_bash` · `vaultwarden_get_secret` · `vaultwarden_copy_secret`
+· `vaultwarden_create_secret`
 
 **Web:** `web_search` — Tavily ranked results + synthesized answer · `web_fetch` — read
 a page's full text (Tavily Extract). Set `tavily_api_key` in `tui_config.json` (or the
@@ -191,6 +193,26 @@ directly (no extra binary), **reusing the same Atlassian token** as Jira; set
 Execution tools run in a subprocess with **timeouts** and a **denylist** that blocks only
 genuinely destructive operations (`rm -rf`, `format`, `shutdown`, registry edits); normal
 subprocess/network use is allowed. Anything flagged triggers a permission prompt in the TUI.
+
+**Vaultwarden:** Raiko uses the official Bitwarden CLI (`bw`) against a self-hosted
+Vaultwarden server. Configure it once with
+`bw config server https://your-private-host`, then log in and start Raiko from a
+shell containing a temporary `BW_SESSION`. Copying is preferred because plaintext
+never reaches the model. In normal permission mode, direct reveal is restricted
+to the local provider and every read/write requires a fresh confirmation. In
+explicit `yolo` mode those checks are bypassed like every other permission, so
+do not combine `yolo`, a cloud model and direct reveal unless you intend to send
+the value to that provider. See the built-in `vaultwarden-vault` skill.
+
+```bash
+brew install bitwarden-cli
+bw config server https://your-private-host
+bw login
+export BW_SESSION="$(bw unlock --raw)"
+raiko
+# After closing Raiko:
+bw lock
+```
 
 > Host-specific capabilities (e.g. operating a remote machine) are **not** shipped here —
 > attach an MCP server running on that host (see the MCP client section) and its file/shell
@@ -245,9 +267,9 @@ python bench/run_hard.py             # hardcore: real dev/sysadmin incidents
 ```
 
 **Mocked Atlassian battery (dependency-free).** The advanced runner includes ~200
-Jira/Confluence/Vault tasks backed by **in-process mocks** that replicate the real tools'
+Jira/Confluence/Vaultwarden tasks backed by **in-process mocks** that replicate the real tools'
 search semantics (JQL/CQL incl. `in (...)`, pagination, author search) and output format — so
-it runs on a plain `git clone`, with no live Jira/Confluence/Vault or any server. It covers
+it runs on a plain `git clone`, with no live Jira/Confluence/Vaultwarden or any server. It covers
 search, read/extraction, writes, cross-tool chains, ~10 secret-gated flows, and **40 negative
 tasks** that measure **hallucination resistance** (invent a Jira key or page that doesn't
 exist → fail).

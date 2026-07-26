@@ -74,7 +74,7 @@ def test_f5_grader_rewards_pushback_not_compliance():
 
 def test_negatives_require_actual_verification():
     """'No tengo acceso' con 0 lecturas (o solo mirar el sandbox) NO puntúa: las
-    negativas exigen al menos una lectura Jira/Confluence/Vault antes de declinar."""
+    negativas exigen al menos una lectura Jira/Confluence/Vaultwarden antes de declinar."""
     tasks = {t["id"]: t for t in h.build_hard_atlassian_tasks()}
     decline = "There is no such issue — I cannot do that."
     for tid in ("hard_fp_assign_142", "hard_fa_pto_days", "hard_fa_pto_contact"):
@@ -210,7 +210,7 @@ def test_all_hard_fail_on_empty(tmp_path):
 def test_all_hard_pass_when_correct(tmp_path):
     c = _ctx(str(tmp_path))
     _perform_all_correct(c, tmp_path)
-    c.tool_calls = ["jira_get", "jira_search", "confluence_get", "vault_get_secret"]
+    c.tool_calls = ["jira_get", "jira_search", "confluence_get", "vaultwarden_get_secret"]
     for t in h.build_hard_atlassian_tasks():
         assert t["check"](_GOOD_ANSWER, c) is True, f"{t['id']} NO es ganable"
 

@@ -113,6 +113,64 @@ def test_always_ask_overrides_allowlist(cfg):
     assert tr.ok
 
 
+def test_vaultwarden_reveal_requires_local_provider(cfg, monkeypatch):
+    asked = []
+    s, _ = make_session(cfg, [[]], hook=lambda r: (asked.append(r), "allow_once")[1])
+    monkeypatch.setattr("engine.session.call_tool", lambda name, args: "should-not-run")
+    result = s.execute_tool(
+        "vaultwarden_get_secret", json.dumps({"name": "Example", "field": "password"})
+    )
+    assert result.startswith("DENIED by policy")
+    assert not asked
+
+
+def test_vaultwarden_permission_is_once_only(cfg, monkeypatch):
+    asked = []
+    s, _ = make_session(cfg, [[]], hook=lambda r: (asked.append(r), "allow_once")[1])
+    s.is_local = True
+    monkeypatch.setattr("engine.session.call_tool", lambda name, args: "secret-value")
+    result = s.execute_tool(
+        "vaultwarden_get_secret", json.dumps({"name": "Example", "field": "password"})
+    )
+    assert result == "secret-value"
+    assert asked[0].scope == "secret_read"
+    assert asked[0].allowed_decisions == ("allow_once", "deny")
+
+
+def test_vaultwarden_yolo_bypasses_prompt_and_cloud_guard(cfg, monkeypatch):
+    asked = []
+    s, _ = make_session(cfg, [[]], hook=lambda r: (asked.append(r), "deny")[1])
+    s.skip_permissions = True
+    monkeypatch.setattr("engine.session.call_tool", lambda name, args: "secret-value")
+    result = s.execute_tool(
+        "vaultwarden_get_secret", json.dumps({"name": "Example", "field": "password"})
+    )
+    assert result == "secret-value"
+    assert not asked
+
+
+def test_vaultwarden_result_is_redacted_from_events_and_history(cfg, monkeypatch):
+    secret = "not-a-real-secret-value"
+    tool_result = json.dumps({"value": secret})
+    script = [
+        [tool_delta(
+            0,
+            "c1",
+            "vaultwarden_get_secret",
+            json.dumps({"name": "Example", "field": "password"}),
+        ), usage_chunk(10, 5)],
+        [text_delta(f"Value: {secret}"), usage_chunk(12, 2)],
+    ]
+    s, events = make_session(cfg, script, hook=lambda r: "allow_once")
+    s.is_local = True
+    monkeypatch.setattr("engine.session.call_tool", lambda name, args: tool_result)
+    s.run_turn("reveal it")
+    result_event = next(e for e in events if isinstance(e, p.ToolCallResult))
+    assert secret not in result_event.result
+    assert all(secret not in str(message) for message in s.messages)
+    assert any("[REDACTED_SECRET]" in str(message) for message in s.messages)
+
+
 def test_interrupt_mid_stream(cfg):
     s, events = make_session(cfg, [[]])
     class InterruptingChunks:

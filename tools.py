@@ -1,6 +1,9 @@
+import base64
 import json
 import os
 import re
+import secrets
+import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -326,23 +329,281 @@ def run_bash(command: str, allow_unsafe: bool = False) -> str:
     return out or "(no output)"
 
 
-def vault_get_secret(path: str) -> str:
-    """Read a secret from HashiCorp Vault over its HTTP API.
-    Uses VAULT_ADDR / VAULT_TOKEN from the environment. For KV v2 the read path
-    is like 'secret/data/<name>'. Returns the secret's key/value data as JSON."""
-    import requests
-    addr = os.environ.get("VAULT_ADDR", "http://127.0.0.1:8200")
-    token = os.environ.get("VAULT_TOKEN", "")
+def _bw_binary() -> str | None:
+    configured = os.environ.get("BW_CLI", "").strip()
+    if configured:
+        return configured if os.path.isfile(configured) and os.access(configured, os.X_OK) else None
+    return shutil.which("bw")
+
+
+def _bw_run(args: list[str], timeout: int = 30,
+            input_text: str | None = None) -> tuple[int, str, str]:
+    """Run Bitwarden CLI non-interactively, keeping BW_SESSION out of argv."""
+    binary = _bw_binary()
+    if not binary:
+        return 127, "", "Bitwarden CLI 'bw' is not installed or BW_CLI is invalid"
     try:
-        r = requests.get(f"{addr}/v1/{path.lstrip('/')}",
-                         headers={"X-Vault-Token": token}, timeout=10)
-    except Exception as e:
-        return f"ERROR: cannot reach Vault: {e}"
-    if r.status_code != 200:
-        return f"ERROR: Vault returned {r.status_code}: {r.text[:200]}"
-    body = r.json().get("data", {})
-    secret = body.get("data", body)  # KV v2 nests under data.data
-    return json.dumps(secret)
+        proc = subprocess.run(
+            [binary, *args, "--nointeraction"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=os.environ.copy(),
+            input=input_text,
+        )
+    except subprocess.TimeoutExpired:
+        return 124, "", "Bitwarden CLI timed out"
+    except Exception as exc:
+        return 1, "", f"{type(exc).__name__}: {exc}"
+    return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
+
+
+def _bw_json(args: list[str], timeout: int = 30, input_text: str | None = None):
+    code, stdout, stderr = _bw_run(args, timeout=timeout, input_text=input_text)
+    if code != 0:
+        detail = (stderr or stdout or f"exit {code}").splitlines()[0][:240]
+        return None, f"ERROR: Bitwarden CLI: {detail}"
+    try:
+        return json.loads(stdout), None
+    except json.JSONDecodeError:
+        return None, "ERROR: Bitwarden CLI returned invalid JSON"
+
+
+def _bw_unlocked_status():
+    status, error = _bw_json(["status"])
+    if error:
+        return None, error
+    server = str(status.get("serverUrl") or "")
+    state = str(status.get("status") or "unknown")
+    if not server.startswith("https://"):
+        return None, "ERROR: Bitwarden CLI server must use HTTPS"
+    if state == "unauthenticated":
+        return None, "ERROR: Bitwarden CLI is not logged in; run 'bw login' in your terminal"
+    if state != "unlocked":
+        return None, (
+            "ERROR: Bitwarden vault is locked; export BW_SESSION=\"$(bw unlock --raw)\" "
+            "before starting Raiko"
+        )
+    return status, None
+
+
+def _bw_sync():
+    code, stdout, stderr = _bw_run(["sync"], timeout=45)
+    if code == 0:
+        return None
+    detail = (stderr or stdout or f"exit {code}").splitlines()[0][:240]
+    return f"ERROR: Bitwarden sync failed: {detail}"
+
+
+def _bw_search_exact(name: str):
+    if not isinstance(name, str) or not name.strip():
+        return None, "ERROR: item name cannot be empty"
+    _, error = _bw_unlocked_status()
+    if error:
+        return None, error
+    error = _bw_sync()
+    if error:
+        return None, error
+    items, error = _bw_json(["list", "items", "--search", name.strip()], timeout=45)
+    if error:
+        return None, error
+    if not isinstance(items, list):
+        return None, "ERROR: Bitwarden CLI returned an invalid item list"
+    matches = [
+        item for item in items
+        if str(item.get("name") or "").casefold() == name.strip().casefold()
+    ]
+    return matches, None
+
+
+def _bw_exact_item(name: str):
+    matches, error = _bw_search_exact(name)
+    if error:
+        return None, error
+    if not matches:
+        return None, f"ERROR: no Vaultwarden item named exactly '{name.strip()}'"
+    if len(matches) > 1:
+        return None, (
+            f"ERROR: {len(matches)} Vaultwarden items are named exactly '{name.strip()}'; "
+            "rename duplicates before using Raiko"
+        )
+    return matches[0], None
+
+
+def _vaultwarden_item_value(name: str, field: str, field_name: str = ""):
+    item, error = _bw_exact_item(name)
+    if error:
+        return None, error
+    field = (field or "password").strip().lower()
+    if field in ("password", "totp", "notes"):
+        code, stdout, stderr = _bw_run(["get", field, str(item.get("id") or "")])
+        if code != 0:
+            detail = (stderr or stdout or f"exit {code}").splitlines()[0][:240]
+            return None, f"ERROR: Bitwarden CLI could not get {field}: {detail}"
+        value = stdout
+    elif field == "custom":
+        target = field_name.strip().casefold()
+        if not target:
+            return None, "ERROR: field_name is required when field='custom'"
+        matches = [
+            entry.get("value") for entry in (item.get("fields") or [])
+            if str(entry.get("name") or "").casefold() == target
+        ]
+        if len(matches) != 1:
+            return None, (
+                f"ERROR: expected exactly one custom field named '{field_name.strip()}', "
+                f"found {len(matches)}"
+            )
+        value = matches[0]
+    else:
+        return None, "ERROR: field must be password, totp, notes, or custom"
+    if value is None or str(value) == "":
+        return None, f"ERROR: requested field '{field}' is empty"
+    return str(value), None
+
+
+def _copy_secret_to_clipboard(value: str, ttl_seconds: int = 45):
+    pbcopy = shutil.which("pbcopy")
+    pbpaste = shutil.which("pbpaste")
+    if not pbcopy or not pbpaste:
+        return "ERROR: secure clipboard mode requires macOS pbcopy and pbpaste"
+    try:
+        subprocess.run([pbcopy], input=value, text=True, check=True, timeout=5)
+        cleanup_code = (
+            "import subprocess,sys,time\n"
+            "secret=sys.stdin.read()\n"
+            "time.sleep(int(sys.argv[1]))\n"
+            "p=subprocess.run([sys.argv[2]],capture_output=True,text=True,timeout=5)\n"
+            "if p.returncode == 0 and p.stdout == secret:\n"
+            " subprocess.run([sys.argv[3]],input='',text=True,timeout=5)\n"
+        )
+        cleaner = subprocess.Popen(
+            [sys.executable, "-c", cleanup_code, str(ttl_seconds), pbpaste, pbcopy],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,
+        )
+        if cleaner.stdin is None:
+            return "ERROR: could not start clipboard cleanup"
+        cleaner.stdin.write(value)
+        cleaner.stdin.close()
+    except Exception as exc:
+        return f"ERROR: could not use macOS clipboard: {type(exc).__name__}: {exc}"
+    return None
+
+
+def vaultwarden_status() -> str:
+    """Return non-sensitive Bitwarden CLI/Vaultwarden connection state."""
+    if not _bw_binary():
+        return "ERROR: Bitwarden CLI 'bw' is not installed or BW_CLI is invalid"
+    version_code, version, version_error = _bw_run(["--version"])
+    status, error = _bw_json(["status"])
+    if error:
+        return error
+    return json.dumps({
+        "cliVersion": version if version_code == 0 else (version_error or "unknown"),
+        "serverUrl": status.get("serverUrl"),
+        "status": status.get("status"),
+        "sessionAvailable": bool(os.environ.get("BW_SESSION")),
+    }, ensure_ascii=False)
+
+
+def vaultwarden_get_secret(name: str, field: str = "password", field_name: str = "") -> str:
+    """Reveal one field; normal mode restricts this to local models."""
+    value, error = _vaultwarden_item_value(name, field, field_name)
+    return error or json.dumps({"value": value}, ensure_ascii=False)
+
+
+def vaultwarden_copy_secret(name: str, field: str = "password",
+                            field_name: str = "", ttl_seconds: int = 45) -> str:
+    """Copy one Vaultwarden field to the macOS clipboard without returning it."""
+    try:
+        ttl = max(15, min(int(ttl_seconds), 120))
+    except (TypeError, ValueError):
+        return "ERROR: ttl_seconds must be an integer between 15 and 120"
+    value, error = _vaultwarden_item_value(name, field, field_name)
+    if error:
+        return error
+    error = _copy_secret_to_clipboard(value, ttl)
+    if error:
+        return error
+    return (
+        f"OK: '{field}' from Vaultwarden item '{name.strip()}' was copied to the "
+        f"clipboard and will be cleared after {ttl} seconds if unchanged"
+    )
+
+
+def vaultwarden_create_secret(name: str, username: str = "", uri: str = "",
+                              notes: str = "", length: int = 32,
+                              source_env: str = "", copy_to_clipboard: bool = False) -> str:
+    """Create a login item without accepting or returning plaintext arguments."""
+    clean_name = (name or "").strip()
+    if not clean_name or len(clean_name) > 200:
+        return "ERROR: name must contain between 1 and 200 characters"
+    try:
+        secret_length = int(length)
+    except (TypeError, ValueError):
+        return "ERROR: length must be an integer"
+    if not 20 <= secret_length <= 128:
+        return "ERROR: length must be between 20 and 128"
+    _, error = _bw_unlocked_status()
+    if error:
+        return error
+    matches, error = _bw_search_exact(clean_name)
+    if error:
+        return error
+    if matches:
+        return f"ERROR: a Vaultwarden item named exactly '{clean_name}' already exists"
+
+    if source_env:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", source_env):
+            return "ERROR: source_env must be a valid environment variable name"
+        value = os.environ.get(source_env)
+        if not value:
+            return f"ERROR: environment variable '{source_env}' is missing or empty"
+        source = f"environment variable {source_env}"
+    else:
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-._~"
+        value = "".join(secrets.choice(alphabet) for _ in range(secret_length))
+        source = f"cryptographically generated {secret_length}-character value"
+
+    item = {
+        "type": 1,
+        "name": clean_name,
+        "notes": notes or None,
+        "favorite": False,
+        "login": {
+            "username": username or None,
+            "password": value,
+            "totp": None,
+            "uris": [{"match": None, "uri": uri}] if uri else [],
+        },
+    }
+    encoded = base64.b64encode(
+        json.dumps(item, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii")
+    created, error = _bw_json(["create", "item"], timeout=45, input_text=encoded)
+    if error:
+        return error
+    if not isinstance(created, dict) or not created.get("id"):
+        return "ERROR: Vaultwarden did not return a valid created item"
+    if copy_to_clipboard:
+        error = _copy_secret_to_clipboard(value, 45)
+        if error:
+            return (
+                f"ERROR: item '{clean_name}' was created, but its value could not be copied: "
+                f"{error.removeprefix('ERROR: ')}"
+            )
+    return json.dumps({
+        "status": "created",
+        "id": created["id"],
+        "name": clean_name,
+        "secretSource": source,
+        "secretReturned": False,
+        "copiedToClipboard": bool(copy_to_clipboard),
+    }, ensure_ascii=False)
 
 
 def web_search(query: str, max_results: int = 5) -> str:
@@ -1062,12 +1323,64 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "vault_get_secret",
-            "description": "Read a secret from HashiCorp Vault. For KV v2 the path looks like 'secret/data/<name>'. Returns the secret's fields as a JSON object (e.g. host, port, username, password).",
+            "name": "vaultwarden_status",
+            "description": "Check the non-sensitive Bitwarden CLI connection state for the self-hosted Vaultwarden server. Does not read vault contents.",
             "parameters": {
                 "type": "object",
-                "properties": {"path": {"type": "string", "description": "Vault read path, e.g. 'secret/data/mac'."}},
-                "required": ["path"],
+                "properties": {},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "vaultwarden_get_secret",
+            "description": "Reveal one field from an exactly named Vaultwarden item. In normal permission mode this requires one-time approval and a local model; explicit yolo mode bypasses those checks. Prefer vaultwarden_copy_secret.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Exact Vaultwarden item name."},
+                    "field": {"type": "string", "enum": ["password", "totp", "notes", "custom"], "description": "Field to reveal; default password."},
+                    "field_name": {"type": "string", "description": "Exact custom-field name; required when field is custom."},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "vaultwarden_copy_secret",
+            "description": "Copy one field from an exactly named Vaultwarden item to the macOS clipboard without exposing it to the model. Clears it after a short TTL if unchanged. Normal permission mode asks once per call.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Exact Vaultwarden item name."},
+                    "field": {"type": "string", "enum": ["password", "totp", "notes", "custom"], "description": "Field to copy; default password."},
+                    "field_name": {"type": "string", "description": "Exact custom-field name; required when field is custom."},
+                    "ttl_seconds": {"type": "integer", "minimum": 15, "maximum": 120, "description": "Clipboard lifetime; default 45 seconds."},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "vaultwarden_create_secret",
+            "description": "Create a Vaultwarden login item with a cryptographically generated value, or a value read from a named environment variable. Never accepts or returns plaintext. Normal permission mode asks once per call.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "New exact item name."},
+                    "username": {"type": "string", "description": "Optional login username."},
+                    "uri": {"type": "string", "description": "Optional login URI."},
+                    "notes": {"type": "string", "description": "Optional non-sensitive notes."},
+                    "length": {"type": "integer", "minimum": 20, "maximum": 128, "description": "Generated value length; default 32."},
+                    "source_env": {"type": "string", "description": "Optional environment variable containing an existing value. Pass only its name, never the value."},
+                    "copy_to_clipboard": {"type": "boolean", "description": "Copy the created value for 45 seconds without returning it; default false."},
+                },
+                "required": ["name"],
             },
         },
     },
@@ -1263,7 +1576,10 @@ DISPATCH = {
     "run_python": run_python,
     "run_powershell": run_powershell,
     "run_bash": run_bash,
-    "vault_get_secret": vault_get_secret,
+    "vaultwarden_status": vaultwarden_status,
+    "vaultwarden_get_secret": vaultwarden_get_secret,
+    "vaultwarden_copy_secret": vaultwarden_copy_secret,
+    "vaultwarden_create_secret": vaultwarden_create_secret,
     "web_search": web_search,
     "web_fetch": web_fetch,
     "jira_search": jira_search,
