@@ -63,6 +63,18 @@ _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 _PROVIDER_RE = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 
 
+def _env_flag(name: str, fallback: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return fallback
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return fallback
+
+
 def event_to_json(event) -> str:
     payload = dataclasses.asdict(event)
     payload["type"] = protocol.EVENT_NAMES[type(event)]
@@ -804,6 +816,10 @@ def main(argv=None):
 
     cfg = load_config()
     web_cfg = cfg.get("web", {}) or {}
+    web_cfg["allow_exec"] = _env_flag(
+        "RAIKO_WEB_ALLOW_EXEC",
+        bool(web_cfg.get("allow_exec", False)),
+    )
     host = args.host or web_cfg.get("host") or "127.0.0.1"
     port = args.port or int(web_cfg.get("port") or 8484)
     token = (

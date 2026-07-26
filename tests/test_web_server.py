@@ -129,6 +129,15 @@ def test_exec_blocked_by_default(client):
         assert "disabled on this interface" in results[0]["result"]
 
 
+def test_exec_policy_can_be_enabled_from_environment(monkeypatch):
+    monkeypatch.setenv("RAIKO_WEB_ALLOW_EXEC", "1")
+    assert srv._env_flag("RAIKO_WEB_ALLOW_EXEC", False) is True
+    monkeypatch.setenv("RAIKO_WEB_ALLOW_EXEC", "off")
+    assert srv._env_flag("RAIKO_WEB_ALLOW_EXEC", True) is False
+    monkeypatch.setenv("RAIKO_WEB_ALLOW_EXEC", "invalid")
+    assert srv._env_flag("RAIKO_WEB_ALLOW_EXEC", False) is False
+
+
 def test_exec_confirms_every_call_when_enabled(cfg):
     cfg["web"]["token"] = "secreto"
     cfg["web"]["allow_exec"] = True
