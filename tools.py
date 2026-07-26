@@ -1,28 +1,63 @@
+import contextvars
 import json
 import os
 import re
 import subprocess
 import sys
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
+# ---------------------------------------------------------------------------
+# Working directory of the session that owns the current tool call.
+#
+# It cannot be the PROCESS cwd: `raiko web` serves several sessions from one
+# process, each possibly rooted in a different project, so an os.chdir() would
+# be a global that concurrent turns overwrite for each other. Instead the base
+# dir is a ContextVar that call_tool() sets around each dispatch, and every
+# path argument is resolved against it (see _resolve). Absolute paths are
+# always honored as given.
+# ---------------------------------------------------------------------------
+_BASE_DIR = contextvars.ContextVar("raiko_base_dir", default="")
+
+
+def base_dir() -> str:
+    """The cwd tools resolve against: the session's, or the process's."""
+    return _BASE_DIR.get() or os.getcwd()
+
+
+@contextmanager
+def use_base_dir(path):
+    """Scope every tool path resolution to `path` (falsy = process cwd)."""
+    token = _BASE_DIR.set(str(path) if path else "")
+    try:
+        yield
+    finally:
+        _BASE_DIR.reset(token)
+
+
+def _resolve(path) -> Path:
+    """Resolve a tool path argument against the session's base dir."""
+    p = Path(os.path.expanduser(str(path)))
+    return p if p.is_absolute() else Path(base_dir()) / p
+
 
 def read_file(path: str) -> str:
-    p = Path(path)
+    p = _resolve(path)
     if not p.is_file():
         return f"ERROR: not a file: {path}"
     return p.read_text(encoding="utf-8", errors="replace")
 
 
 def write_file(path: str, content: str) -> str:
-    p = Path(path)
+    p = _resolve(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
     return f"OK: wrote {len(content)} chars to {path}"
 
 
 def list_dir(path: str = ".") -> str:
-    p = Path(path)
+    p = _resolve(path)
     if not p.is_dir():
         return f"ERROR: not a directory: {path}"
     entries = []
@@ -40,11 +75,11 @@ def list_dir(path: str = ".") -> str:
 
 
 def get_current_directory() -> str:
-    return os.getcwd()
+    return base_dir()
 
 
 def grep(pattern: str, path: str = ".", glob: str = "**/*") -> str:
-    p = Path(path)
+    p = _resolve(path)
     if not p.exists():
         return f"ERROR: path does not exist: {path}"
     try:
@@ -97,7 +132,7 @@ def _format_size(size_bytes: int) -> str:
 
 def find_files(name_glob: str, path: str = ".") -> str:
     """Find files matching a glob pattern (e.g. **/*.py) under a directory."""
-    p = Path(path)
+    p = _resolve(path)
     if not p.is_dir():
         return f"ERROR: not a directory: {path}"
     matches = [str(f) for f in sorted(p.glob(name_glob)) if f.is_file()]
@@ -110,7 +145,7 @@ def find_files(name_glob: str, path: str = ".") -> str:
 
 def read_lines(path: str, start: int, end: int) -> str:
     """Read lines [start, end] (1-indexed, inclusive) of a text file, numbered."""
-    p = Path(path)
+    p = _resolve(path)
     if not p.is_file():
         return f"ERROR: not a file: {path}"
     lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -123,7 +158,7 @@ def read_lines(path: str, start: int, end: int) -> str:
 
 def head(path: str, n: int = 20) -> str:
     """Return the first N lines of a text file (numbered)."""
-    p = Path(path)
+    p = _resolve(path)
     if not p.is_file():
         return f"ERROR: not a file: {path}"
     lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -132,7 +167,7 @@ def head(path: str, n: int = 20) -> str:
 
 def tail(path: str, n: int = 20) -> str:
     """Return the last N lines of a text file (numbered)."""
-    p = Path(path)
+    p = _resolve(path)
     if not p.is_file():
         return f"ERROR: not a file: {path}"
     lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -142,7 +177,7 @@ def tail(path: str, n: int = 20) -> str:
 
 def count_lines(path: str) -> str:
     """Count lines, words and bytes of a text file (wc-style)."""
-    p = Path(path)
+    p = _resolve(path)
     if not p.is_file():
         return f"ERROR: not a file: {path}"
     data = p.read_text(encoding="utf-8", errors="replace")
@@ -151,7 +186,7 @@ def count_lines(path: str) -> str:
 
 def stat_path(path: str) -> str:
     """Return type, size, modified time and (for dirs) child count of a path."""
-    p = Path(path)
+    p = _resolve(path)
     if not p.exists():
         return f"ERROR: path does not exist: {path}"
     st = p.stat()
@@ -165,7 +200,7 @@ def stat_path(path: str) -> str:
 
 def tree(path: str = ".", depth: int = 2) -> str:
     """Recursive indented listing of a directory up to `depth` levels deep."""
-    p = Path(path)
+    p = _resolve(path)
     if not p.is_dir():
         return f"ERROR: not a directory: {path}"
     lines = []
@@ -189,7 +224,7 @@ def tree(path: str = ".", depth: int = 2) -> str:
 
 def find_in_files(pattern: str, path: str = ".", glob: str = "**/*") -> str:
     """Regex search; return only the files that match, with their match counts."""
-    p = Path(path)
+    p = _resolve(path)
     if not p.exists():
         return f"ERROR: path does not exist: {path}"
     try:
@@ -245,7 +280,7 @@ def danger_match(text: str):
 
 def edit_file(path: str, old_string: str, new_string: str) -> str:
     """Replace an exact, unique snippet inside a file (targeted edit)."""
-    p = Path(path)
+    p = _resolve(path)
     if not p.is_file():
         return f"ERROR: not a file: {path}"
     text = p.read_text(encoding="utf-8", errors="replace")
@@ -267,7 +302,7 @@ def run_python(code: str, allow_unsafe: bool = False) -> str:
         if blocked:
             return blocked
     try:
-        proc = subprocess.run([sys.executable, "-c", code],
+        proc = subprocess.run([sys.executable, "-c", code], cwd=base_dir(),
                               capture_output=True, text=True, timeout=20)
     except subprocess.TimeoutExpired:
         return "ERROR: python execution timed out (20s)"
@@ -290,7 +325,7 @@ def run_powershell(command: str, allow_unsafe: bool = False) -> str:
     try:
         proc = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
-            capture_output=True, text=True, timeout=25)
+            cwd=base_dir(), capture_output=True, text=True, timeout=25)
     except subprocess.TimeoutExpired:
         return "ERROR: powershell execution timed out (25s)"
     except Exception as e:
@@ -314,7 +349,7 @@ def run_bash(command: str, allow_unsafe: bool = False) -> str:
     if not sh:
         return "ERROR: no bash/sh shell found (this tool is for Linux/macOS)."
     try:
-        proc = subprocess.run([sh, "-c", command],
+        proc = subprocess.run([sh, "-c", command], cwd=base_dir(),
                               capture_output=True, text=True, timeout=25)
     except subprocess.TimeoutExpired:
         return "ERROR: bash execution timed out (25s)"
@@ -1278,7 +1313,12 @@ DISPATCH = {
 }
 
 
-def call_tool(name: str, arguments: str | dict, dispatch: dict | None = None) -> str:
+def call_tool(name: str, arguments: str | dict, dispatch: dict | None = None,
+              base_dir: str | None = None) -> str:
+    """Dispatch one tool call. `base_dir` scopes every relative path (and the
+    exec tools' cwd) to the calling session's working directory; it is set for
+    the duration of THIS call only, in the calling thread, so concurrent
+    sessions never see each other's directory."""
     table = dispatch if dispatch is not None else DISPATCH
     if name not in table:
         return f"ERROR: unknown tool {name}"
@@ -1292,7 +1332,8 @@ def call_tool(name: str, arguments: str | dict, dispatch: dict | None = None) ->
     if not isinstance(args, dict):
         return f"ERROR: arguments for '{name}' must be a JSON object."
     try:
-        result = table[name](**args)
+        with use_base_dir(base_dir):
+            result = table[name](**args)
     except Exception as e:
         return f"ERROR: {type(e).__name__}: {e}"
     return result if isinstance(result, str) else json.dumps(result)

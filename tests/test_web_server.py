@@ -504,3 +504,168 @@ def test_mcp_tools_are_loaded_when_configured(cfg, monkeypatch):
     assert response.status_code == 201
     assert response.json()["mcp_tools"] == 1
     assert response.json()["mcp_servers"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Per-project working directories (web.project_roots)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def rooted(cfg, tmp_path, monkeypatch):
+    """A server whose sessions may only be rooted under <tmp>/roots, plus an
+    isolated session store."""
+    monkeypatch.setattr(store, "SESSIONS_DIR", str(tmp_path / "sessions"))
+    root = tmp_path / "roots"
+    (root / "alpha").mkdir(parents=True)
+    (root / "beta").mkdir()
+    (tmp_path / "outside").mkdir()
+    cfg["web"]["token"] = "secreto"
+    cfg["web"]["project_roots"] = [str(root)]
+    cfg["permissions"]["workspace"] = ""   # no global confinement: the project is it
+    return TestClient(srv.build_app(cfg)), root, tmp_path
+
+
+def test_projects_lists_roots_and_children(rooted):
+    client, root, _ = rooted
+    assert client.get("/api/projects").status_code == 401
+    body = client.get("/api/projects", headers=AUTH).json()
+    assert body["roots"] == [os.path.realpath(str(root))]
+    paths = [p["path"] for p in body["projects"]]
+    assert os.path.realpath(str(root / "alpha")) in paths
+    assert os.path.realpath(str(root / "beta")) in paths
+    assert all(p["path"].startswith(os.path.realpath(str(root))) for p in body["projects"])
+
+
+@pytest.mark.parametrize("bad", ["traversal", "empty", "unknown-relative"])
+def test_create_session_rejects_a_cwd_outside_the_roots(rooted, bad):
+    client, root, _ = rooted
+    candidate = {"traversal": str(root / ".." / "outside"),
+                 "empty": "",
+                 "unknown-relative": "relative/but/unknown"}[bad]
+    response = client.post("/api/sessions", headers=AUTH,
+                           json={"provider": "openai", "model": "gpt-test",
+                                 "cwd": candidate})
+    assert response.status_code == 400, response.text
+    assert "cwd" in response.json()["error"]
+
+
+def test_create_session_rejects_an_absolute_cwd_outside_the_roots(rooted):
+    client, _, tmp_path = rooted
+    response = client.post("/api/sessions", headers=AUTH,
+                           json={"provider": "openai", "model": "gpt-test",
+                                 "cwd": str(tmp_path / "outside")})
+    assert response.status_code == 400
+    assert response.json()["error"] == "cwd is outside the configured project roots"
+
+
+def test_create_session_with_no_roots_configured_accepts_no_cwd(client, tmp_path):
+    response = client.post("/api/sessions", headers=AUTH,
+                           json={"provider": "openai", "model": "gpt-test",
+                                 "cwd": str(tmp_path)})
+    assert response.status_code == 400
+    assert "project_roots" in response.json()["error"]
+
+
+def test_create_session_roots_the_agent_in_the_requested_project(rooted):
+    client, root, _ = rooted
+    response = client.post("/api/sessions", headers=AUTH,
+                           json={"provider": "openai", "model": "gpt-test",
+                                 "cwd": str(root / "alpha")})
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["cwd"] == os.path.realpath(str(root / "alpha"))
+    live = srv.STATE.sessions[body["session_id"]].session
+    assert live.cwd == os.path.realpath(str(root / "alpha"))
+    assert live.workspace() == live.cwd      # writes confined to the project
+
+
+def test_two_web_sessions_keep_separate_working_directories(rooted):
+    """One process, two projects: a relative write from each must land in its
+    own folder (no shared chdir)."""
+    client, root, _ = rooted
+    ids = {}
+    for name in ("alpha", "beta"):
+        # yolo: these turns run without a socket attached, so nobody could
+        # answer the write confirmation that 'ask' mode would raise.
+        r = client.post("/api/sessions", headers=AUTH,
+                        json={"provider": "openai", "model": "gpt-test",
+                              "permission_mode": "yolo",
+                              "cwd": str(root / name)})
+        assert r.status_code == 201, r.text
+        ids[name] = r.json()["session_id"]
+
+    for name, sid in ids.items():
+        live = srv.STATE.sessions[sid].session
+        live.tracker = ContextTracker("gpt-test")
+        live.client = fake_client([
+            [tool_delta(0, "c1", "write_file",
+                        json.dumps({"path": "out.txt", "content": "soy " + name})),
+             usage_chunk(10, 5)],
+            [text_delta("ok"), usage_chunk(12, 2)],
+        ])
+        live.run_turn("escribe out.txt")
+
+    assert (root / "alpha" / "out.txt").read_text(encoding="utf-8") == "soy alpha"
+    assert (root / "beta" / "out.txt").read_text(encoding="utf-8") == "soy beta"
+
+
+def test_sessions_expose_and_filter_by_cwd(rooted):
+    client, root, _ = rooted
+    store.write_session({"id": "alpha-1", "provider": "openai", "model": "gpt-test",
+                         "updated": "2026-01-01T10:00:00", "title": "en alpha",
+                         "cwd": str(root / "alpha"), "messages": []})
+    store.write_session({"id": "beta-1", "provider": "openai", "model": "gpt-test",
+                         "updated": "2026-01-02T10:00:00", "title": "en beta",
+                         "cwd": str(root / "beta"), "messages": []})
+    store.write_session({"id": "legacy-1", "provider": "openai", "model": "gpt-test",
+                         "updated": "2026-01-03T10:00:00", "title": "sin carpeta",
+                         "messages": []})
+    live_id = client.post("/api/sessions", headers=AUTH,
+                          json={"provider": "openai", "model": "gpt-test",
+                                "cwd": str(root / "alpha")}).json()["session_id"]
+
+    everything = client.get("/api/sessions", headers=AUTH).json()
+    assert {s["id"] for s in everything["saved"]} == {"alpha-1", "beta-1", "legacy-1"}
+    assert next(s for s in everything["saved"] if s["id"] == "legacy-1")["cwd"] == ""
+
+    scoped = client.get("/api/sessions", headers=AUTH,
+                        params={"cwd": str(root / "alpha")}).json()
+    assert [s["id"] for s in scoped["saved"]] == ["alpha-1"]
+    assert [s["session_id"] for s in scoped["live"]] == [live_id]
+    assert scoped["live"][0]["cwd"] == os.path.realpath(str(root / "alpha"))
+
+    other = client.get("/api/sessions", headers=AUTH,
+                       params={"cwd": str(root / "beta")}).json()
+    assert [s["id"] for s in other["saved"]] == ["beta-1"]
+    assert other["live"] == []
+
+
+def test_resuming_a_saved_session_recovers_its_project(rooted):
+    client, root, _ = rooted
+    store.write_session({"id": "alpha-1", "provider": "openai", "model": "gpt-test",
+                         "updated": "2026-01-01T10:00:00", "title": "en alpha",
+                         "cwd": str(root / "alpha"),
+                         "messages": [{"role": "user", "content": "hola"}]})
+    body = client.post("/api/sessions", headers=AUTH,
+                       json={"resume": "alpha-1"}).json()
+    assert body["cwd"] == os.path.realpath(str(root / "alpha"))
+    assert body["cwd_note"] is None
+
+
+def test_resuming_a_session_saved_outside_the_roots_falls_back(rooted):
+    """A session saved from the TUI anywhere on the machine must not hand the
+    panel a working directory the roots would have rejected."""
+    client, _, tmp_path = rooted
+    store.write_session({"id": "wild-1", "provider": "openai", "model": "gpt-test",
+                         "updated": "2026-01-01T10:00:00", "title": "fuera",
+                         "cwd": str(tmp_path / "outside"),
+                         "messages": [{"role": "user", "content": "hola"}]})
+    body = client.post("/api/sessions", headers=AUTH, json={"resume": "wild-1"}).json()
+    assert body["cwd"] == os.getcwd()
+    assert "ignored" in body["cwd_note"]
+
+
+def test_capabilities_reports_the_project_roots(rooted):
+    client, root, _ = rooted
+    body = client.get("/api/capabilities", headers=AUTH).json()
+    assert body["project_roots"] == [os.path.realpath(str(root))]

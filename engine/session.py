@@ -81,8 +81,13 @@ class Session:
     """
 
     def __init__(self, cfg, emit=None, ask_permission=None,
-                 skip_permissions=False, persist=True):
+                 skip_permissions=False, persist=True, cwd=None):
         self.cfg = cfg
+        # Working directory of THIS conversation: relative tool paths resolve
+        # against it and the exec tools run in it. Defaults to the process cwd
+        # (so `cd project && raiko` just works); `raiko web` sets it per session
+        # instead of chdir-ing the shared process.
+        self.cwd = os.path.abspath(os.path.expanduser(str(cwd))) if cwd else os.getcwd()
         self.emit = emit or (lambda e: None)
         # callable(protocol.PermissionRequired) -> "allow_once"|"allow_always"|"deny".
         # None = deny everything that would need a prompt (safe default).
@@ -210,6 +215,7 @@ class Session:
             "provider": self.provider,
             "model": self.model,
             "title": (title or "")[:70],
+            "cwd": self.cwd,
             "ctx_window": getattr(self.tracker, "limit", None),
             "messages": self.messages,
         }
@@ -218,14 +224,22 @@ class Session:
             sess["base_url"] = self.cfg.get(self.provider, {}).get("base_url", "")
         store.write_session(sess)
 
-    def resume(self, sess):
+    def resume(self, sess, keep_cwd=False):
         """Install a saved session's state. The caller re-`configure()`s first
-        (it owns provider selection / local server boot)."""
+        (it owns provider selection / local server boot).
+
+        The saved working directory comes back with the conversation, so a
+        resumed session keeps reading and writing where it left off — unless
+        the caller already picked one (`keep_cwd`, e.g. the web API validating
+        a client-supplied cwd) or the folder is gone."""
         self.messages = sess.get("messages") or [
             {"role": "system", "content": self._system_prompt()}]
         self.session_id = sess.get("id")
         if sess.get("ctx_window") and self.tracker:
             self.tracker.limit = sess["ctx_window"]
+        saved_cwd = sess.get("cwd")
+        if not keep_cwd and saved_cwd and os.path.isdir(saved_cwd):
+            self.cwd = os.path.abspath(saved_cwd)
 
     def clear(self):
         """Drop the conversation (keep the system prompt) and start a fresh session.
@@ -317,14 +331,23 @@ class Session:
         return decision == "allow_once"
 
     def workspace(self):
+        """Root writes are confined to. An explicit permissions.workspace still
+        wins (it is a user-level confinement, not a default), otherwise it is
+        this session's working directory."""
         ws = (self.cfg.get("permissions", {}) or {}).get("workspace") or ""
-        return os.path.abspath(ws) if ws else os.getcwd()
+        return os.path.abspath(ws) if ws else self.cwd
+
+    def abspath(self, path):
+        """A tool path argument as the tools will resolve it: relative to this
+        session's cwd, not the process's."""
+        p = os.path.expanduser(str(path))
+        return os.path.abspath(p if os.path.isabs(p) else os.path.join(self.cwd, p))
 
     def _in_workspace(self, path):
         """True if `path` resolves inside the workspace root (writes are confined there)."""
         try:
             root = self.workspace()
-            return os.path.commonpath([root, os.path.abspath(path)]) == root
+            return os.path.commonpath([root, self.abspath(path)]) == root
         except (ValueError, OSError):
             return False   # different drive / bad path → treat as outside
 
@@ -373,7 +396,7 @@ class Session:
         try:
             args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
         except Exception:
-            return self._with_timeout(name, lambda: call_tool(name, raw_args))
+            return self._with_timeout(name, lambda: call_tool(name, raw_args, base_dir=self.cwd))
         if name in ("run_python", "run_powershell", "run_bash"):
             code = args.get("code") or args.get("command") or ""
             force = name in self.always_ask_tools
@@ -418,19 +441,19 @@ class Session:
             if not in_ws or force:
                 snip = (f"{name} OUTSIDE the workspace" if not in_ws
                         else f"{name} on this interface")
-                code = f"target: {os.path.abspath(path)}\nworkspace: {self.workspace()}"
+                code = f"target: {self.abspath(path)}\nworkspace: {self.workspace()}"
                 if not self._permit(name, snip, code, scope="workspace", force=force):
                     return (f"DENIED by user: '{name}' targets a path outside the workspace "
                             f"({path}). Set permissions.workspace or approve it."
                             if not in_ws else
                             f"DENIED by user: '{name}' was not confirmed on this interface.")
             return self._run_with_diff(name, args)
-        return self._with_timeout(name, lambda: call_tool(name, args))
+        return self._with_timeout(name, lambda: call_tool(name, args, base_dir=self.cwd))
 
     def _run_with_diff(self, name, args):
         """Run a file-writing tool, capturing a before/after unified diff for the
         tool_call_result event."""
-        path = args.get("path")
+        path = self.abspath(args.get("path"))   # as the tool will resolve it
 
         def _read():
             try:
@@ -439,7 +462,7 @@ class Session:
                 return ""
 
         before = _read()
-        result = self._with_timeout(name, lambda: call_tool(name, args))
+        result = self._with_timeout(name, lambda: call_tool(name, args, base_dir=self.cwd))
         if not str(result).startswith("ERROR"):
             after = _read()
             if after != before:

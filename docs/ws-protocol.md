@@ -53,6 +53,9 @@ Lista proveedores/modelos configurados, presets, política exec, estado MCP y
 las skills disponibles (`skills`: `[{"name","description"}]`, mismo discovery
 que `GET /api/skills` pero resumido). Nunca expone keys, tokens ni base URLs.
 
+Incluye `project_roots`: las carpetas raíz bajo las que el panel puede elegir
+directorio de trabajo (lista vacía = la función está apagada en este servidor).
+
 ### `GET /api/providers/{provider}/models`
 
 Catálogo autenticado y buscable del proveedor. Nano usa su modo
@@ -95,26 +98,58 @@ versión que el engine renderiza para el modelo):
 una ruta de fichero a partir del parámetro de la URL). Sin coincidencia →
 404 `{"error": "unknown skill"}`.
 
+### `GET /api/projects`
+
+Carpetas en las que una sesión puede trabajar: cada root de
+`web.project_roots` y sus hijos directos (los ocultos no se listan).
+
+```json
+{ "roots": ["C:/Users/tu/Desktop"],
+  "projects": [{"path","name","root","sessions"}],
+  "truncated": false }
+```
+`sessions` = cuántas sesiones guardadas hay en esa carpeta, para pintar el
+"3 sesiones en este proyecto" sin una segunda llamada. Sin `web.project_roots`
+configurado la lista va vacía y **ningún** `cwd` es aceptable: las sesiones
+corren en el directorio del proceso.
+
 ### `GET /api/sessions`
 ```json
-{ "saved": [{"id","title","provider","model","updated","messages"}],
-  "live":  [{"session_id","provider","model","busy","connected","engine_session_id"}] }
+{ "saved": [{"id","title","provider","model","updated","cwd","messages"}],
+  "live":  [{"session_id","provider","model","busy","connected",
+             "engine_session_id","permission_mode","cwd"}],
+  "cwd": "" }
 ```
 `saved` = sesiones persistidas en disco (para el Continue/New del panel). `live` =
 sesiones adjuntables ahora mismo por WS.
 
+`?cwd=<carpeta>` filtra ambas listas a esa carpeta ("sesiones de este proyecto").
+La comparación normaliza la ruta (absoluta, symlinks resueltos, mayúsculas en
+Windows), así que da igual cómo se escriba. Las sesiones guardadas antes de que
+existiera `cwd` traen `"cwd": ""`: salen en el listado completo y son resumibles,
+pero no casan con ningún filtro de carpeta.
+
 ### `POST /api/sessions`
 Body: `{"provider": "...", "model": "...", "ctx_window"?: int,
-"resume"?: "<saved id>", "permission_mode"?: "ask" | "yolo"}`.
+"resume"?: "<saved id>", "permission_mode"?: "ask" | "yolo", "cwd"?: "<carpeta>"}`.
 Con `resume`, provider/model se toman de la sesión guardada si se omiten. `provider:
 "local"` se adjunta a un llama-server YA corriendo (nunca lo arranca).
 `permission_mode` es por sesión y por defecto vale `"ask"`: `"ask"` pausa el turno
 y solicita confirmación web para operaciones sensibles; `"yolo"` las autoriza sin
 interacción. La política dura `web.allow_exec` y la denylist siguen teniendo prioridad.
 
+`cwd` es la carpeta de trabajo de la sesión: las tools resuelven ahí las rutas
+relativas y los `run_*` se ejecutan ahí, igual que si hubieras hecho `cd`. El
+servidor la valida (realpath + debe estar dentro de un `web.project_roots`), así
+que `..`, symlinks y rutas arbitrarias se rechazan con 400. Si se omite y hay
+`resume`, se recupera la carpeta de la sesión guardada **solo si** sigue dentro
+de los roots; si no, la sesión cae al directorio del proceso y la respuesta lo
+avisa en `cwd_note`. Sin `cwd` ni `resume`: directorio del proceso.
+
 201 → `{"session_id", "provider", "model", "ctx_window", "protocol_version",
-"exec_enabled", "permission_mode"}`.
-Errores: 400 (body/params/configure), 401, 404 (`resume` desconocido).
+"exec_enabled", "permission_mode", "cwd", "cwd_note", "mcp_tools", "mcp_servers",
+"mcp_error"}`.
+Errores: 400 (body/params/configure/`cwd` inválido), 401, 404 (`resume` desconocido).
 
 ### `GET /api/sessions/{saved_session_id}`
 
@@ -191,6 +226,13 @@ Los exec tools sobre red son **RCE en la máquina**. Por eso:
    En modo `"yolo"` esas confirmaciones se aprueban automáticamente. La denylist
    y `web.allow_exec=false` no se pueden anular seleccionando YOLO.
 4. Token comparado con `secrets.compare_digest`; CORS solo por lista blanca.
+5. **Carpeta de trabajo acotada**: el `cwd` que manda el cliente se resuelve con
+   `realpath` y debe caer dentro de `web.project_roots` — `..` y symlinks no
+   escapan, y sin roots configurados no se acepta ninguno. El `cwd` guardado de
+   una sesión (que pudo crearse desde la TUI en cualquier punto del disco) pasa
+   la misma validación al resumirla. Es un límite de *elección de carpeta*, no
+   de escritura: quien confina las escrituras sigue siendo el workspace, que por
+   defecto es ese mismo `cwd`.
 
 ## Smoke / desarrollo del panel
 
