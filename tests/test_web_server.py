@@ -191,6 +191,30 @@ def test_health_and_capabilities_do_not_leak_secrets(client, cfg):
     assert any(item["id"] == "openai" for item in capabilities.json()["providers"])
 
 
+def test_model_catalog_requires_auth_and_configured_provider(cfg, monkeypatch):
+    cfg["web"]["token"] = "secreto"
+    cfg["nano"]["api_key"] = "configured-secret"
+    client = TestClient(srv.build_app(cfg))
+    assert client.get("/api/providers/nano/models").status_code == 401
+
+    async def catalog_payload(provider):
+        return {
+            "provider": provider,
+            "models": [{"id": "nano/model", "input_price": 0.1, "output_price": 0.5}],
+            "count": 1,
+            "cache": "hit",
+        }
+
+    monkeypatch.setattr(srv.STATE.model_catalog, "get", catalog_payload)
+    response = client.get("/api/providers/nano/models", headers=AUTH)
+    assert response.status_code == 200
+    assert response.json()["models"][0]["input_price"] == 0.1
+
+    response = client.get("/api/providers/openai/models", headers=AUTH)
+    assert response.status_code == 409
+    assert response.json()["error"] == "provider is not configured"
+
+
 def test_resume_snapshot_and_session_detail(client):
     session_id = f"test-{uuid.uuid4().hex}"
     saved = {

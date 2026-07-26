@@ -40,6 +40,11 @@ from engine import protocol, store, telemetry
 from engine import skills as skills_mod
 from engine.config import CLOUD, URL_PROVIDERS, load_config, resolve_key
 from engine.session import Session
+from web.model_catalog import (
+    MODEL_CATALOG_TTL_SECONDS,
+    ModelCatalogCache,
+    ModelCatalogError,
+)
 
 EXEC_TOOLS = {"run_python", "run_powershell", "run_bash"}
 CONFIRM_TOOLS = {
@@ -227,6 +232,13 @@ class AppState:
             64,
             int(self.web_cfg.get("queue_size") or DEFAULT_QUEUE_SIZE),
         )
+        self.model_catalog = ModelCatalogCache(
+            cfg,
+            ttl_seconds=int(
+                self.web_cfg.get("model_catalog_ttl_seconds")
+                or MODEL_CATALOG_TTL_SECONDS
+            ),
+        )
         self.sessions: dict[str, WebSession] = {}
         self.started_at = time.monotonic()
 
@@ -361,6 +373,32 @@ async def capabilities(request):
             ],
         }
     )
+
+
+async def model_catalog(request):
+    if not _authorized(request):
+        return _unauthorized()
+    state = _state()
+    provider = request.path_params["provider"]
+    if not _valid_provider(state.cfg, provider):
+        return JSONResponse({"error": "unknown provider"}, status_code=404)
+    capability = next(
+        (
+            item
+            for item in _provider_capabilities(state.cfg)
+            if item["id"] == provider
+        ),
+        None,
+    )
+    if not capability or not capability["configured"]:
+        return JSONResponse({"error": "provider is not configured"}, status_code=409)
+    try:
+        return JSONResponse(await state.model_catalog.get(provider))
+    except ModelCatalogError as error:
+        return JSONResponse(
+            {"error": str(error)},
+            status_code=error.status_code,
+        )
 
 
 async def list_skills(request):
@@ -784,6 +822,7 @@ def build_app(cfg) -> Starlette:
         routes=[
             Route("/api/health", health, methods=["GET"]),
             Route("/api/capabilities", capabilities, methods=["GET"]),
+            Route("/api/providers/{provider}/models", model_catalog, methods=["GET"]),
             Route("/api/skills", list_skills, methods=["GET"]),
             Route("/api/skills/{name}", skill_detail, methods=["GET"]),
             Route("/api/sessions", list_sessions, methods=["GET"]),

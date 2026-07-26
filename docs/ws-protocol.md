@@ -26,7 +26,8 @@ Config en `tui_config.json` → clave `web`:
   "allow_exec": false,          // false = run_python/run_powershell/run_bash deshabilitados por completo
   "max_live_sessions": 16,
   "session_ttl_seconds": 3600,
-  "queue_size": 4096
+  "queue_size": 4096,
+  "model_catalog_ttl_seconds": 86400
 }
 ```
 
@@ -51,6 +52,21 @@ sesiones vivas. Se usa para el SERVICE MATRIX.
 Lista proveedores/modelos configurados, presets, política exec, estado MCP y
 las skills disponibles (`skills`: `[{"name","description"}]`, mismo discovery
 que `GET /api/skills` pero resumido). Nunca expone keys, tokens ni base URLs.
+
+### `GET /api/providers/{provider}/models`
+
+Catálogo autenticado y buscable del proveedor. Nano usa su modo
+`detailed=true` (precios reales de la cuenta); Gemini y Anthropic usan sus APIs
+nativas de modelos; OpenAI y los proveedores compatibles usan `/models`.
+Devuelve IDs, nombre, propietario, contexto, capacidades y precios de
+entrada/salida por millón cuando el proveedor los ofrece. Los precios de la
+tabla local se marcan con `price_source: "raiko_table"`.
+
+El resultado vive solo en memoria durante 24 horas
+(`web.model_catalog_ttl_seconds`). Al expirar se renueva una sola vez aunque
+lleguen peticiones concurrentes. Si falla la renovación se sirve el último
+catálogo como `stale` y se reintenta pasados cinco minutos. Keys, tokens y URLs
+no forman parte de la respuesta.
 
 ### `GET /api/skills`
 
