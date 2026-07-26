@@ -37,9 +37,19 @@ def client(cfg):
     return TestClient(srv.build_app(cfg))
 
 
-def make_ws_session(client, script, provider="openai", model="gpt-test"):
+def make_ws_session(
+    client,
+    script,
+    provider="openai",
+    model="gpt-test",
+    permission_mode="ask",
+):
     r = client.post("/api/sessions", headers=AUTH,
-                    json={"provider": provider, "model": model})
+                    json={
+                        "provider": provider,
+                        "model": model,
+                        "permission_mode": permission_mode,
+                    })
     assert r.status_code == 201, r.text
     sid = r.json()["session_id"]
     live = srv.STATE.sessions[sid].session
@@ -84,6 +94,7 @@ def test_create_and_ws_turn(client):
     script = [[text_delta("hola "), text_delta("panel"), usage_chunk(20, 4)]]
     sid, info = make_ws_session(client, script)
     assert info["protocol_version"] and info["exec_enabled"] is False
+    assert info["permission_mode"] == "ask"
     with client.websocket_connect(f"/ws/{sid}", headers=AUTH) as ws:
         started = ws.receive_json()
         assert started["type"] == "session_started"
@@ -129,6 +140,23 @@ def test_exec_blocked_by_default(client):
         assert "disabled on this interface" in results[0]["result"]
 
 
+def test_exec_stays_blocked_in_yolo_when_server_policy_disables_it(client):
+    script = [
+        [tool_delta(0, "c1", "run_python", json.dumps({"code": "print(1)"})),
+         usage_chunk(10, 5)],
+        [text_delta("no pude"), usage_chunk(12, 3)],
+    ]
+    sid, info = make_ws_session(client, script, permission_mode="yolo")
+    assert info["permission_mode"] == "yolo"
+    with client.websocket_connect(f"/ws/{sid}", headers=AUTH) as ws:
+        ws.receive_json()
+        ws.send_json({"type": "send", "text": "ejecuta"})
+        _, perms, results, _ = drive_turn(ws)
+        assert perms == []
+        assert not results[0]["ok"]
+        assert "disabled on this interface" in results[0]["result"]
+
+
 def test_exec_policy_can_be_enabled_from_environment(monkeypatch):
     monkeypatch.setenv("RAIKO_WEB_ALLOW_EXEC", "1")
     assert srv._env_flag("RAIKO_WEB_ALLOW_EXEC", False) is True
@@ -156,6 +184,44 @@ def test_exec_confirms_every_call_when_enabled(cfg):
         done, perms, results, _ = drive_turn(ws, decision="allow_once")
         assert perms and perms[0]["tool"] == "run_python"
         assert results[0]["ok"] and "4" in results[0]["result"]
+
+
+def test_yolo_exec_runs_without_permission_event_when_enabled(cfg):
+    cfg["web"]["token"] = "secreto"
+    cfg["web"]["allow_exec"] = True
+    client = TestClient(srv.build_app(cfg))
+    script = [
+        [tool_delta(0, "c1", "run_python", json.dumps({"code": "print(6*7)"})),
+         usage_chunk(10, 5)],
+        [text_delta("42"), usage_chunk(12, 2)],
+    ]
+    sid, info = make_ws_session(client, script, permission_mode="yolo")
+    assert info["permission_mode"] == "yolo"
+    with client.websocket_connect(f"/ws/{sid}", headers=AUTH) as ws:
+        ws.receive_json()
+        ws.send_json({"type": "send", "text": "6*7"})
+        _, perms, results, _ = drive_turn(ws)
+        assert perms == []
+        assert results[0]["ok"] and "42" in results[0]["result"]
+
+
+def test_yolo_does_not_override_explicit_denylist(cfg):
+    cfg["web"]["token"] = "secreto"
+    cfg["web"]["allow_exec"] = True
+    cfg["permissions"]["deny"] = ["run_python"]
+    client = TestClient(srv.build_app(cfg))
+    script = [
+        [tool_delta(0, "c1", "run_python", json.dumps({"code": "print(42)"})),
+         usage_chunk(10, 5)],
+        [text_delta("denied"), usage_chunk(12, 2)],
+    ]
+    sid, _ = make_ws_session(client, script, permission_mode="yolo")
+    with client.websocket_connect(f"/ws/{sid}", headers=AUTH) as ws:
+        ws.receive_json()
+        ws.send_json({"type": "send", "text": "run"})
+        _, perms, results, _ = drive_turn(ws)
+        assert perms == []
+        assert not results[0]["ok"] and "DENIED" in results[0]["result"]
 
 
 def test_deny_over_web_blocks_allowlisted_write(client, cfg):
@@ -188,7 +254,24 @@ def test_health_and_capabilities_do_not_leak_secrets(client, cfg):
     raw = capabilities.text
     assert "never-return-this" not in raw
     assert "base_url" not in raw
-    assert any(item["id"] == "openai" for item in capabilities.json()["providers"])
+    payload = capabilities.json()
+    assert any(item["id"] == "openai" for item in payload["providers"])
+    assert payload["permission_modes"] == ["ask", "yolo"]
+    assert payload["default_permission_mode"] == "ask"
+
+
+def test_create_session_rejects_unknown_permission_mode(client):
+    response = client.post(
+        "/api/sessions",
+        headers=AUTH,
+        json={
+            "provider": "openai",
+            "model": "gpt-test",
+            "permission_mode": "maybe",
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"] == "permission_mode must be 'ask' or 'yolo'"
 
 
 def test_model_catalog_requires_auth_and_configured_provider(cfg, monkeypatch):

@@ -55,6 +55,8 @@ CONFIRM_TOOLS = {
     "confluence_create",
     "confluence_comment",
 }
+PERMISSION_MODES = {"ask", "yolo"}
+DEFAULT_PERMISSION_MODE = "ask"
 PERMISSION_TIMEOUT = 300
 TELEMETRY_INTERVAL = 2.0
 MAX_COMMAND_CHARS = 262_144
@@ -96,8 +98,15 @@ def _engine_version() -> str:
 class WebSession:
     """One live engine session and its single attached WebSocket client."""
 
-    def __init__(self, cfg, allow_exec: bool, queue_size: int = DEFAULT_QUEUE_SIZE):
+    def __init__(
+        self,
+        cfg,
+        allow_exec: bool,
+        permission_mode: str = DEFAULT_PERMISSION_MODE,
+        queue_size: int = DEFAULT_QUEUE_SIZE,
+    ):
         self.id = uuid.uuid4().hex[:16]
+        self.permission_mode = permission_mode
         self.loop: asyncio.AbstractEventLoop | None = None
         self.queue_size = max(64, queue_size)
         self.queue: asyncio.Queue[str] | None = None
@@ -112,10 +121,12 @@ class WebSession:
             cfg,
             emit=self._emit,
             ask_permission=self._ask_permission,
+            skip_permissions=permission_mode == "yolo",
         )
         if not allow_exec:
             self.session.blocked_tools |= EXEC_TOOLS
-        self.session.always_ask_tools |= CONFIRM_TOOLS | EXEC_TOOLS
+        if permission_mode == "ask":
+            self.session.always_ask_tools |= CONFIRM_TOOLS | EXEC_TOOLS
 
     def attach(self, loop: asyncio.AbstractEventLoop) -> str | None:
         if self.loop is not None:
@@ -158,6 +169,8 @@ class WebSession:
         loop.call_soon_threadsafe(enqueue)
 
     def _ask_permission(self, request: protocol.PermissionRequired) -> str:
+        if self.permission_mode == "yolo":
+            return "allow_once"
         # Remote writes/execs intentionally confirm every time, so persisting
         # allow_always would be misleading on this interface.
         request = dataclasses.replace(
@@ -363,6 +376,8 @@ async def capabilities(request):
                 {"name": name} for name in (state.cfg.get("system_prompts") or {})
             ],
             "exec_enabled": state.allow_exec,
+            "permission_modes": sorted(PERMISSION_MODES),
+            "default_permission_mode": DEFAULT_PERMISSION_MODE,
             "mcp": {
                 "enabled": bool(mcp.get("enabled")),
                 "servers": len(servers),
@@ -472,6 +487,7 @@ async def list_sessions(request):
             "busy": web_session.busy,
             "connected": web_session.loop is not None,
             "engine_session_id": web_session.session.session_id,
+            "permission_mode": web_session.permission_mode,
         }
         for web_session in state.sessions.values()
     ]
@@ -532,10 +548,17 @@ async def create_session(request):
             or not 1024 <= ctx_window <= 4_194_304
         ):
             return JSONResponse({"error": "invalid ctx_window"}, status_code=400)
+    permission_mode = body.get("permission_mode", DEFAULT_PERMISSION_MODE)
+    if not isinstance(permission_mode, str) or permission_mode not in PERMISSION_MODES:
+        return JSONResponse(
+            {"error": "permission_mode must be 'ask' or 'yolo'"},
+            status_code=400,
+        )
 
     web_session = WebSession(
         state.cfg,
         allow_exec=state.allow_exec,
+        permission_mode=permission_mode,
         queue_size=state.queue_size,
     )
     base_url = None
@@ -575,6 +598,7 @@ async def create_session(request):
             "ctx_window": web_session.session.tracker.limit,
             "protocol_version": protocol.PROTOCOL_VERSION,
             "exec_enabled": state.allow_exec,
+            "permission_mode": web_session.permission_mode,
             "mcp_tools": len(web_session.session.mcp_tools),
             "mcp_servers": len(mcp_result),
             "mcp_error": mcp_error,

@@ -296,11 +296,11 @@ class Session:
         persists `tool` to the allowlist. Returns True to proceed.
         `force=True` (always_ask_tools) disables the skip/allowlist shortcuts so
         the hook is consulted on every call; the deny list still wins."""
-        if self.skip_permissions and not force:
-            return True
         perms = self.cfg.setdefault("permissions", {})
         if tool in (perms.get("deny") or []):
             return False
+        if self.skip_permissions and not force:
+            return True
         if tool in (perms.get("allow") or []) and not force:
             return True
         if self.ask_permission is None:
@@ -358,6 +358,9 @@ class Session:
         if name in self.blocked_tools:
             return (f"ERROR: tool '{name}' is disabled on this interface by policy "
                     f"(it cannot be allowed from here)")
+        denied_tools = (self.cfg.get("permissions", {}) or {}).get("deny") or []
+        if name in denied_tools:
+            return f"DENIED by policy: tool '{name}' is explicitly denied"
         if name == "skill":   # instructions only — no permission gating needed
             try:
                 skill_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args or {})
