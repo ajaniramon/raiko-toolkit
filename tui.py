@@ -2363,6 +2363,11 @@ def main():
         from web.server import main as web_main
         web_main(sys.argv[2:])
         return
+    # `raiko run` → headless one-shot/REPL agent loop, no TUI.
+    if len(sys.argv) > 1 and sys.argv[1] == "run":
+        from cli import main as cli_main
+        cli_main(sys.argv[2:])
+        return
     ap = argparse.ArgumentParser()
     ap.add_argument("--provider", choices=["nano", "local"])
     ap.add_argument("--model")
