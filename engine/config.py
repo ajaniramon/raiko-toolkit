@@ -91,7 +91,7 @@ DEFAULT_CONFIG = {
     "web": {"host": "127.0.0.1", "port": 8484, "token": "",
             "allowed_origins": [], "allow_exec": False,
             "max_live_sessions": 16, "session_ttl_seconds": 3600,
-            "queue_size": 4096},
+            "queue_size": 4096, "model_catalog_ttl_seconds": 86400},
     # named system-prompt presets (persona text; "" = built-in default persona).
     # TOOL_RULES are always appended. Edit/add here or via the F6 editor in-app.
     "system_prompts": {"default": ""},
