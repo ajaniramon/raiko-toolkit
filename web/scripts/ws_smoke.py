@@ -39,12 +39,14 @@ async def run(base: str, token: str, provider: str, model: str, prompt: str):
           f"exec {'ON' if info.get('exec_enabled') else 'off'}")
 
     ws_url = base.replace("http://", "ws://").replace("https://", "wss://")
-    uri = f"{ws_url}/ws/{sid}" + (f"?token={token}" if token else "")
+    uri = f"{ws_url}/ws/{sid}"
     telemetry_n = 0
-    async with websockets.connect(uri) as ws:
+    async with websockets.connect(uri, additional_headers=headers) as ws:
         first = json.loads(await ws.recv())
         assert first["type"] == "session_started", first
         print(f"connected · protocol v{first['protocol_version']}")
+        snapshot = json.loads(await ws.recv())
+        assert snapshot["type"] == "session_snapshot", snapshot
         await ws.send(json.dumps({"type": "send", "text": prompt}))
         while True:
             e = json.loads(await ws.recv())

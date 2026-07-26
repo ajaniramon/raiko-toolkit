@@ -21,10 +21,10 @@ dataclass fields.
 """
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 # Bump on incompatible changes to any event/command below.
-PROTOCOL_VERSION = "1.0"
+PROTOCOL_VERSION = "1.1"
 
 
 # ------------------------------ events (engine → UI) ------------------------------
@@ -37,6 +37,22 @@ class SessionStarted:
     model: str
     ctx_window: Optional[int] = None
     protocol_version: str = PROTOCOL_VERSION
+    connection_id: Optional[str] = None
+
+
+@dataclass
+class SessionSnapshot:
+    """Canonical session state sent immediately after connecting/reconnecting."""
+    session_id: str
+    engine_session_id: Optional[str]
+    busy: bool
+    provider: str
+    model: str
+    ctx_window: Optional[int]
+    messages: list[dict[str, Any]]
+    input_tokens: int = 0
+    output_tokens: int = 0
+    session_usd: float = 0.0
 
 
 @dataclass
@@ -96,6 +112,7 @@ class PermissionRequired:
     action: str        # short human snippet, e.g. the flagged fragment or write target
     detail: str        # full command/code/target to review
     scope: str         # "danger" | "workspace" | "external_write" (jira/confluence)
+    allowed_decisions: tuple[str, ...] = ("allow_once", "allow_always", "deny")
 
 
 @dataclass
@@ -222,6 +239,7 @@ class SetSystemPrompt:
 
 EVENT_TYPES = {
     "session_started": SessionStarted,
+    "session_snapshot": SessionSnapshot,
     "turn_started": TurnStarted,
     "text_delta": TextDelta,
     "thinking_delta": ThinkingDelta,

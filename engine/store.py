@@ -4,10 +4,23 @@ exactly. Moved verbatim from tui.py (Fase 2)."""
 
 import json
 import os
+import re
+import tempfile
 
 from engine.config import _app_home
 
 SESSIONS_DIR = os.path.join(_app_home(), "sessions")
+SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,96}$")
+
+
+def valid_session_id(sid):
+    return isinstance(sid, str) and bool(SESSION_ID_RE.fullmatch(sid))
+
+
+def _session_path(sid):
+    if not valid_session_id(sid):
+        raise ValueError("invalid session id")
+    return os.path.join(sessions_dir(), sid + ".json")
 
 
 def sessions_dir():
@@ -33,22 +46,43 @@ def list_sessions():
 
 
 def load_session(sid):
+    if not valid_session_id(sid):
+        return None
     try:
-        return json.load(open(os.path.join(sessions_dir(), sid + ".json"), encoding="utf-8"))
+        with open(_session_path(sid), encoding="utf-8") as handle:
+            return json.load(handle)
     except Exception:
         return None
 
 
 def write_session(sess):
+    sid = sess.get("id") if isinstance(sess, dict) else None
+    if not valid_session_id(sid):
+        return False
+    tmp_path = None
     try:
-        path = os.path.join(sessions_dir(), sess["id"] + ".json")
-        json.dump(sess, open(path, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+        path = _session_path(sid)
+        fd, tmp_path = tempfile.mkstemp(prefix=f".{sid}.", suffix=".tmp", dir=sessions_dir())
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(sess, handle, indent=2, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+        return True
     except Exception:
-        pass
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        return False
 
 
 def delete_session(sid):
+    if not valid_session_id(sid):
+        return False
     try:
-        os.remove(os.path.join(sessions_dir(), sid + ".json"))
+        os.remove(_session_path(sid))
+        return True
     except Exception:
-        pass
+        return False

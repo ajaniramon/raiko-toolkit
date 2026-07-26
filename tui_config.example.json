@@ -37,6 +37,16 @@
   "budget_usd": 0,
   "pricing": {},
   "permissions": { "allow": [], "deny": [], "workspace": "" },
+  "web": {
+    "host": "127.0.0.1",
+    "port": 8484,
+    "token": "",
+    "allowed_origins": [],
+    "allow_exec": false,
+    "max_live_sessions": 16,
+    "session_ttl_seconds": 3600,
+    "queue_size": 4096
+  },
   "jira": { "api_token": "" },
   "confluence": { "base_url": "https://your-site.atlassian.net/wiki", "email": "", "space": "" },
   "auto_compact": true,

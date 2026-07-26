@@ -128,7 +128,8 @@ class Session:
         sp = self.cfg.get("system_prompts") or {}
         return sp.get(self.cfg.get("active_system_prompt", "default"), "")
 
-    def configure(self, provider, model, ctx_limit=None, base_url=None, api_key=None):
+    def configure(self, provider, model, ctx_limit=None, base_url=None, api_key=None,
+                  emit_started=True):
         """Open (or re-open, for model swap) the provider connection. `base_url`
         overrides the config value (the TUI passes the local llama-server URL)."""
         self.provider = provider
@@ -147,14 +148,16 @@ class Session:
         elif not self.is_local:
             # nano = frontier: we use the model's maximum (assumed)
             self.tracker.limit = pc.get("ctx_window", 131072)
-        self.emit(ev.SessionStarted(session_id=self.session_id or "",
-                                    provider=provider, model=model,
-                                    ctx_window=self.tracker.limit))
+        if emit_started:
+            self.emit(ev.SessionStarted(session_id=self.session_id or "",
+                                        provider=provider, model=model,
+                                        ctx_window=self.tracker.limit))
 
     def swap_model(self, model, provider=None):
         """Switch the model mid-session (cloud/remote only). History is kept."""
         old = self.model
-        self.configure(provider or self.provider, model)   # new client+tracker, messages untouched
+        self.configure(provider or self.provider, model, emit_started=False)
+        # new client+tracker, messages untouched
         self.save()
         self.emit(ev.ModelSwapped(old_model=old, new_model=model, provider=self.provider))
 
@@ -177,7 +180,7 @@ class Session:
         if not self.persist or not self.model or len(self.messages) <= 1:
             return
         if not self.session_id:
-            self.session_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+            self.session_id = datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
         title = next((m.get("content") for m in self.messages
                       if m.get("role") == "user" and m.get("content")), "(no prompt)")
         sess = {

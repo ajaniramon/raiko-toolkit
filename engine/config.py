@@ -85,7 +85,9 @@ DEFAULT_CONFIG = {
     "permissions": {"allow": [], "deny": [], "workspace": ""},
     # web layer (raiko web): bind/token/CORS/exec policy. Loopback + no exec by default.
     "web": {"host": "127.0.0.1", "port": 8484, "token": "",
-            "allowed_origins": [], "allow_exec": False},
+            "allowed_origins": [], "allow_exec": False,
+            "max_live_sessions": 16, "session_ttl_seconds": 3600,
+            "queue_size": 4096},
     # named system-prompt presets (persona text; "" = built-in default persona).
     # TOOL_RULES are always appended. Edit/add here or via the F6 editor in-app.
     "system_prompts": {"default": ""},
