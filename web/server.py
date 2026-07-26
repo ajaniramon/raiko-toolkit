@@ -65,6 +65,7 @@ MAX_MODEL_CHARS = 191
 DEFAULT_QUEUE_SIZE = 4096
 DEFAULT_MAX_LIVE_SESSIONS = 16
 DEFAULT_SESSION_TTL_SECONDS = 3600
+MAX_PROJECTS_LISTED = 500
 
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 _PROVIDER_RE = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
@@ -104,6 +105,7 @@ class WebSession:
         allow_exec: bool,
         permission_mode: str = DEFAULT_PERMISSION_MODE,
         queue_size: int = DEFAULT_QUEUE_SIZE,
+        cwd: str | None = None,
     ):
         self.id = uuid.uuid4().hex[:16]
         self.permission_mode = permission_mode
@@ -117,11 +119,14 @@ class WebSession:
         self.created_at = self.last_seen
         self._perm_lock = threading.Lock()
         self._pending_perms: dict[str, dict] = {}
+        # cwd is per session, never a process-wide chdir: this one process runs
+        # several sessions at once, each possibly in a different project.
         self.session = Session(
             cfg,
             emit=self._emit,
             ask_permission=self._ask_permission,
             skip_permissions=permission_mode == "yolo",
+            cwd=cwd,
         )
         if not allow_exec:
             self.session.blocked_tools |= EXEC_TOOLS
@@ -311,6 +316,57 @@ def _valid_model(model) -> bool:
     )
 
 
+def _project_roots(cfg) -> list[str]:
+    """Configured web.project_roots, as existing absolute directories. Empty by
+    default: with no roots configured, no client-chosen working directory is
+    accepted at all."""
+    raw = (cfg.get("web", {}) or {}).get("project_roots") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    roots = []
+    for entry in raw:
+        if not isinstance(entry, str) or not entry.strip():
+            continue
+        try:
+            path = os.path.realpath(os.path.expanduser(entry.strip()))
+        except (OSError, ValueError):
+            continue
+        if os.path.isdir(path) and path not in roots:
+            roots.append(path)
+    return roots
+
+
+def _within_root(root: str, path: str) -> bool:
+    """True if `path` is `root` or lives under it. Both must be realpath'd
+    already: that is what stops '..' segments and symlinks out of the root."""
+    try:
+        return os.path.commonpath(
+            [os.path.normcase(root), os.path.normcase(path)]
+        ) == os.path.normcase(root)
+    except (ValueError, OSError):
+        return False   # different drive / unusable path
+
+
+def _resolve_project_cwd(cfg, raw) -> tuple[str | None, str | None]:
+    """Validate a client-supplied working directory. Returns (path, error): the
+    path is realpath'd (no '..' escapes, no symlink hops) and must be an existing
+    directory inside one of web.project_roots."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None, "cwd must be a non-empty string"
+    roots = _project_roots(cfg)
+    if not roots:
+        return None, "no web.project_roots configured — this server accepts no cwd"
+    try:
+        path = os.path.realpath(os.path.expanduser(raw.strip()))
+    except (OSError, ValueError):
+        return None, "cwd is not a usable path"
+    if not os.path.isdir(path):
+        return None, "cwd is not an existing directory"
+    if not any(_within_root(root, path) for root in roots):
+        return None, "cwd is outside the configured project roots"
+    return path, None
+
+
 def _provider_capabilities(cfg) -> list[dict]:
     favorites = cfg.get("favorites") or {}
     result = []
@@ -378,6 +434,8 @@ async def capabilities(request):
             "exec_enabled": state.allow_exec,
             "permission_modes": sorted(PERMISSION_MODES),
             "default_permission_mode": DEFAULT_PERMISSION_MODE,
+            # empty list -> this server pins every session to its own cwd
+            "project_roots": _project_roots(state.cfg),
             "mcp": {
                 "enabled": bool(mcp.get("enabled")),
                 "servers": len(servers),
@@ -463,11 +521,61 @@ async def skill_detail(request):
     )
 
 
+async def list_projects(request):
+    """Folders a session may be rooted in: every configured root plus its direct
+    children. This is the only source of valid `cwd` values — POST /api/sessions
+    re-validates whatever the client sends, so a stale or hand-written path
+    cannot escape the roots."""
+    if not _authorized(request):
+        return _unauthorized()
+    state = _state()
+    roots = _project_roots(state.cfg)
+    counts: dict[str, int] = {}
+    for session in store.list_sessions():
+        key = store.session_cwd(session)
+        if key:
+            counts[key] = counts.get(key, 0) + 1
+    projects = []
+    for root in roots:
+        candidates = [root]
+        try:
+            candidates += sorted(
+                entry.path for entry in os.scandir(root)
+                if entry.is_dir() and not entry.name.startswith(".")
+            )
+        except OSError:
+            pass
+        for path in candidates:
+            real = os.path.realpath(path)
+            projects.append({
+                "path": real,
+                "name": os.path.basename(real) or real,
+                "root": root,
+                "sessions": counts.get(os.path.normcase(real), 0),
+            })
+            if len(projects) >= MAX_PROJECTS_LISTED:
+                break
+        if len(projects) >= MAX_PROJECTS_LISTED:
+            break
+    return JSONResponse({
+        "roots": roots,
+        "projects": projects,
+        "truncated": len(projects) >= MAX_PROJECTS_LISTED,
+    })
+
+
 async def list_sessions(request):
+    """Saved + live sessions. `?cwd=<folder>` narrows both to one project so the
+    panel can show "sessions of this project" (the filter is a plain match on the
+    stored folder, so it needs no project-root permission of its own)."""
     if not _authorized(request):
         return _unauthorized()
     state = _state()
     state.cleanup_idle()
+    raw_cwd = request.query_params.get("cwd")
+    if raw_cwd is not None and not raw_cwd.strip():
+        return JSONResponse({"error": "cwd filter must not be empty"}, status_code=400)
+    wanted = store.normalize_cwd(raw_cwd) if raw_cwd else None
     saved = [
         {
             "id": session.get("id"),
@@ -475,9 +583,11 @@ async def list_sessions(request):
             "provider": session.get("provider"),
             "model": session.get("model"),
             "updated": session.get("updated"),
+            "cwd": session.get("cwd") or "",
             "messages": len(session.get("messages", [])),
         }
-        for session in store.list_sessions()
+        for session in (store.list_sessions(raw_cwd) if wanted
+                        else store.list_sessions())
     ]
     live = [
         {
@@ -488,10 +598,12 @@ async def list_sessions(request):
             "connected": web_session.loop is not None,
             "engine_session_id": web_session.session.session_id,
             "permission_mode": web_session.permission_mode,
+            "cwd": web_session.session.cwd,
         }
         for web_session in state.sessions.values()
+        if wanted is None or store.normalize_cwd(web_session.session.cwd) == wanted
     ]
-    return JSONResponse({"saved": saved, "live": live})
+    return JSONResponse({"saved": saved, "live": live, "cwd": raw_cwd or ""})
 
 
 async def session_detail(request):
@@ -555,11 +667,28 @@ async def create_session(request):
             status_code=400,
         )
 
+    # Working directory. An explicit cwd must sit inside web.project_roots; a
+    # resumed session brings its own, but only if that folder is still allowed
+    # (it may have been saved from the TUI, anywhere on the machine).
+    cwd, cwd_note = None, None
+    if "cwd" in body and body.get("cwd") is not None:
+        cwd, error = _resolve_project_cwd(state.cfg, body.get("cwd"))
+        if error:
+            return JSONResponse({"error": error}, status_code=400)
+    elif saved and saved.get("cwd"):
+        candidate, error = _resolve_project_cwd(state.cfg, saved.get("cwd"))
+        if candidate:
+            cwd = candidate
+        else:
+            cwd_note = (f"saved working directory ignored ({error}); "
+                        f"this session runs in {os.getcwd()}")
+
     web_session = WebSession(
         state.cfg,
         allow_exec=state.allow_exec,
         permission_mode=permission_mode,
         queue_size=state.queue_size,
+        cwd=cwd,
     )
     base_url = None
     if provider == "local":
@@ -575,7 +704,8 @@ async def create_session(request):
             base_url,
         )
         if saved:
-            web_session.session.resume(saved)
+            # keep_cwd: the folder was already resolved (and root-checked) above.
+            web_session.session.resume(saved, keep_cwd=True)
         mcp_result = []
         mcp_error = None
         if web_session.session.mcp_servers:
@@ -599,6 +729,8 @@ async def create_session(request):
             "protocol_version": protocol.PROTOCOL_VERSION,
             "exec_enabled": state.allow_exec,
             "permission_mode": web_session.permission_mode,
+            "cwd": web_session.session.cwd,
+            "cwd_note": cwd_note,
             "mcp_tools": len(web_session.session.mcp_tools),
             "mcp_servers": len(mcp_result),
             "mcp_error": mcp_error,
@@ -849,6 +981,7 @@ def build_app(cfg) -> Starlette:
             Route("/api/providers/{provider}/models", model_catalog, methods=["GET"]),
             Route("/api/skills", list_skills, methods=["GET"]),
             Route("/api/skills/{name}", skill_detail, methods=["GET"]),
+            Route("/api/projects", list_projects, methods=["GET"]),
             Route("/api/sessions", list_sessions, methods=["GET"]),
             Route("/api/sessions", create_session, methods=["POST"]),
             Route("/api/sessions/{session_id}", session_detail, methods=["GET"]),
@@ -911,6 +1044,14 @@ def main(argv=None):
         )
     else:
         print("[!] web.allow_exec=true - exec tools are callable over this socket.")
+    roots = _project_roots(cfg)
+    if roots:
+        print("project roots (a session's cwd must be inside one): " + ", ".join(roots))
+    else:
+        print(
+            "no web.project_roots configured - sessions run in this process's "
+            f"directory ({os.getcwd()}) and any client-sent cwd is rejected."
+        )
     print(
         f"raiko web | ws://{host}:{port}/ws/{{session_id}} | "
         f"protocol v{protocol.PROTOCOL_VERSION}"

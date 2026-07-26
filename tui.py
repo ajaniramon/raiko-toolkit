@@ -49,7 +49,7 @@ import models as registry  # noqa: E402  (bench/models.py)
 from context import ContextTracker  # noqa: E402  (demo mode only)
 import pricing  # noqa: E402  (USD formatting for the status bar)
 
-from engine import protocol, telemetry  # noqa: E402
+from engine import protocol, store, telemetry  # noqa: E402
 from engine.config import (CONFIG_PATH, DEFAULT_CONFIG, CLOUD, URL_PROVIDERS,  # noqa: E402
                            PROVIDER_ENV, load_config, save_config, resolve_key)
 from engine.session import Session, tool_arg_summary  # noqa: E402
@@ -900,22 +900,25 @@ class StartScreen(Screen):
 
     def on_mount(self):
         self.query_one("#start", OptionList).focus()
-        n = len(list_sessions())
+        cwd = getattr(self.app, "cwd", None) or os.getcwd()
+        here, total = len(list_sessions(cwd)), len(list_sessions())
         self.query_one("#shint", Static).update(Text.from_markup(
-            f"[dim]{n} saved session{'s' if n != 1 else ''} · Esc to quit[/]"))
+            f"[dim]{os.path.basename(cwd) or cwd} · {here} session{'s' if here != 1 else ''} "
+            f"here of {total} saved · Esc to quit[/]"))
 
     def action_prompt(self):
         self.app.push_screen(SystemPromptScreen(wizard=True))
 
     def on_option_list_option_selected(self, e: OptionList.OptionSelected):
         if e.option.id == "continue":
-            self.app.push_screen(SessionListScreen())
+            self.app.push_screen(SessionListScreen(cwd=getattr(self.app, "cwd", None)))
         else:
             self.app.push_screen(ProviderScreen())
 
 
 class SessionListScreen(Screen):
-    """Pick a saved session to resume (or delete one)."""
+    """Pick a saved session to resume (or delete one). Scoped to the folder the
+    TUI was started in, with `a` to fall back to every saved session."""
 
     CSS = """
     SessionListScreen { align: center middle; }
@@ -924,11 +927,14 @@ class SessionListScreen(Screen):
     OptionList { height: 1fr; }
     #shint { color: #999999; }
     """
-    BINDINGS = [("escape", "back", "Back"), ("d", "delete", "Delete")]
+    BINDINGS = [("escape", "back", "Back"), ("d", "delete", "Delete"),
+                ("a", "toggle_scope", "All folders")]
 
-    def __init__(self):
+    def __init__(self, cwd=None):
         super().__init__()
         self.sessions = []
+        self.cwd = cwd
+        self.show_all = cwd is None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="box"):
@@ -939,20 +945,32 @@ class SessionListScreen(Screen):
     def on_mount(self):
         self.rebuild()
 
+    def action_toggle_scope(self):
+        if self.cwd is None:
+            return
+        self.show_all = not self.show_all
+        self.rebuild()
+
     def rebuild(self):
         ol = self.query_one("#sessions", OptionList)
         ol.clear_options()
-        self.sessions = list_sessions()
+        scoped = self.cwd is not None and not self.show_all
+        self.sessions = list_sessions(self.cwd) if scoped else list_sessions()
         for s in self.sessions:
             when = (s.get("updated", "") or "")[:16].replace("T", " ")
             title = s.get("title") or "(untitled)"
+            turns = sum(1 for m in s.get("messages", []) if m.get("role") == "user")
+            where = "" if scoped else f" · {os.path.basename(s.get('cwd') or '') or '—'}"
             ol.add_option(Option(Text.from_markup(
                 f"[b]{title}[/]\n   [dim]{s.get('provider')} · {s.get('model')} · "
-                f"{len(s.get('messages', []))} msgs · {when}[/]"), id=s["id"]))
+                f"{turns} turn{'s' if turns != 1 else ''} · {when}{where}[/]"), id=s["id"]))
         if ol.option_count:
             ol.highlighted = 0
+        where = "all folders" if not scoped else self.cwd
+        empty = "  [yellow](none here — press a for all folders)[/]" if (
+            scoped and not self.sessions) else ""
         self.query_one("#shint", Static).update(Text.from_markup(
-            "[dim]Enter resume · d delete · Esc back[/]"))
+            f"[dim]{where}[/]{empty}\n[dim]Enter resume · d delete · a scope · Esc back[/]"))
 
     def on_option_list_option_selected(self, e: OptionList.OptionSelected):
         sess = load_session(e.option.id)
@@ -1632,7 +1650,8 @@ class AgentTUI(App):
     BINDINGS = [("ctrl+q", "quit", "Quit"), ("ctrl+l", "clear_log", "Clear")]
 
     def __init__(self, cfg, cli_provider=None, cli_model=None, cli_demo=False,
-                 skip_permissions=False, cli_configure=False):
+                 skip_permissions=False, cli_configure=False,
+                 cli_continue=False, cli_resume=False, cwd=None):
         super().__init__()
         self.cfg = cfg
         self.cli_provider = cli_provider
@@ -1640,12 +1659,17 @@ class AgentTUI(App):
         self.cli_demo = cli_demo
         self.cli_configure = cli_configure
         self.skip_permissions = skip_permissions
+        # `cd project && raiko`: the TUI works in the folder it was started from,
+        # and its sessions are saved against it (--continue/--resume filter by it).
+        self.cwd = os.path.abspath(os.path.expanduser(cwd)) if cwd else os.getcwd()
+        self.cli_continue = cli_continue
+        self.cli_resume = cli_resume
         # the engine owns the turn loop / tools / permissions / sessions / cost;
         # this app is a thin adapter: events -> widgets, keys -> commands.
         self.session = Session(cfg, emit=self._emit_from_worker,
                                ask_permission=self._ask_permission_hook,
                                skip_permissions=skip_permissions,
-                               persist=not cli_demo)
+                               persist=not cli_demo, cwd=self.cwd)
         self.provider = None
         self.model = None
         self.is_local = False
@@ -1700,6 +1724,17 @@ class AgentTUI(App):
 
     def _route_startup(self):
         """Normal startup routing (also re-run after the configure wizard closes)."""
+        if self.cli_continue:
+            self.cli_continue = False
+            last = store.last_session(self.cwd)
+            if last:
+                self.resume_session(last)
+                return
+            self.notify(f"no previous session in {self.cwd} — starting a new one")
+        if self.cli_resume:
+            self.cli_resume = False
+            self.push_screen(SessionListScreen(cwd=self.cwd))
+            return
         if self.cli_provider and self.cli_model:
             self.provider = self.cli_provider
             self.choose_model(self.cli_model)
@@ -1894,6 +1929,7 @@ class AgentTUI(App):
             self.session.resume(self._resume_messages)
             self._resume_messages = None
             self.resumed = True
+            self.cwd = self.session.cwd   # a resumed session brings its folder back
 
     def resume_session(self, sess):
         """Restore a saved session: re-select its provider+model and load its history.
@@ -1918,6 +1954,7 @@ class AgentTUI(App):
         self.configure(provider, model)
         self.session.resume(sess)
         self.resumed = True
+        self.cwd = self.session.cwd   # a resumed session brings its folder back
         self._save_last(provider, model)
         self._go_main()
 
@@ -2227,6 +2264,7 @@ class AgentTUI(App):
             f"[bold]Permissions[/]{skip}\n"
             f"  [green]always-allow[/]: {allow}\n"
             f"  [red]deny[/]: {deny}\n"
+            f"  [cyan]cwd[/] (tools resolve paths here): {self.session.cwd}\n"
             f"  [cyan]workspace[/] (write/edit confined here): {self.session.workspace()}\n"
             f"[dim]Edit in tui_config.json → permissions (F2). 'Always allow' in a prompt adds a tool here.[/]"),
             title="[bold cyan]🔐 permissions[/]", border_style="cyan", expand=False))
@@ -2375,10 +2413,19 @@ def main():
     ap.add_argument("--configure", action="store_true", help="open the setup wizard on startup")
     ap.add_argument("--dangerously-skip-permissions", action="store_true",
                     dest="skip_perms", help="auto-allow flagged operations (no prompts)")
+    ap.add_argument("--cwd", help="working directory for the agent (default: this one)")
+    ap.add_argument("-c", "--continue", action="store_true", dest="continue_last",
+                    help="resume the last session of this folder")
+    ap.add_argument("-r", "--resume", action="store_true", dest="resume",
+                    help="pick a session of this folder to resume")
     args = ap.parse_args()
+    if args.cwd and not os.path.isdir(args.cwd):
+        print(f"--cwd is not a directory: {args.cwd}", file=sys.stderr)
+        raise SystemExit(2)
     AgentTUI(load_config(), cli_provider=args.provider, cli_model=args.model,
              cli_demo=args.demo, skip_permissions=args.skip_perms,
-             cli_configure=args.configure).run()
+             cli_configure=args.configure, cli_continue=args.continue_last,
+             cli_resume=args.resume, cwd=args.cwd).run()
 
 
 if __name__ == "__main__":

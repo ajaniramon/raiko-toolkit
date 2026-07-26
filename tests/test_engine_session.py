@@ -1,21 +1,25 @@
 """Engine turn-loop smoke tests (no network): streaming, tool dispatch with diff,
-permission hook decisions, allowlist persistence, interrupt."""
+permission hook decisions, allowlist persistence, interrupt, and the per-session
+working directory (relative paths, workspace, concurrent sessions)."""
 
 import json
 import os
+import threading
 from pathlib import Path
 
 from conftest import fake_client, text_delta, tool_delta, usage_chunk
 
+import tools
 from engine import protocol as p
+from engine import store
 from engine.session import Session
 from context import ContextTracker
 from tools import TOOLS
 
 
-def make_session(cfg, script, hook=None):
+def make_session(cfg, script, hook=None, cwd=None):
     events = []
-    s = Session(cfg, emit=events.append, ask_permission=hook, persist=False)
+    s = Session(cfg, emit=events.append, ask_permission=hook, persist=False, cwd=cwd)
     s.provider, s.model, s.is_local = "openai", "gpt-test", False
     s.tracker = ContextTracker("gpt-test")
     s.client = fake_client(script)
@@ -215,3 +219,152 @@ def test_clear_keeps_skills_block(cfg, tmp_path, monkeypatch):
     prompt = s.messages[0]["content"]
     assert "<available_skills>" in prompt
     assert "git-release" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Per-session working directory
+# ---------------------------------------------------------------------------
+
+def _project(cfg, tmp_path, name):
+    """A folder to root a session in, with the config workspace left unset so
+    the session's own cwd is the write boundary."""
+    cfg["permissions"]["workspace"] = ""
+    d = tmp_path / name
+    d.mkdir()
+    return d
+
+
+def test_relative_tool_paths_resolve_against_the_session_cwd(cfg, tmp_path):
+    """A write to "hola.txt" lands in the session's folder, not the process's."""
+    project = _project(cfg, tmp_path, "project")
+    script = [
+        [tool_delta(0, "c1", "write_file",
+                    json.dumps({"path": "hola.txt", "content": "hola\n"})),
+         usage_chunk(100, 20)],
+        [text_delta("hecho."), usage_chunk(140, 4)],
+    ]
+    s, events = make_session(cfg, script, cwd=str(project))
+    assert s.run_turn("crea hola.txt") == "completed"
+    tr = next(e for e in events if isinstance(e, p.ToolCallResult))
+    assert tr.ok, tr.result
+    assert (project / "hola.txt").read_text(encoding="utf-8") == "hola\n"
+    assert not (Path.cwd() / "hola.txt").exists()
+
+
+def test_workspace_defaults_to_the_session_cwd(cfg, tmp_path):
+    project = _project(cfg, tmp_path, "project")
+    s, _ = make_session(cfg, [[]], cwd=str(project))
+    assert s.workspace() == str(project)
+    assert s._in_workspace("nested/file.txt")
+    assert not s._in_workspace(str(tmp_path / "elsewhere" / "file.txt"))
+
+
+def test_explicit_workspace_still_wins_over_the_cwd(cfg, tmp_path):
+    """permissions.workspace is a user-level confinement: starting the agent in
+    another folder must not widen it."""
+    project = tmp_path / "project"
+    project.mkdir()
+    s, _ = make_session(cfg, [[]], cwd=str(project))
+    assert s.workspace() == cfg["permissions"]["workspace"]
+    assert not s._in_workspace("hola.txt")
+
+
+def test_session_saves_its_cwd_and_resume_restores_cwd_and_workspace(cfg, tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "SESSIONS_DIR", str(tmp_path / "sessions"))
+    project = _project(cfg, tmp_path, "project")
+    script = [[text_delta("hecho."), usage_chunk(10, 3)]]
+    s, _ = make_session(cfg, script, cwd=str(project))
+    s.persist = True
+    s.run_turn("hola")
+
+    saved = store.load_session(s.session_id)
+    assert saved["cwd"] == str(project)
+    assert store.last_session(project)["id"] == s.session_id
+
+    other, _ = make_session(cfg, [[]], cwd=str(tmp_path))
+    other.resume(saved)
+    assert other.cwd == str(project)
+    assert other.workspace() == str(project)      # workspace follows the cwd back
+    assert other.messages == saved["messages"]
+
+
+def test_resume_keeps_an_explicitly_chosen_cwd(cfg, tmp_path):
+    project, elsewhere = _project(cfg, tmp_path, "project"), _project(cfg, tmp_path, "elsewhere")
+    saved = {"id": "s1", "cwd": str(project), "messages": [{"role": "user", "content": "hi"}]}
+    s, _ = make_session(cfg, [[]], cwd=str(elsewhere))
+    s.resume(saved, keep_cwd=True)
+    assert s.cwd == str(elsewhere)
+
+
+def test_resume_of_a_session_whose_folder_is_gone_keeps_the_current_cwd(cfg, tmp_path):
+    project = _project(cfg, tmp_path, "project")
+    saved = {"id": "s1", "cwd": str(tmp_path / "deleted"),
+             "messages": [{"role": "user", "content": "hi"}]}
+    s, _ = make_session(cfg, [[]], cwd=str(project))
+    s.resume(saved)
+    assert s.cwd == str(project)
+
+
+def test_pre_cwd_sessions_resume_without_a_cwd_key(cfg, tmp_path):
+    """Sessions saved before this feature have no cwd: resuming one must not
+    crash and must leave the session where it already is."""
+    project = _project(cfg, tmp_path, "project")
+    legacy = {"id": "old", "provider": "openai", "model": "gpt-test",
+              "messages": [{"role": "system", "content": "s"},
+                           {"role": "user", "content": "hola"}]}
+    s, _ = make_session(cfg, [[]], cwd=str(project))
+    s.resume(legacy)
+    assert s.cwd == str(project)
+    assert s.messages == legacy["messages"]
+
+
+def test_concurrent_sessions_do_not_share_a_working_directory(cfg, tmp_path, monkeypatch):
+    """The regression that rules out a process-wide chdir: two sessions, two
+    folders, both inside a tool call at the same time. Each write must land in
+    its own session's folder."""
+    alpha = _project(cfg, tmp_path, "alpha")
+    beta = _project(cfg, tmp_path, "beta")
+    barrier = threading.Barrier(2, timeout=10)
+    real_write = tools.DISPATCH["write_file"]
+
+    def write_file(path, content):
+        barrier.wait()          # hold both sessions inside the tool simultaneously
+        return real_write(path, content)
+
+    monkeypatch.setitem(tools.DISPATCH, "write_file", write_file)
+
+    def turn(cwd, text):
+        script = [
+            [tool_delta(0, "c1", "write_file",
+                        json.dumps({"path": "out.txt", "content": text})),
+             usage_chunk(10, 5)],
+            [text_delta("ok"), usage_chunk(12, 2)],
+        ]
+        s, _ = make_session(cfg, script, cwd=str(cwd))
+        s.run_turn("escribe out.txt")
+
+    threads = [threading.Thread(target=turn, args=(alpha, "soy alpha")),
+               threading.Thread(target=turn, args=(beta, "soy beta"))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert not any(t.is_alive() for t in threads)
+
+    assert (alpha / "out.txt").read_text(encoding="utf-8") == "soy alpha"
+    assert (beta / "out.txt").read_text(encoding="utf-8") == "soy beta"
+
+
+def test_exec_tools_run_in_the_session_cwd(cfg, tmp_path):
+    project = _project(cfg, tmp_path, "project")
+    script = [
+        [tool_delta(0, "c1", "run_python",
+                    json.dumps({"code": "import os; print(os.getcwd())"})),
+         usage_chunk(10, 5)],
+        [text_delta("ok"), usage_chunk(12, 2)],
+    ]
+    s, events = make_session(cfg, script, cwd=str(project))
+    s.skip_permissions = True
+    s.run_turn("dime el cwd")
+    tr = next(e for e in events if isinstance(e, p.ToolCallResult))
+    assert os.path.realpath(tr.result.strip()) == os.path.realpath(str(project))
