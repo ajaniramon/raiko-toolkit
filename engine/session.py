@@ -29,6 +29,7 @@ from context import ContextTracker
 from tools import TOOLS, call_tool, danger_match
 
 from engine import protocol as ev
+from engine import skills as skills_mod
 from engine import store
 from engine.config import (AUTO_COMPACT_PCT, MAX_ITERATIONS, THINK_RETRIES,
                            TOOL_TIMEOUT, build_system_prompt, resolve_key,
@@ -42,7 +43,9 @@ def tool_arg_summary(name, args):
         d = json.loads(args) if isinstance(args, str) else dict(args or {})
     except Exception:
         d = None
-    if isinstance(d, dict):
+    if isinstance(d, dict) and name == "skill" and d.get("name"):
+        val = str(d["name"])
+    elif isinstance(d, dict):
         for key in ("pattern", "name_glob", "command", "code", "query", "path", "local_path"):
             if d.get(key):
                 val = str(d[key])
@@ -101,7 +104,18 @@ class Session:
         self.enable_thinking = True
         self.client = None
         self.tracker = None
-        self.messages = [{"role": "system", "content": build_system_prompt(self._active_persona())}]
+
+        # Agent Skills (SKILL.md discovery): a failure here must never block
+        # session creation, just leave the session skill-less.
+        try:
+            self.skills = skills_mod.discover_skills(cfg)
+        except Exception as e:
+            self.skills = []
+            self.emit(ev.Notice(kind="warning",
+                                text=f"skills: discovery failed: {type(e).__name__}: {e}"))
+        self._skill_tools = [skills_mod.skill_tool_schema()] if self.skills else []
+
+        self.messages = [{"role": "system", "content": self._system_prompt()}]
         self.session_id = None          # set on first save; reused on resume
 
         # MCP (remote tools)
@@ -127,6 +141,13 @@ class Session:
     def _active_persona(self):
         sp = self.cfg.get("system_prompts") or {}
         return sp.get(self.cfg.get("active_system_prompt", "default"), "")
+
+    def _system_prompt(self, persona=None):
+        """Effective system prompt: the given (or active) persona + TOOL_RULES +
+        the skills index, if any skill was discovered."""
+        if persona is None:
+            persona = self._active_persona()
+        return build_system_prompt(persona, skills_mod.skills_index(self.skills))
 
     def configure(self, provider, model, ctx_limit=None, base_url=None, api_key=None,
                   emit_started=True):
@@ -167,7 +188,7 @@ class Session:
     # ---------- system prompt ----------
     def apply_persona(self, persona):
         """Set the live system message (messages[0]); takes effect on the next turn."""
-        prompt = build_system_prompt(persona)
+        prompt = self._system_prompt(persona)
         if self.messages and self.messages[0].get("role") == "system":
             self.messages[0]["content"] = prompt
         else:
@@ -201,7 +222,7 @@ class Session:
         """Install a saved session's state. The caller re-`configure()`s first
         (it owns provider selection / local server boot)."""
         self.messages = sess.get("messages") or [
-            {"role": "system", "content": build_system_prompt(self._active_persona())}]
+            {"role": "system", "content": self._system_prompt()}]
         self.session_id = sess.get("id")
         if sess.get("ctx_window") and self.tracker:
             self.tracker.limit = sess["ctx_window"]
@@ -210,7 +231,7 @@ class Session:
         """Drop the conversation (keep the system prompt) and start a fresh session.
         The previous session stays saved on disk."""
         sys_msg = (self.messages[0] if self.messages and self.messages[0].get("role") == "system"
-                   else {"role": "system", "content": build_system_prompt(self._active_persona())})
+                   else {"role": "system", "content": self._system_prompt()})
         self.messages = [sys_msg]
         self.session_id = None          # the cleared chat becomes a new session
         self.session_cost = 0.0         # reset the spend tally with the conversation
@@ -337,6 +358,12 @@ class Session:
         if name in self.blocked_tools:
             return (f"ERROR: tool '{name}' is disabled on this interface by policy "
                     f"(it cannot be allowed from here)")
+        if name == "skill":   # instructions only — no permission gating needed
+            try:
+                skill_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args or {})
+            except Exception:
+                skill_args = {}
+            return skills_mod.load_skill(self.skills, str((skill_args or {}).get("name", "")))
         if name in self.mcp_route:   # remote tool (MCP) → run on its server
             url, orig = self.mcp_route[name]
             return self._with_timeout(name, lambda: mcp_client.call_tool(url, orig, raw_args))
@@ -626,7 +653,8 @@ class Session:
         accumulates tool-call deltas; accounts usage/cost. Returns the assistant
         message as a dict."""
         self._repair_history()
-        params = dict(model=self.model, messages=self.messages, tools=TOOLS + self.mcp_tools,
+        params = dict(model=self.model, messages=self.messages,
+                      tools=TOOLS + self.mcp_tools + self._skill_tools,
                       tool_choice="auto", stream=True)
         params["stream_options"] = {"include_usage": True}
         if self.is_local:

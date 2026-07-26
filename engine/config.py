@@ -75,6 +75,10 @@ DEFAULT_CONFIG = {
     # exposed to the agent name-prefixed. Edit in tui_config.json:
     #   "mcp": {"enabled": true, "servers": [{"name":"fs","url":"http://localhost:8765/mcp","prefix":"fs_"}]}
     "mcp": {"enabled": False, "servers": []},
+    # Agent Skills: discover SKILL.md folders (Anthropic's Agent Skills standard).
+    # `paths` = extra roots to scan (expanduser'd); `use_claude_skills` also scans
+    # ~/.claude/skills. See engine/skills.py for the built-in roots always scanned.
+    "skills": {"enabled": True, "paths": [], "use_claude_skills": False},
     "tavily_api_key": "",   # for the web_search tool (free key at tavily.com)
     "auto_compact": True,   # auto-summarize older turns when the context fills up
     "max_iterations": 8,    # max tool-call rounds per turn (agent loop cap)
@@ -118,9 +122,13 @@ TOOL_RULES = (
 )
 
 
-def build_system_prompt(persona):
-    """Effective system prompt = (persona or default) + the fixed TOOL_RULES."""
+def build_system_prompt(persona, skills_block: str = ""):
+    """Effective system prompt = (persona or default) + the fixed TOOL_RULES, plus
+    an optional third section listing available skills (empty = omitted, so
+    existing callers that don't pass it see identical output)."""
     persona = (persona or "").strip() or DEFAULT_PERSONA
+    if skills_block:
+        return f"{persona}\n{TOOL_RULES}\n\n{skills_block}"
     return f"{persona}\n{TOOL_RULES}"
 
 

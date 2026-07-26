@@ -120,7 +120,9 @@ def make_session() -> Session:
     provider = _PROVIDER_MAP.get(PROVIDER, PROVIDER)
     session.configure(provider, MODEL, base_url=BASE_URL,
                       api_key=API_KEY or "sk-noop")
-    session.messages[0]["content"] = SYSTEM_PROMPT
+    # apply_persona() (not a raw assignment) so it goes through build_system_prompt:
+    # TOOL_RULES and the skills index (if any) get appended instead of clobbered.
+    session.apply_persona(SYSTEM_PROMPT)
     return session
 
 
