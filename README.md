@@ -49,7 +49,7 @@ CLI and `raiko web` are thin adapters over it.
 ```mermaid
 flowchart LR
   you([you]) --> tui["Textual TUI<br>tui.py"]
-  cli["headless agent<br>agent.py"]
+  cli["headless CLI<br>raiko run"]
   hl["HOMELAB panel<br>(separate repo)"] -->|"WS + API<br>docs/ws-protocol.md"| web["raiko web<br>web/server.py"]
   tui -->|events/commands| E["engine/<br>turn loop · tools · permissions<br>sessions · cost · compaction"]
   cli -->|events/commands| E
@@ -141,19 +141,27 @@ python tui.py --dangerously-skip-permissions
   move, Tab to complete, Enter to run).
 - **MCP client**: attach external MCP servers in config; their tools are discovered on startup and exposed name-prefixed per server.
 
-There's also a headless agent loop in **`agent.py`** (same providers via env vars) for
+There's also a headless agent loop, **`raiko run`** (same providers, same config), for
 scripting:
 
 ```bash
-AGENT_PROVIDER=llamacpp AGENT_BASE_URL=http://localhost:25565/v1 \
-AGENT_API_KEY=sk-noop AGENT_MODEL=qwen35-9b python agent.py
+raiko run --provider local --base-url http://localhost:25565/v1 --model qwen35-9b "your prompt"
 ```
+
+Pass a prompt for one-shot use (runs the turn, prints it, exits); omit it for a REPL
+that keeps asking until Ctrl+C/EOF. `--provider`/`--model` default to the last pair used
+by the TUI/CLI (`cfg["last"]`) if you don't pass them. `--dangerously-skip-permissions`
+auto-allows flagged operations (no one to prompt headless — otherwise they're denied).
+
+> **Migration note:** the old `agent.py` script and its `AGENT_*` env vars (`AGENT_PROVIDER`,
+> `AGENT_BASE_URL`, `AGENT_API_KEY`, `AGENT_MODEL`, `AGENT_SKIP_PERMISSIONS`) are gone —
+> use `raiko run` with the flags above instead.
 
 ---
 
 ## 🧰 Tools — `tools.py`
 
-A portable, stdlib-only tool layer shared by the TUI and the headless agent.
+A portable, stdlib-only tool layer shared by the TUI and the headless CLI.
 
 **Read-only:** `read_file` · `list_dir` · `get_current_directory` · `grep` · `find_files`
 · `read_lines` · `head` · `tail` · `count_lines` · `stat_path` · `tree` · `find_in_files`
@@ -375,7 +383,7 @@ raiko-toolkit/
 ├─ engine/            # UI-agnostic agent core: turn loop, tools dispatch,
 │                     #   permissions, sessions, cost, compaction (protocol.py = contract)
 ├─ tui.py              # Textual TUI — thin adapter over the engine
-├─ agent.py           # headless CLI adapter (same providers via env)
+├─ cli.py             # headless CLI (`raiko run`) — thin adapter over the engine
 ├─ web/               # `raiko web`: WS + API + telemetry for the HOMELAB panel
 ├─ tools.py           # portable read-only + execution tool layer
 ├─ context.py         # token / context-window tracker

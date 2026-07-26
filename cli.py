@@ -1,17 +1,18 @@
-"""Headless agent CLI — a thin adapter over the engine (the same turn loop the
-TUI uses; the duplicate loop that used to live here is gone, Fase 3).
+"""Headless CLI — `raiko run`, a thin adapter over the engine (the same turn
+loop the TUI and `raiko web` use; the duplicate loop that used to live in
+agent.py is gone, this file replaces it).
 
-Environment config (defaults = nano-gpt, original behavior unchanged).
-To point at a local llama.cpp:
-  AGENT_PROVIDER=llamacpp AGENT_BASE_URL=http://localhost:25565/v1 \
-  AGENT_API_KEY=sk-noop AGENT_MODEL=qwythos python agent.py
+One-shot: `raiko run --provider local --base-url http://localhost:25565/v1 \
+--model qwen35-9b "your prompt"` runs a single turn, prints it, and exits.
+Omit the prompt for a REPL (Ctrl+C/EOF exits cleanly).
 
 Permissions: flagged operations (dangerous exec, Jira/Confluence writes, writes
 outside the workspace) follow the persisted allowlist in tui_config.json; anything
-that would need an interactive prompt is DENIED unless you pass
---dangerously-skip-permissions (or set AGENT_SKIP_PERMISSIONS=1).
+that would need an interactive prompt is DENIED (no one to ask headless) unless
+you pass --dangerously-skip-permissions.
 """
 
+import argparse
 import json
 import os
 import sys
@@ -29,16 +30,6 @@ from engine.config import load_config
 from engine.session import Session
 
 MAX_ITERATIONS = 5
-
-PROVIDER = os.environ.get("AGENT_PROVIDER", "nanogpt")  # "nanogpt" | "llamacpp"
-BASE_URL = os.environ.get("AGENT_BASE_URL", "https://nano-gpt.com/api/v1")
-API_KEY = os.environ.get("AGENT_API_KEY", "")  # set via env or tui_config.json (not versioned)
-MODEL = os.environ.get("AGENT_MODEL", "xiaomi/mimo-v2.5-pro-ultraspeed")
-SKIP_PERMISSIONS = (os.environ.get("AGENT_SKIP_PERMISSIONS") == "1"
-                    or "--dangerously-skip-permissions" in sys.argv)
-
-# legacy env names -> engine provider ids (drives extra_body / pricing handling)
-_PROVIDER_MAP = {"nanogpt": "nano", "llamacpp": "local"}
 
 SYSTEM_PROMPT = (
     "You are an agent with access to file tools. Use them when needed.\n"
@@ -112,28 +103,48 @@ def permission_policy(req: protocol.PermissionRequired) -> str:
     return "deny"
 
 
-def make_session() -> Session:
-    cfg = load_config()                 # allowlist / pricing / tool env exports
-    cfg["max_iterations"] = MAX_ITERATIONS
+def make_session(provider=None, model=None, base_url=None, api_key=None,
+                  skip_permissions=False, max_iterations=None) -> Session:
+    """Build a Session from tui_config.json.
+
+    Provider/model resolution mirrors the TUI's startup wizard: an explicit
+    CLI flag wins, otherwise fall back to the last-used pair persisted at
+    cfg["last"] (see tui.py's ProviderScreen.on_mount / AgentTUI._save_last).
+    With neither a flag nor a last-used pair on record, there is nothing
+    sensible to connect to, so this exits with a clear error instead of
+    guessing a default provider.
+    """
+    cfg = load_config()
+    last = cfg.get("last") or {}
+    provider = provider or last.get("provider")
+    model = model or last.get("model")
+    if not provider or not model:
+        print(
+            "no provider/model given and no last-used session on record — "
+            "pass --provider and --model (e.g. --provider local --model qwen35-9b)",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    cfg["max_iterations"] = max_iterations or MAX_ITERATIONS
     session = Session(cfg, emit=ConsoleRenderer(), ask_permission=permission_policy,
-                      skip_permissions=SKIP_PERMISSIONS, persist=False)
-    provider = _PROVIDER_MAP.get(PROVIDER, PROVIDER)
-    session.configure(provider, MODEL, base_url=BASE_URL,
-                      api_key=API_KEY or "sk-noop")
+                      skip_permissions=skip_permissions, persist=False)
+    # base_url/api_key: pass through only what was explicitly given; Session.configure
+    # already falls back to the provider's configured base_url and resolve_key()
+    # (config value, then the provider's conventional env var) when left as None.
+    session.configure(provider, model, base_url=base_url, api_key=api_key)
     # apply_persona() (not a raw assignment) so it goes through build_system_prompt:
     # TOOL_RULES and the skills index (if any) get appended instead of clobbered.
     session.apply_persona(SYSTEM_PROMPT)
     return session
 
 
-session = make_session()
-
-
-def run(user_prompt: str) -> str:
+def run_once(session: Session, prompt: str) -> str:
+    """Run one turn, printing it with rich as it streams. Returns the assistant's
+    final text, or 'ERROR: max iterations reached' if the turn was cut short."""
     console.print(Rule(f"[bold magenta]🤖 agent[/]  [dim]{session.tracker.format_label(session.messages)}[/]",
                        style="magenta"))
-    console.print(Panel(user_prompt, title="[bold blue]you[/]", border_style="blue", expand=False))
-    reason = session.run_turn(user_prompt)
+    console.print(Panel(prompt, title="[bold blue]you[/]", border_style="blue", expand=False))
+    reason = session.run_turn(prompt)
     if reason == "max_iterations":
         console.print(Rule("[red]max iterations[/]", style="red"))
         return "ERROR: max iterations reached"
@@ -142,6 +153,42 @@ def run(user_prompt: str) -> str:
     return (last.get("content") or "") if last.get("role") == "assistant" else ""
 
 
-if __name__ == "__main__":
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="raiko run",
+        description="headless agent loop: one-shot with a prompt, or a REPL without one",
+    )
+    ap.add_argument("prompt", nargs="?", help="run once with this prompt (omit it for a REPL)")
+    ap.add_argument("--provider",
+                    help="nano | local | xai | openrouter | openai | anthropic | gemini | remote | vllm "
+                         "(defaults to the last provider used by the TUI/CLI)")
+    ap.add_argument("--model", help="defaults to the last model used")
+    ap.add_argument("--base-url", help="override the provider's configured base_url")
+    ap.add_argument("--api-key", help="override the provider's configured/env API key")
+    ap.add_argument("--max-iterations", type=int,
+                    help=f"tool-call rounds per turn (default {MAX_ITERATIONS})")
+    ap.add_argument("--dangerously-skip-permissions", action="store_true", dest="skip_perms",
+                    help="auto-allow flagged operations (no prompts)")
+    args = ap.parse_args(argv)
+
+    session = make_session(provider=args.provider, model=args.model, base_url=args.base_url,
+                           api_key=args.api_key, skip_permissions=args.skip_perms,
+                           max_iterations=args.max_iterations)
+
+    if args.prompt:
+        result = run_once(session, args.prompt)
+        if result.startswith("ERROR"):
+            raise SystemExit(1)
+        return
+
     while True:
-        run(input("Ask something to JJ:\n"))
+        try:
+            user_prompt = input("Ask something to JJ:\n")
+        except (KeyboardInterrupt, EOFError):
+            console.print()
+            return
+        run_once(session, user_prompt)
+
+
+if __name__ == "__main__":
+    main()

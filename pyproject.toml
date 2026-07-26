@@ -40,7 +40,7 @@ Homepage = "https://github.com/ajaniramon/raiko-toolkit"
 # Flat single-file modules. serve.py/models.py live under bench/ but tui.py imports
 # them as top-level modules, so flatten them into the wheel root (force-include).
 [tool.hatch.build.targets.wheel]
-include = ["tui.py", "tools.py", "context.py", "mcp_client.py", "agent.py",
+include = ["tui.py", "tools.py", "context.py", "mcp_client.py", "cli.py",
            "engine", "web"]
 
 [tool.hatch.build.targets.wheel.force-include]
