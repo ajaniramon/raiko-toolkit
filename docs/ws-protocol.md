@@ -104,11 +104,16 @@ una ruta de fichero a partir del parámetro de la URL). Sin coincidencia →
 sesiones adjuntables ahora mismo por WS.
 
 ### `POST /api/sessions`
-Body: `{"provider": "...", "model": "...", "ctx_window"?: int, "resume"?: "<saved id>"}`.
+Body: `{"provider": "...", "model": "...", "ctx_window"?: int,
+"resume"?: "<saved id>", "permission_mode"?: "ask" | "yolo"}`.
 Con `resume`, provider/model se toman de la sesión guardada si se omiten. `provider:
 "local"` se adjunta a un llama-server YA corriendo (nunca lo arranca).
+`permission_mode` es por sesión y por defecto vale `"ask"`: `"ask"` pausa el turno
+y solicita confirmación web para operaciones sensibles; `"yolo"` las autoriza sin
+interacción. La política dura `web.allow_exec` y la denylist siguen teniendo prioridad.
 
-201 → `{"session_id", "provider", "model", "ctx_window", "protocol_version", "exec_enabled"}`.
+201 → `{"session_id", "provider", "model", "ctx_window", "protocol_version",
+"exec_enabled", "permission_mode"}`.
 Errores: 400 (body/params/configure), 401, 404 (`resume` desconocido).
 
 ### `GET /api/sessions/{saved_session_id}`
@@ -176,13 +181,15 @@ Los exec tools sobre red son **RCE en la máquina**. Por eso:
    sin `web.token` (exit 2).
 2. `web.allow_exec=false` (default): `run_*` devuelve
    `ERROR: tool '…' is disabled on this interface by policy` aunque esté en la allowlist.
-3. **Confirmación web por llamada**: con exec habilitado, TODO `run_*` y todo write
+3. **Política por sesión**: en modo `"ask"`, con exec habilitado, TODO `run_*` y todo write
    (`write_file`, `edit_file`, `jira_*` de escritura, `confluence_create/comment`)
    emite `permission_required` en **cada** llamada — el atajo de la allowlist de
    `tui_config.json` no aplica a clientes remotos (se concedió al modal de la TUI).
    La denylist (`permissions.deny`) y el confinamiento a `permissions.workspace`
    siguen aplicando. Para estas operaciones `allowed_decisions` es
    `["allow_once","deny"]`; no se ofrece un “always” que no tendría efecto.
+   En modo `"yolo"` esas confirmaciones se aprueban automáticamente. La denylist
+   y `web.allow_exec=false` no se pueden anular seleccionando YOLO.
 4. Token comparado con `secrets.compare_digest`; CORS solo por lista blanca.
 
 ## Smoke / desarrollo del panel
