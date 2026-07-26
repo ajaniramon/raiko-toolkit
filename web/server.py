@@ -20,6 +20,7 @@ import threading
 import time
 import uuid
 from copy import deepcopy
+from pathlib import Path
 
 import uvicorn
 from starlette.applications import Starlette
@@ -36,6 +37,7 @@ sys.path.insert(
 )
 
 from engine import protocol, store, telemetry
+from engine import skills as skills_mod
 from engine.config import CLOUD, URL_PROVIDERS, load_config, resolve_key
 from engine.session import Session
 
@@ -341,6 +343,57 @@ async def capabilities(request):
                 "enabled": bool(mcp.get("enabled")),
                 "servers": len(servers),
             },
+            "skills": [
+                {"name": s.name, "description": s.description}
+                for s in skills_mod.discover_skills(state.cfg)
+            ],
+        }
+    )
+
+
+async def list_skills(request):
+    if not _authorized(request):
+        return _unauthorized()
+    state = _state()
+    found = skills_mod.discover_skills(state.cfg)
+    return JSONResponse(
+        {
+            "skills": [
+                {
+                    "name": s.name,
+                    "description": s.description,
+                    "source": s.source,
+                    "path": s.path,
+                }
+                for s in found
+            ]
+        }
+    )
+
+
+async def skill_detail(request):
+    if not _authorized(request):
+        return _unauthorized()
+    state = _state()
+    name = request.path_params["name"]
+    found = skills_mod.discover_skills(state.cfg)
+    match = next((s for s in found if s.name == name), None)
+    if match is None:
+        return JSONResponse({"error": "unknown skill"}, status_code=404)
+    try:
+        content = Path(match.path).read_text(encoding="utf-8", errors="replace")
+    except Exception as error:
+        return JSONResponse(
+            {"error": f"cannot read skill: {type(error).__name__}: {error}"},
+            status_code=500,
+        )
+    return JSONResponse(
+        {
+            "name": match.name,
+            "description": match.description,
+            "source": match.source,
+            "path": match.path,
+            "content": content,
         }
     )
 
@@ -719,6 +772,8 @@ def build_app(cfg) -> Starlette:
         routes=[
             Route("/api/health", health, methods=["GET"]),
             Route("/api/capabilities", capabilities, methods=["GET"]),
+            Route("/api/skills", list_skills, methods=["GET"]),
+            Route("/api/skills/{name}", skill_detail, methods=["GET"]),
             Route("/api/sessions", list_sessions, methods=["GET"]),
             Route("/api/sessions", create_session, methods=["POST"]),
             Route("/api/sessions/{session_id}", session_detail, methods=["GET"]),

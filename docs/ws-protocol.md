@@ -48,8 +48,36 @@ sesiones vivas. Se usa para el SERVICE MATRIX.
 
 ### `GET /api/capabilities`
 
-Lista proveedores/modelos configurados, presets, política exec y estado MCP.
-Nunca expone keys, tokens ni base URLs.
+Lista proveedores/modelos configurados, presets, política exec, estado MCP y
+las skills disponibles (`skills`: `[{"name","description"}]`, mismo discovery
+que `GET /api/skills` pero resumido). Nunca expone keys, tokens ni base URLs.
+
+### `GET /api/skills`
+
+Descubre las Agent Skills (`engine/skills.discover_skills`, mismo mecanismo
+que usa el system prompt del engine) en cada petición — es un scan de disco
+barato, así que refleja skills añadidas/editadas sin reiniciar `raiko web`.
+
+```json
+{ "skills": [{"name","description","source","path"}] }
+```
+
+`source` ∈ `raiko` \| `agents` \| `claude` \| `extra` (según el root de donde
+se descubrió). `path` es la ruta absoluta al `SKILL.md`.
+
+### `GET /api/skills/{name}`
+
+Devuelve una skill concreta con su `SKILL.md` **íntegro** (frontmatter +
+cuerpo, tal cual está en disco — el panel quiere el fichero completo, no la
+versión que el engine renderiza para el modelo):
+
+```json
+{ "name", "description", "source", "path", "content" }
+```
+
+`name` se valida contra la lista de skills descubiertas (nunca se construye
+una ruta de fichero a partir del parámetro de la URL). Sin coincidencia →
+404 `{"error": "unknown skill"}`.
 
 ### `GET /api/sessions`
 ```json

@@ -14,9 +14,21 @@ from conftest import fake_client, text_delta, tool_delta, usage_chunk
 
 import web.server as srv
 from engine import store
+from engine.config import _app_home
 from context import ContextTracker
 
 AUTH = {"Authorization": "Bearer secreto"}
+
+
+def _write_skill(root, dirname, frontmatter_lines, body="Do the thing.\n"):
+    """Create <root>/<dirname>/SKILL.md, mirroring tests/test_skills.py's helper."""
+    d = os.path.join(root, dirname)
+    os.makedirs(d, exist_ok=True)
+    fm = "\n".join(frontmatter_lines)
+    content = f"---\n{fm}\n---\n{body}"
+    with open(os.path.join(d, "SKILL.md"), "w", encoding="utf-8") as f:
+        f.write(content)
+    return d
 
 
 @pytest.fixture
@@ -291,6 +303,68 @@ def test_live_session_limit_and_delete(cfg):
     deleted = client.delete(f"/api/sessions/{first.json()['session_id']}", headers=AUTH)
     assert deleted.status_code == 200
     assert deleted.json() == {"deleted": True, "kind": "live"}
+
+
+def test_list_skills_returns_discovered(client):
+    skills_dir = os.path.join(_app_home(), "skills")
+    _write_skill(skills_dir, "webpanel-demo",
+                 ['name: webpanel-demo', 'description: "Demo skill for the web API."'])
+    response = client.get("/api/skills", headers=AUTH)
+    assert response.status_code == 200
+    found = {s["name"]: s for s in response.json()["skills"]}
+    assert "webpanel-demo" in found
+    entry = found["webpanel-demo"]
+    assert entry["description"] == "Demo skill for the web API."
+    assert entry["source"] == "raiko"
+    assert entry["path"].endswith("SKILL.md")
+
+
+def test_list_skills_requires_auth(client):
+    assert client.get("/api/skills").status_code == 401
+
+
+def test_skill_detail_returns_full_markdown(client):
+    skills_dir = os.path.join(_app_home(), "skills")
+    _write_skill(skills_dir, "webpanel-detail",
+                 ['name: webpanel-detail', 'description: "Detail skill."'],
+                 body="Step 1. Do the thing.\nStep 2. Done.\n")
+    response = client.get("/api/skills/webpanel-detail", headers=AUTH)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "webpanel-detail"
+    assert body["description"] == "Detail skill."
+    assert body["source"] == "raiko"
+    assert body["path"].endswith("SKILL.md")
+    assert body["content"].startswith("---\n")
+    assert "name: webpanel-detail" in body["content"]
+    assert "Step 1. Do the thing." in body["content"]
+
+
+def test_skill_detail_requires_auth(client):
+    skills_dir = os.path.join(_app_home(), "skills")
+    _write_skill(skills_dir, "webpanel-auth",
+                 ['name: webpanel-auth', 'description: "Auth skill."'])
+    assert client.get("/api/skills/webpanel-auth").status_code == 401
+
+
+def test_skill_detail_unknown_name_returns_404(client):
+    response = client.get("/api/skills/does-not-exist", headers=AUTH)
+    assert response.status_code == 404
+    assert response.json() == {"error": "unknown skill"}
+
+
+def test_capabilities_includes_skills(client):
+    skills_dir = os.path.join(_app_home(), "skills")
+    _write_skill(skills_dir, "webpanel-cap",
+                 ['name: webpanel-cap', 'description: "Capabilities skill."'])
+    response = client.get("/api/capabilities", headers=AUTH)
+    assert response.status_code == 200
+    found = {s["name"]: s for s in response.json()["skills"]}
+    assert "webpanel-cap" in found
+    assert found["webpanel-cap"] == {
+        "name": "webpanel-cap",
+        "description": "Capabilities skill.",
+    }
 
 
 def test_mcp_tools_are_loaded_when_configured(cfg, monkeypatch):
