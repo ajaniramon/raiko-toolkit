@@ -388,7 +388,7 @@ pipx install git+https://github.com/ajaniramon/raiko-toolkit   # then: raiko
 ```bash
 git clone <your-fork-url> raiko-toolkit && cd raiko-toolkit
 python -m venv .venv && .venv\Scripts\activate        # Windows
-pip install -r requirements.txt
+pip install -e .
 
 # create your local config from the templates (these are gitignored)
 copy tui_config.example.json tui_config.json          # add your API keys
