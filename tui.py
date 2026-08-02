@@ -1843,8 +1843,8 @@ class AgentTUI(App):
         elif isinstance(e, protocol.TurnDone):
             if e.reason == "interrupted":
                 self.write_log(Text.from_markup("[bold yellow]⏹ stopped[/]"))
-            elif e.reason == "max_iterations":
-                self.write_log(Panel("max iterations reached", border_style="red"))
+            # max_iterations needs no branch: the engine already emitted a warning
+            # Notice naming the cap right before this event.
             cost = "" if self.provider in ("local", "remote", "vllm") else \
                 f" · {pricing.fmt_usd(e.turn_usd)} (session {pricing.fmt_usd(self.session_cost)})"
             self.write_log(Text.from_markup(

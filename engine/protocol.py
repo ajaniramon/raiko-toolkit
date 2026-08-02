@@ -228,6 +228,13 @@ class RewindLastUser:
 
 
 @dataclass
+class SetMaxIterations:
+    """Change how many tool-call rounds one turn may run, for this session only
+    (between turns). The engine replies with a Notice stating the new cap."""
+    max_iterations: int
+
+
+@dataclass
 class SetSystemPrompt:
     """Replace the persona part of the system prompt (TOOL_RULES are always
     appended by the engine). name selects a saved preset; text sets it inline."""
@@ -265,6 +272,7 @@ COMMAND_TYPES = {
     "clear": Clear,
     "rewind_last_user": RewindLastUser,
     "set_system_prompt": SetSystemPrompt,
+    "set_max_iterations": SetMaxIterations,
 }
 
 # reverse maps: dataclass -> wire name (for serializers in the web layer)

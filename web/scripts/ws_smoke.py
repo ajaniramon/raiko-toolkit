@@ -29,19 +29,22 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 async def run(base: str, token: str, provider: str, model: str, prompt: str,
-              cwd: str | None = None):
+              cwd: str | None = None, max_iterations: int | None = None):
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     body = {"provider": provider, "model": model}
     if cwd:
         # must be inside web.project_roots; GET /api/projects lists the options
         body["cwd"] = cwd
+    if max_iterations:
+        body["max_iterations"] = max_iterations
     r = requests.post(f"{base}/api/sessions", headers=headers, json=body, timeout=30)
     r.raise_for_status()
     info = r.json()
     sid = info["session_id"]
     print(f"session {sid} · {info['provider']} · {info['model']} · "
           f"ctx {info.get('ctx_window')} · protocol {info.get('protocol_version')} · "
-          f"exec {'ON' if info.get('exec_enabled') else 'off'} · cwd {info.get('cwd')}")
+          f"exec {'ON' if info.get('exec_enabled') else 'off'} · "
+          f"rounds/turn {info.get('max_iterations')} · cwd {info.get('cwd')}")
     if info.get("cwd_note"):
         print(f"· {info['cwd_note']}")
 
@@ -97,8 +100,11 @@ def main():
     ap.add_argument("--prompt", default="List the files in the current directory and summarize.")
     ap.add_argument("--cwd", default=None,
                     help="working directory for the session (must be inside web.project_roots)")
+    ap.add_argument("--max-iterations", type=int, default=None,
+                    help="tool-call rounds this turn may run (default: web.max_iterations)")
     a = ap.parse_args()
-    sys.exit(asyncio.run(run(a.url.rstrip("/"), a.token, a.provider, a.model, a.prompt, a.cwd)))
+    sys.exit(asyncio.run(run(a.url.rstrip("/"), a.token, a.provider, a.model, a.prompt,
+                             a.cwd, a.max_iterations)))
 
 
 if __name__ == "__main__":

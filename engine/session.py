@@ -81,8 +81,14 @@ class Session:
     """
 
     def __init__(self, cfg, emit=None, ask_permission=None,
-                 skip_permissions=False, persist=True, cwd=None):
+                 skip_permissions=False, persist=True, cwd=None,
+                 max_iterations=None):
         self.cfg = cfg
+        # Tool-call rounds allowed in one turn, for THIS conversation only. None =
+        # fall back to cfg["max_iterations"]. Per-session because `raiko web` runs
+        # many sessions off one shared cfg dict — writing the cap into cfg would
+        # leak it into every other live session.
+        self.max_iterations = self._clean_max_iterations(max_iterations)
         # Working directory of THIS conversation: relative tool paths resolve
         # against it and the exec tools run in it. Defaults to the process cwd
         # (so `cd project && raiko` just works); `raiko web` sets it per session
@@ -141,6 +147,34 @@ class Session:
         self._think_leak_calls = []
         self._pending_diff = None       # (path, unified_diff) from the last write tool
         self.cur_think = self.cur_content = ""   # accumulators for the live segment
+
+    @staticmethod
+    def _clean_max_iterations(value):
+        """Normalize a per-session tool-call-round cap: a positive int, or None
+        (= use the config value). Junk (0, negatives, non-numbers) becomes None
+        rather than an exception — a bad cap must never break session creation."""
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    def iteration_cap(self):
+        """Tool-call rounds allowed for one turn: this session's own cap, else the
+        configured one, else the built-in default."""
+        if self.max_iterations:
+            return self.max_iterations
+        try:
+            return int(self.cfg.get("max_iterations", MAX_ITERATIONS) or MAX_ITERATIONS)
+        except (TypeError, ValueError):
+            return MAX_ITERATIONS
+
+    def set_max_iterations(self, value):
+        """Change this session's cap between turns. Returns the effective cap."""
+        self.max_iterations = self._clean_max_iterations(value)
+        return self.iteration_cap()
 
     # ---------- configuration / lifecycle ----------
     def _active_persona(self):
@@ -219,6 +253,8 @@ class Session:
             "ctx_window": getattr(self.tracker, "limit", None),
             "messages": self.messages,
         }
+        if self.max_iterations:
+            sess["max_iterations"] = self.max_iterations
         from engine.config import URL_PROVIDERS
         if self.provider in URL_PROVIDERS:
             sess["base_url"] = self.cfg.get(self.provider, {}).get("base_url", "")
@@ -231,12 +267,15 @@ class Session:
         The saved working directory comes back with the conversation, so a
         resumed session keeps reading and writing where it left off — unless
         the caller already picked one (`keep_cwd`, e.g. the web API validating
-        a client-supplied cwd) or the folder is gone."""
+        a client-supplied cwd) or the folder is gone. The saved tool-call-round
+        cap comes back the same way, unless this session was given one."""
         self.messages = sess.get("messages") or [
             {"role": "system", "content": self._system_prompt()}]
         self.session_id = sess.get("id")
         if sess.get("ctx_window") and self.tracker:
             self.tracker.limit = sess["ctx_window"]
+        if not self.max_iterations:
+            self.max_iterations = self._clean_max_iterations(sess.get("max_iterations"))
         saved_cwd = sess.get("cwd")
         if not keep_cwd and saved_cwd and os.path.isdir(saved_cwd):
             self.cwd = os.path.abspath(saved_cwd)
@@ -600,8 +639,7 @@ class Session:
         self._cancel.clear()
         reason = "completed"
         try:
-            max_iters = int(self.cfg.get("max_iterations", MAX_ITERATIONS) or MAX_ITERATIONS)
-            for _ in range(max_iters):
+            for _ in range(self.iteration_cap()):
                 msg = self.stream_one()
                 # If the model leaked the tool call into its thinking and produced
                 # no real tool_call, retry the whole turn (the discarded attempt is
@@ -651,6 +689,13 @@ class Session:
                     break
             else:
                 reason = "max_iterations"
+                # A turn cut off mid-plan looks like a model that gave up unless
+                # the cap is named. Emitted here (not after TurnDone) so clients
+                # that stop reading on turn_done still see it.
+                self.emit(ev.Notice(kind="warning", text=(
+                    f"stopped after {self.iteration_cap()} tool-call rounds "
+                    f"(max_iterations) — the answer may be unfinished. Raise the "
+                    f"cap to let it keep working.")))
         except Exception as e:
             msg = str(e)
             if "parse tool call" in msg.lower() or "failed to parse" in msg.lower():

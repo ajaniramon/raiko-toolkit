@@ -17,9 +17,10 @@ from context import ContextTracker
 from tools import TOOLS
 
 
-def make_session(cfg, script, hook=None, cwd=None):
+def make_session(cfg, script, hook=None, cwd=None, max_iterations=None):
     events = []
-    s = Session(cfg, emit=events.append, ask_permission=hook, persist=False, cwd=cwd)
+    s = Session(cfg, emit=events.append, ask_permission=hook, persist=False, cwd=cwd,
+                max_iterations=max_iterations)
     s.provider, s.model, s.is_local = "openai", "gpt-test", False
     s.tracker = ContextTracker("gpt-test")
     s.client = fake_client(script)
@@ -353,6 +354,76 @@ def test_concurrent_sessions_do_not_share_a_working_directory(cfg, tmp_path, mon
 
     assert (alpha / "out.txt").read_text(encoding="utf-8") == "soy alpha"
     assert (beta / "out.txt").read_text(encoding="utf-8") == "soy beta"
+
+
+def _echo_round(call_id):
+    """One tool-call round the engine will always execute (exec is allowed via
+    skip_permissions in these tests), so the loop keeps iterating."""
+    return [tool_delta(0, call_id, "run_python", json.dumps({"code": "print(1)"})),
+            usage_chunk(10, 5)]
+
+
+def test_session_cap_overrides_the_config_cap(cfg):
+    cfg["max_iterations"] = 8
+    script = [_echo_round(f"c{i}") for i in range(4)]
+    s, events = make_session(cfg, script, max_iterations=2)
+    s.skip_permissions = True
+    assert s.iteration_cap() == 2
+    assert s.run_turn("sigue") == "max_iterations"
+    # exactly 2 rounds ran, so the 3rd scripted response was never requested
+    assert len([e for e in events if isinstance(e, p.ToolCallResult)]) == 2
+    # the cap is announced before TurnDone, naming itself
+    assert isinstance(events[-2], p.Notice) and events[-2].kind == "warning"
+    assert "2 tool-call rounds" in events[-2].text
+
+
+def test_config_cap_applies_when_the_session_has_none(cfg):
+    cfg["max_iterations"] = 1
+    s, events = make_session(cfg, [_echo_round("c1")])
+    s.skip_permissions = True
+    assert s.iteration_cap() == 1
+    assert s.run_turn("sigue") == "max_iterations"
+
+
+def test_junk_caps_fall_back_to_the_config_instead_of_raising(cfg):
+    cfg["max_iterations"] = 8
+    for junk in (0, -5, "many", True, None):
+        s, _ = make_session(cfg, [[]], max_iterations=junk)
+        assert s.iteration_cap() == 8, junk
+
+
+def test_set_max_iterations_changes_the_cap_between_turns(cfg):
+    s, _ = make_session(cfg, [[]], max_iterations=3)
+    assert s.set_max_iterations(40) == 40 and s.iteration_cap() == 40
+    assert s.set_max_iterations(None) == cfg["max_iterations"]   # back to the config
+
+
+def test_session_saves_its_cap_and_resume_restores_it(cfg, tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "SESSIONS_DIR", str(tmp_path / "sessions"))
+    script = [[text_delta("hecho."), usage_chunk(10, 3)]]
+    s, _ = make_session(cfg, script, max_iterations=42)
+    s.persist = True
+    s.run_turn("hola")
+
+    saved = store.load_session(s.session_id)
+    assert saved["max_iterations"] == 42
+
+    other, _ = make_session(cfg, [[]])
+    other.resume(saved)
+    assert other.iteration_cap() == 42
+
+    chosen, _ = make_session(cfg, [[]], max_iterations=7)
+    chosen.resume(saved)          # a cap picked for THIS session wins over the saved one
+    assert chosen.iteration_cap() == 7
+
+
+def test_sessions_with_different_caps_never_touch_the_shared_config(cfg):
+    """`raiko web` hands the same cfg dict to every session: a per-session cap
+    must live on the session, not in that dict."""
+    alpha, _ = make_session(cfg, [[]], max_iterations=10)
+    beta, _ = make_session(cfg, [[]], max_iterations=200)
+    assert (alpha.iteration_cap(), beta.iteration_cap()) == (10, 200)
+    assert cfg["max_iterations"] == 8
 
 
 def test_exec_tools_run_in_the_session_cwd(cfg, tmp_path):

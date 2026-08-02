@@ -46,6 +46,7 @@
     "max_live_sessions": 16,
     "session_ttl_seconds": 3600,
     "queue_size": 4096,
+    "max_iterations": 60,
     "project_roots": []
   },
   "jira": { "api_token": "" },

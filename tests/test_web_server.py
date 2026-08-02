@@ -43,13 +43,16 @@ def make_ws_session(
     provider="openai",
     model="gpt-test",
     permission_mode="ask",
+    max_iterations=None,
 ):
-    r = client.post("/api/sessions", headers=AUTH,
-                    json={
-                        "provider": provider,
-                        "model": model,
-                        "permission_mode": permission_mode,
-                    })
+    body = {
+        "provider": provider,
+        "model": model,
+        "permission_mode": permission_mode,
+    }
+    if max_iterations is not None:
+        body["max_iterations"] = max_iterations
+    r = client.post("/api/sessions", headers=AUTH, json=body)
     assert r.status_code == 201, r.text
     sid = r.json()["session_id"]
     live = srv.STATE.sessions[sid].session
@@ -669,3 +672,140 @@ def test_capabilities_reports_the_project_roots(rooted):
     client, root, _ = rooted
     body = client.get("/api/capabilities", headers=AUTH).json()
     assert body["project_roots"] == [os.path.realpath(str(root))]
+
+
+# ---------------------------------------------------------------- max_iterations
+
+def _rounds(n):
+    """n tool-call rounds the engine will keep executing (exec is blocked over the
+    web, which still counts as a round) plus a final text answer."""
+    script = [[tool_delta(0, f"c{i}", "run_python", json.dumps({"code": "print(1)"})),
+               usage_chunk(10, 5)] for i in range(n)]
+    return script + [[text_delta("listo"), usage_chunk(12, 2)]]
+
+
+def _drain_notice(ws):
+    """Next notice on the socket (telemetry samples arrive interleaved)."""
+    while True:
+        event = ws.receive_json()
+        if event["type"] == "notice":
+            return event
+
+
+def test_capabilities_expose_the_iteration_cap(client):
+    body = client.get("/api/capabilities", headers=AUTH).json()
+    assert body["default_max_iterations"] == srv.DEFAULT_WEB_MAX_ITERATIONS == 60
+    assert body["max_iterations_limit"] == srv.MAX_ITERATIONS_LIMIT
+
+
+def test_web_sessions_default_to_the_web_cap_not_the_tui_one(client, cfg):
+    """The engine/TUI default (8) is too short for an unattended panel session."""
+    body = client.post("/api/sessions", headers=AUTH,
+                       json={"provider": "openai", "model": "gpt-test"}).json()
+    assert cfg["max_iterations"] == 8          # config untouched
+    assert body["max_iterations"] == 60
+    assert srv.STATE.sessions[body["session_id"]].session.iteration_cap() == 60
+
+
+def test_configured_web_cap_becomes_the_default(cfg):
+    cfg["web"]["token"] = "secreto"
+    cfg["web"]["max_iterations"] = 25
+    client = TestClient(srv.build_app(cfg))
+    assert client.get("/api/capabilities",
+                      headers=AUTH).json()["default_max_iterations"] == 25
+    body = client.post("/api/sessions", headers=AUTH,
+                       json={"provider": "openai", "model": "gpt-test"}).json()
+    assert body["max_iterations"] == 25
+
+
+def test_create_session_accepts_a_per_session_cap(client):
+    body = client.post("/api/sessions", headers=AUTH,
+                       json={"provider": "openai", "model": "gpt-test",
+                             "max_iterations": 120}).json()
+    assert body["max_iterations"] == 120
+    assert srv.STATE.sessions[body["session_id"]].session.iteration_cap() == 120
+
+
+@pytest.mark.parametrize("bad", [0, -1, 501, "60", 12.5, True, [60]])
+def test_create_session_rejects_an_invalid_cap(client, bad):
+    response = client.post("/api/sessions", headers=AUTH,
+                           json={"provider": "openai", "model": "gpt-test",
+                                 "max_iterations": bad})
+    assert response.status_code == 400, bad
+    assert "max_iterations" in response.json()["error"]
+
+
+def test_live_sessions_keep_independent_caps(client, cfg):
+    caps = {}
+    for wanted in (5, 300):
+        body = client.post("/api/sessions", headers=AUTH,
+                           json={"provider": "openai", "model": "gpt-test",
+                                 "max_iterations": wanted}).json()
+        caps[wanted] = srv.STATE.sessions[body["session_id"]].session.iteration_cap()
+    assert caps == {5: 5, 300: 300}
+    assert cfg["max_iterations"] == 8          # never written to the shared config
+    listing = client.get("/api/sessions", headers=AUTH).json()
+    assert sorted(s["max_iterations"] for s in listing["live"]) == [5, 300]
+
+
+def test_resumed_session_keeps_its_saved_cap_unless_overridden(client):
+    store.write_session({"id": "capped-1", "provider": "openai", "model": "gpt-test",
+                         "updated": "2026-01-01T10:00:00", "title": "con tope",
+                         "max_iterations": 90,
+                         "messages": [{"role": "user", "content": "hola"}]})
+    listed = client.get("/api/sessions", headers=AUTH).json()["saved"]
+    assert next(s for s in listed if s["id"] == "capped-1")["max_iterations"] == 90
+
+    resumed = client.post("/api/sessions", headers=AUTH,
+                          json={"resume": "capped-1"}).json()
+    assert resumed["max_iterations"] == 90
+
+    overridden = client.post("/api/sessions", headers=AUTH,
+                             json={"resume": "capped-1", "max_iterations": 12}).json()
+    assert overridden["max_iterations"] == 12
+
+
+def test_turn_stopped_by_the_cap_says_so_over_the_socket(client):
+    """The silent stop is the bug: reaching the cap must be visible, not look
+    like a model that gave up mid-plan."""
+    sid, info = make_ws_session(client, _rounds(4), max_iterations=2)
+    assert info["max_iterations"] == 2
+    with client.websocket_connect(f"/ws/{sid}", headers=AUTH) as ws:
+        ws.receive_json()
+        ws.receive_json()
+        ws.send_json({"type": "send", "text": "trabaja"})
+        notices, results = [], []
+        while True:
+            event = ws.receive_json()
+            if event["type"] == "notice":
+                notices.append(event)
+            elif event["type"] == "tool_call_result":
+                results.append(event)
+            elif event["type"] == "turn_done":
+                break
+        assert event["reason"] == "max_iterations"
+        assert len(results) == 2                       # exactly the 2 allowed rounds
+        # the warning must precede turn_done: a client that stops reading there
+        # would otherwise never learn why the turn ended
+        assert notices and notices[-1]["kind"] == "warning"
+        assert "2 tool-call rounds" in notices[-1]["text"]
+
+
+def test_set_max_iterations_command_retunes_a_live_session(client):
+    sid, info = make_ws_session(client, [], max_iterations=3)
+    assert info["max_iterations"] == 3
+    live = srv.STATE.sessions[sid].session
+    with client.websocket_connect(f"/ws/{sid}", headers=AUTH) as ws:
+        ws.receive_json()
+        ws.receive_json()
+        ws.send_json({"type": "set_max_iterations", "max_iterations": 150})
+        assert "150" in _drain_notice(ws)["text"]
+        assert live.iteration_cap() == 150
+
+        ws.send_json({"type": "set_max_iterations", "max_iterations": 9000})
+        while True:
+            event = ws.receive_json()
+            if event["type"] != "telemetry":
+                break
+        assert event["type"] == "error" and "max_iterations" in event["message"]
+        assert live.iteration_cap() == 150          # rejected, cap unchanged

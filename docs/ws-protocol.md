@@ -7,7 +7,8 @@ cliente de referencia es `web/scripts/ws_smoke.py`.
 **Versionado:** `PROTOCOL_VERSION` (hoy `"1.1"`) viaja en `session_started.protocol_version`
 y en la respuesta de `POST /api/sessions`. Un cambio incompatible en cualquier evento o
 comando la incrementa — el cliente debe comprobarla al conectar y rehusar/avisar si no
-coincide con la que implementa.
+coincide con la que implementa. Añadidos compatibles (un comando nuevo, un campo nuevo
+en una respuesta REST) NO la mueven: un cliente que los ignore sigue funcionando.
 
 ## Arranque
 
@@ -27,7 +28,8 @@ Config en `tui_config.json` → clave `web`:
   "max_live_sessions": 16,
   "session_ttl_seconds": 3600,
   "queue_size": 4096,
-  "model_catalog_ttl_seconds": 86400
+  "model_catalog_ttl_seconds": 86400,
+  "max_iterations": 60             // rondas de tool calls por turno para una sesión web (techo 500)
 }
 ```
 
@@ -55,6 +57,11 @@ que `GET /api/skills` pero resumido). Nunca expone keys, tokens ni base URLs.
 
 Incluye `project_roots`: las carpetas raíz bajo las que el panel puede elegir
 directorio de trabajo (lista vacía = la función está apagada en este servidor).
+
+También `default_max_iterations` (rondas de tool calls por turno que recibe una
+sesión nueva, de `web.max_iterations`) y `max_iterations_limit` (el techo que el
+servidor acepta). El panel los usa para precargar y acotar su control sin
+codificar el número.
 
 ### `GET /api/providers/{provider}/models`
 
@@ -115,9 +122,10 @@ corren en el directorio del proceso.
 
 ### `GET /api/sessions`
 ```json
-{ "saved": [{"id","title","provider","model","updated","cwd","messages"}],
+{ "saved": [{"id","title","provider","model","updated","cwd",
+             "max_iterations","messages"}],
   "live":  [{"session_id","provider","model","busy","connected",
-             "engine_session_id","permission_mode","cwd"}],
+             "engine_session_id","permission_mode","max_iterations","cwd"}],
   "cwd": "" }
 ```
 `saved` = sesiones persistidas en disco (para el Continue/New del panel). `live` =
@@ -131,7 +139,8 @@ pero no casan con ningún filtro de carpeta.
 
 ### `POST /api/sessions`
 Body: `{"provider": "...", "model": "...", "ctx_window"?: int,
-"resume"?: "<saved id>", "permission_mode"?: "ask" | "yolo", "cwd"?: "<carpeta>"}`.
+"resume"?: "<saved id>", "permission_mode"?: "ask" | "yolo", "cwd"?: "<carpeta>",
+"max_iterations"?: int}`.
 Con `resume`, provider/model se toman de la sesión guardada si se omiten. `provider:
 "local"` se adjunta a un llama-server YA corriendo (nunca lo arranca).
 `permission_mode` es por sesión y por defecto vale `"ask"`: `"ask"` pausa el turno
@@ -146,10 +155,20 @@ que `..`, symlinks y rutas arbitrarias se rechazan con 400. Si se omite y hay
 de los roots; si no, la sesión cae al directorio del proceso y la respuesta lo
 avisa en `cwd_note`. Sin `cwd` ni `resume`: directorio del proceso.
 
+`max_iterations` es el número de **rondas de tool calls** que un turno puede
+ejecutar en esta sesión (una ronda = una respuesta del modelo, que puede llevar
+varias tool calls). Es por sesión: el servidor nunca lo escribe en la config
+compartida, así que dos sesiones vivas pueden correr con topes distintos.
+Prioridad: el valor del body → el de la sesión resumida → `web.max_iterations`
+(60 por defecto). Fuera de `1..500` → 400. Al agotarse, el turno acaba con
+`turn_done{reason:"max_iterations"}` precedido de un `notice{kind:"warning"}` que
+nombra el tope.
+
 201 → `{"session_id", "provider", "model", "ctx_window", "protocol_version",
-"exec_enabled", "permission_mode", "cwd", "cwd_note", "mcp_tools", "mcp_servers",
-"mcp_error"}`.
-Errores: 400 (body/params/configure/`cwd` inválido), 401, 404 (`resume` desconocido).
+"exec_enabled", "permission_mode", "max_iterations", "cwd", "cwd_note",
+"mcp_tools", "mcp_servers", "mcp_error"}`.
+Errores: 400 (body/params/configure/`cwd`/`max_iterations` inválido), 401,
+404 (`resume` desconocido).
 
 ### `GET /api/sessions/{saved_session_id}`
 
@@ -179,6 +198,7 @@ interrumpe y cualquier permiso pendiente se deniega inmediatamente.
 | `clear` | `{}` | vacía la conversación (conserva system prompt) |
 | `rewind_last_user` | `{}` | retira el último mensaje de usuario; responde `notice{kind:"rewind", text:<texto retirado>}` |
 | `set_system_prompt` | `{name?, text?}` | `text` gana; `name` refiere a un preset guardado |
+| `set_max_iterations` | `{max_iterations}` | rondas de tool calls por turno, solo para esta sesión (no mid-turn); `1..500`; responde `notice` con el tope efectivo |
 
 ### Eventos (servidor → cliente)
 

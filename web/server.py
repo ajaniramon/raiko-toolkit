@@ -57,6 +57,12 @@ CONFIRM_TOOLS = {
 }
 PERMISSION_MODES = {"ask", "yolo"}
 DEFAULT_PERMISSION_MODE = "ask"
+# Tool-call rounds per turn for a web session. The engine default (8) is tuned for
+# the TUI, where a human drives the next step; a panel session runs unattended, so
+# it gets a much longer leash by default, capped so a client can't ask for a
+# practically endless loop.
+DEFAULT_WEB_MAX_ITERATIONS = 60
+MAX_ITERATIONS_LIMIT = 500
 PERMISSION_TIMEOUT = 300
 TELEMETRY_INTERVAL = 2.0
 MAX_COMMAND_CHARS = 262_144
@@ -106,6 +112,7 @@ class WebSession:
         permission_mode: str = DEFAULT_PERMISSION_MODE,
         queue_size: int = DEFAULT_QUEUE_SIZE,
         cwd: str | None = None,
+        max_iterations: int | None = None,
     ):
         self.id = uuid.uuid4().hex[:16]
         self.permission_mode = permission_mode
@@ -119,14 +126,16 @@ class WebSession:
         self.created_at = self.last_seen
         self._perm_lock = threading.Lock()
         self._pending_perms: dict[str, dict] = {}
-        # cwd is per session, never a process-wide chdir: this one process runs
-        # several sessions at once, each possibly in a different project.
+        # cwd and the tool-call-round cap are per session, never process-wide (no
+        # chdir, no cfg write): this one process runs several sessions at once,
+        # each possibly in a different project and with a different leash.
         self.session = Session(
             cfg,
             emit=self._emit,
             ask_permission=self._ask_permission,
             skip_permissions=permission_mode == "yolo",
             cwd=cwd,
+            max_iterations=max_iterations,
         )
         if not allow_exec:
             self.session.blocked_tools |= EXEC_TOOLS
@@ -250,6 +259,11 @@ class AppState:
             64,
             int(self.web_cfg.get("queue_size") or DEFAULT_QUEUE_SIZE),
         )
+        # default cap for sessions that don't ask for one (clamped to the hard limit)
+        self.max_iterations = min(
+            MAX_ITERATIONS_LIMIT,
+            max(1, int(self.web_cfg.get("max_iterations") or DEFAULT_WEB_MAX_ITERATIONS)),
+        )
         self.model_catalog = ModelCatalogCache(
             cfg,
             ttl_seconds=int(
@@ -313,6 +327,16 @@ def _valid_model(model) -> bool:
         and "\x00" not in model
         and "\r" not in model
         and "\n" not in model
+    )
+
+
+def _valid_max_iterations(value) -> bool:
+    """A client-supplied tool-call-round cap: a plain int within the hard limit.
+    bool is rejected explicitly (True would otherwise pass as 1)."""
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, int)
+        and 1 <= value <= MAX_ITERATIONS_LIMIT
     )
 
 
@@ -434,6 +458,10 @@ async def capabilities(request):
             "exec_enabled": state.allow_exec,
             "permission_modes": sorted(PERMISSION_MODES),
             "default_permission_mode": DEFAULT_PERMISSION_MODE,
+            # tool-call rounds a turn may run: what a new session gets by default
+            # and the ceiling a client may ask for
+            "default_max_iterations": state.max_iterations,
+            "max_iterations_limit": MAX_ITERATIONS_LIMIT,
             # empty list -> this server pins every session to its own cwd
             "project_roots": _project_roots(state.cfg),
             "mcp": {
@@ -584,6 +612,7 @@ async def list_sessions(request):
             "model": session.get("model"),
             "updated": session.get("updated"),
             "cwd": session.get("cwd") or "",
+            "max_iterations": session.get("max_iterations"),
             "messages": len(session.get("messages", [])),
         }
         for session in (store.list_sessions(raw_cwd) if wanted
@@ -598,6 +627,7 @@ async def list_sessions(request):
             "connected": web_session.loop is not None,
             "engine_session_id": web_session.session.session_id,
             "permission_mode": web_session.permission_mode,
+            "max_iterations": web_session.session.iteration_cap(),
             "cwd": web_session.session.cwd,
         }
         for web_session in state.sessions.values()
@@ -667,6 +697,20 @@ async def create_session(request):
             status_code=400,
         )
 
+    # Tool-call rounds for this session: what the client asked for, else what the
+    # resumed session ran with, else this server's default.
+    max_iterations = state.max_iterations
+    if body.get("max_iterations") is not None:
+        if not _valid_max_iterations(body.get("max_iterations")):
+            return JSONResponse(
+                {"error": f"max_iterations must be an integer "
+                          f"between 1 and {MAX_ITERATIONS_LIMIT}"},
+                status_code=400,
+            )
+        max_iterations = body["max_iterations"]
+    elif saved and _valid_max_iterations(saved.get("max_iterations")):
+        max_iterations = saved["max_iterations"]
+
     # Working directory. An explicit cwd must sit inside web.project_roots; a
     # resumed session brings its own, but only if that folder is still allowed
     # (it may have been saved from the TUI, anywhere on the machine).
@@ -689,6 +733,7 @@ async def create_session(request):
         permission_mode=permission_mode,
         queue_size=state.queue_size,
         cwd=cwd,
+        max_iterations=max_iterations,
     )
     base_url = None
     if provider == "local":
@@ -729,6 +774,7 @@ async def create_session(request):
             "protocol_version": protocol.PROTOCOL_VERSION,
             "exec_enabled": state.allow_exec,
             "permission_mode": web_session.permission_mode,
+            "max_iterations": web_session.session.iteration_cap(),
             "cwd": web_session.session.cwd,
             "cwd_note": cwd_note,
             "mcp_tools": len(web_session.session.mcp_tools),
@@ -917,6 +963,27 @@ async def ws_endpoint(socket: WebSocket):
                     )
                 )
                 web_session._emit(web_session.snapshot())
+            elif command_type == "set_max_iterations":
+                if web_session.busy:
+                    web_session._emit(
+                        protocol.Error(
+                            message="cannot change max_iterations mid-turn"
+                        )
+                    )
+                    continue
+                value = command.get("max_iterations")
+                if not _valid_max_iterations(value):
+                    web_session._emit(
+                        protocol.Error(
+                            message=f"max_iterations must be an integer between 1 "
+                                    f"and {MAX_ITERATIONS_LIMIT}"
+                        )
+                    )
+                    continue
+                cap = session.set_max_iterations(value)
+                web_session._emit(
+                    protocol.Notice(text=f"max tool-call rounds per turn: {cap}")
+                )
             elif command_type == "set_system_prompt":
                 if web_session.busy:
                     web_session._emit(
@@ -1052,6 +1119,14 @@ def main(argv=None):
             "no web.project_roots configured - sessions run in this process's "
             f"directory ({os.getcwd()}) and any client-sent cwd is rejected."
         )
+    default_iters = min(
+        MAX_ITERATIONS_LIMIT,
+        max(1, int(web_cfg.get("max_iterations") or DEFAULT_WEB_MAX_ITERATIONS)),
+    )
+    print(
+        f"tool-call rounds per turn: {default_iters} by default "
+        f"(web.max_iterations; a session may ask for up to {MAX_ITERATIONS_LIMIT})"
+    )
     print(
         f"raiko web | ws://{host}:{port}/ws/{{session_id}} | "
         f"protocol v{protocol.PROTOCOL_VERSION}"

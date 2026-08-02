@@ -79,6 +79,13 @@ whitelist, `web.allow_exec=false` hard-disables `run_*` over the socket, and eve
 exec/write requires an explicit `permission_response` even if allowlisted locally.
 Reference client / smoke: `python web/scripts/ws_smoke.py`.
 
+How long a turn may keep working is per session too: `max_iterations` in the
+`POST /api/sessions` body (or the `set_max_iterations` command mid-session) sets the
+tool-call rounds one turn can run, defaulting to `web.max_iterations` (60) and capped
+at 500. Panel sessions run unattended, so they get a much longer leash than the TUI's
+`max_iterations` (8), where a human drives the next step. A turn that hits the cap
+ends with `turn_done{reason:"max_iterations"}` plus a warning notice naming it.
+
 ---
 
 ## 📁 Sessions live in a folder
