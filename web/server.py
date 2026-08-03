@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import suppress
 from copy import deepcopy
 from pathlib import Path
 
@@ -60,6 +61,12 @@ CONFIRM_TOOLS = {
 }
 PERMISSION_MODES = {"ask", "yolo"}
 DEFAULT_PERMISSION_MODE = "ask"
+# Tool-call rounds per turn for a web session. The engine default (8) is tuned for
+# the TUI, where a human drives the next step; a panel session runs unattended, so
+# it gets a much longer leash by default, capped so a client can't ask for a
+# practically endless loop.
+DEFAULT_WEB_MAX_ITERATIONS = 60
+MAX_ITERATIONS_LIMIT = 500
 PERMISSION_TIMEOUT = 300
 TELEMETRY_INTERVAL = 2.0
 MAX_COMMAND_CHARS = 262_144
@@ -68,6 +75,7 @@ MAX_MODEL_CHARS = 191
 DEFAULT_QUEUE_SIZE = 4096
 DEFAULT_MAX_LIVE_SESSIONS = 16
 DEFAULT_SESSION_TTL_SECONDS = 3600
+MAX_PROJECTS_LISTED = 500
 
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 _PROVIDER_RE = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
@@ -107,12 +115,15 @@ class WebSession:
         allow_exec: bool,
         permission_mode: str = DEFAULT_PERMISSION_MODE,
         queue_size: int = DEFAULT_QUEUE_SIZE,
+        cwd: str | None = None,
+        max_iterations: int | None = None,
     ):
         self.id = uuid.uuid4().hex[:16]
         self.permission_mode = permission_mode
         self.loop: asyncio.AbstractEventLoop | None = None
         self.queue_size = max(64, queue_size)
         self.queue: asyncio.Queue[str] | None = None
+        self.socket: WebSocket | None = None
         self.connection_id: str | None = None
         self.busy = False
         self.turn_task: asyncio.Task | None = None
@@ -120,22 +131,34 @@ class WebSession:
         self.created_at = self.last_seen
         self._perm_lock = threading.Lock()
         self._pending_perms: dict[str, dict] = {}
+        # cwd and the tool-call-round cap are per session, never process-wide (no
+        # chdir, no cfg write): this one process runs several sessions at once,
+        # each possibly in a different project and with a different leash.
         self.session = Session(
             cfg,
             emit=self._emit,
             ask_permission=self._ask_permission,
             skip_permissions=permission_mode == "yolo",
+            cwd=cwd,
+            max_iterations=max_iterations,
         )
         if not allow_exec:
             self.session.blocked_tools |= EXEC_TOOLS
         if permission_mode == "ask":
             self.session.always_ask_tools |= CONFIRM_TOOLS | EXEC_TOOLS
 
-    def attach(self, loop: asyncio.AbstractEventLoop) -> str | None:
-        if self.loop is not None:
+    def attach(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        socket: WebSocket,
+        *,
+        takeover: bool = False,
+    ) -> str | None:
+        if self.loop is not None and not takeover:
             return None
         self.loop = loop
         self.queue = asyncio.Queue(maxsize=self.queue_size)
+        self.socket = socket
         self.connection_id = uuid.uuid4().hex[:12]
         self.last_seen = time.monotonic()
         return self.connection_id
@@ -147,6 +170,7 @@ class WebSession:
         self.session.interrupt()
         self.loop = None
         self.queue = None
+        self.socket = None
         self.connection_id = None
         self.last_seen = time.monotonic()
 
@@ -248,6 +272,11 @@ class AppState:
             64,
             int(self.web_cfg.get("queue_size") or DEFAULT_QUEUE_SIZE),
         )
+        # default cap for sessions that don't ask for one (clamped to the hard limit)
+        self.max_iterations = min(
+            MAX_ITERATIONS_LIMIT,
+            max(1, int(self.web_cfg.get("max_iterations") or DEFAULT_WEB_MAX_ITERATIONS)),
+        )
         self.model_catalog = ModelCatalogCache(
             cfg,
             ttl_seconds=int(
@@ -312,6 +341,67 @@ def _valid_model(model) -> bool:
         and "\r" not in model
         and "\n" not in model
     )
+
+
+def _valid_max_iterations(value) -> bool:
+    """A client-supplied tool-call-round cap: a plain int within the hard limit.
+    bool is rejected explicitly (True would otherwise pass as 1)."""
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, int)
+        and 1 <= value <= MAX_ITERATIONS_LIMIT
+    )
+
+
+def _project_roots(cfg) -> list[str]:
+    """Configured web.project_roots, as existing absolute directories. Empty by
+    default: with no roots configured, no client-chosen working directory is
+    accepted at all."""
+    raw = (cfg.get("web", {}) or {}).get("project_roots") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    roots = []
+    for entry in raw:
+        if not isinstance(entry, str) or not entry.strip():
+            continue
+        try:
+            path = os.path.realpath(os.path.expanduser(entry.strip()))
+        except (OSError, ValueError):
+            continue
+        if os.path.isdir(path) and path not in roots:
+            roots.append(path)
+    return roots
+
+
+def _within_root(root: str, path: str) -> bool:
+    """True if `path` is `root` or lives under it. Both must be realpath'd
+    already: that is what stops '..' segments and symlinks out of the root."""
+    try:
+        return os.path.commonpath(
+            [os.path.normcase(root), os.path.normcase(path)]
+        ) == os.path.normcase(root)
+    except (ValueError, OSError):
+        return False   # different drive / unusable path
+
+
+def _resolve_project_cwd(cfg, raw) -> tuple[str | None, str | None]:
+    """Validate a client-supplied working directory. Returns (path, error): the
+    path is realpath'd (no '..' escapes, no symlink hops) and must be an existing
+    directory inside one of web.project_roots."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None, "cwd must be a non-empty string"
+    roots = _project_roots(cfg)
+    if not roots:
+        return None, "no web.project_roots configured — this server accepts no cwd"
+    try:
+        path = os.path.realpath(os.path.expanduser(raw.strip()))
+    except (OSError, ValueError):
+        return None, "cwd is not a usable path"
+    if not os.path.isdir(path):
+        return None, "cwd is not an existing directory"
+    if not any(_within_root(root, path) for root in roots):
+        return None, "cwd is outside the configured project roots"
+    return path, None
 
 
 def _provider_capabilities(cfg) -> list[dict]:
@@ -381,6 +471,12 @@ async def capabilities(request):
             "exec_enabled": state.allow_exec,
             "permission_modes": sorted(PERMISSION_MODES),
             "default_permission_mode": DEFAULT_PERMISSION_MODE,
+            # tool-call rounds a turn may run: what a new session gets by default
+            # and the ceiling a client may ask for
+            "default_max_iterations": state.max_iterations,
+            "max_iterations_limit": MAX_ITERATIONS_LIMIT,
+            # empty list -> this server pins every session to its own cwd
+            "project_roots": _project_roots(state.cfg),
             "mcp": {
                 "enabled": bool(mcp.get("enabled")),
                 "servers": len(servers),
@@ -466,11 +562,61 @@ async def skill_detail(request):
     )
 
 
+async def list_projects(request):
+    """Folders a session may be rooted in: every configured root plus its direct
+    children. This is the only source of valid `cwd` values — POST /api/sessions
+    re-validates whatever the client sends, so a stale or hand-written path
+    cannot escape the roots."""
+    if not _authorized(request):
+        return _unauthorized()
+    state = _state()
+    roots = _project_roots(state.cfg)
+    counts: dict[str, int] = {}
+    for session in store.list_sessions():
+        key = store.session_cwd(session)
+        if key:
+            counts[key] = counts.get(key, 0) + 1
+    projects = []
+    for root in roots:
+        candidates = [root]
+        try:
+            candidates += sorted(
+                entry.path for entry in os.scandir(root)
+                if entry.is_dir() and not entry.name.startswith(".")
+            )
+        except OSError:
+            pass
+        for path in candidates:
+            real = os.path.realpath(path)
+            projects.append({
+                "path": real,
+                "name": os.path.basename(real) or real,
+                "root": root,
+                "sessions": counts.get(os.path.normcase(real), 0),
+            })
+            if len(projects) >= MAX_PROJECTS_LISTED:
+                break
+        if len(projects) >= MAX_PROJECTS_LISTED:
+            break
+    return JSONResponse({
+        "roots": roots,
+        "projects": projects,
+        "truncated": len(projects) >= MAX_PROJECTS_LISTED,
+    })
+
+
 async def list_sessions(request):
+    """Saved + live sessions. `?cwd=<folder>` narrows both to one project so the
+    panel can show "sessions of this project" (the filter is a plain match on the
+    stored folder, so it needs no project-root permission of its own)."""
     if not _authorized(request):
         return _unauthorized()
     state = _state()
     state.cleanup_idle()
+    raw_cwd = request.query_params.get("cwd")
+    if raw_cwd is not None and not raw_cwd.strip():
+        return JSONResponse({"error": "cwd filter must not be empty"}, status_code=400)
+    wanted = store.normalize_cwd(raw_cwd) if raw_cwd else None
     saved = [
         {
             "id": session.get("id"),
@@ -478,9 +624,12 @@ async def list_sessions(request):
             "provider": session.get("provider"),
             "model": session.get("model"),
             "updated": session.get("updated"),
+            "cwd": session.get("cwd") or "",
+            "max_iterations": session.get("max_iterations"),
             "messages": len(session.get("messages", [])),
         }
-        for session in store.list_sessions()
+        for session in (store.list_sessions(raw_cwd) if wanted
+                        else store.list_sessions())
     ]
     live = [
         {
@@ -491,10 +640,13 @@ async def list_sessions(request):
             "connected": web_session.loop is not None,
             "engine_session_id": web_session.session.session_id,
             "permission_mode": web_session.permission_mode,
+            "max_iterations": web_session.session.iteration_cap(),
+            "cwd": web_session.session.cwd,
         }
         for web_session in state.sessions.values()
+        if wanted is None or store.normalize_cwd(web_session.session.cwd) == wanted
     ]
-    return JSONResponse({"saved": saved, "live": live})
+    return JSONResponse({"saved": saved, "live": live, "cwd": raw_cwd or ""})
 
 
 async def session_detail(request):
@@ -558,11 +710,43 @@ async def create_session(request):
             status_code=400,
         )
 
+    # Tool-call rounds for this session: what the client asked for, else what the
+    # resumed session ran with, else this server's default.
+    max_iterations = state.max_iterations
+    if body.get("max_iterations") is not None:
+        if not _valid_max_iterations(body.get("max_iterations")):
+            return JSONResponse(
+                {"error": f"max_iterations must be an integer "
+                          f"between 1 and {MAX_ITERATIONS_LIMIT}"},
+                status_code=400,
+            )
+        max_iterations = body["max_iterations"]
+    elif saved and _valid_max_iterations(saved.get("max_iterations")):
+        max_iterations = saved["max_iterations"]
+
+    # Working directory. An explicit cwd must sit inside web.project_roots; a
+    # resumed session brings its own, but only if that folder is still allowed
+    # (it may have been saved from the TUI, anywhere on the machine).
+    cwd, cwd_note = None, None
+    if "cwd" in body and body.get("cwd") is not None:
+        cwd, error = _resolve_project_cwd(state.cfg, body.get("cwd"))
+        if error:
+            return JSONResponse({"error": error}, status_code=400)
+    elif saved and saved.get("cwd"):
+        candidate, error = _resolve_project_cwd(state.cfg, saved.get("cwd"))
+        if candidate:
+            cwd = candidate
+        else:
+            cwd_note = (f"saved working directory ignored ({error}); "
+                        f"this session runs in {os.getcwd()}")
+
     web_session = WebSession(
         state.cfg,
         allow_exec=state.allow_exec,
         permission_mode=permission_mode,
         queue_size=state.queue_size,
+        cwd=cwd,
+        max_iterations=max_iterations,
     )
     base_url = None
     if provider == "local":
@@ -578,7 +762,8 @@ async def create_session(request):
             base_url,
         )
         if saved:
-            web_session.session.resume(saved)
+            # keep_cwd: the folder was already resolved (and root-checked) above.
+            web_session.session.resume(saved, keep_cwd=True)
         mcp_result = []
         mcp_error = None
         if web_session.session.mcp_servers:
@@ -602,6 +787,9 @@ async def create_session(request):
             "protocol_version": protocol.PROTOCOL_VERSION,
             "exec_enabled": state.allow_exec,
             "permission_mode": web_session.permission_mode,
+            "max_iterations": web_session.session.iteration_cap(),
+            "cwd": web_session.session.cwd,
+            "cwd_note": cwd_note,
             "mcp_tools": len(web_session.session.mcp_tools),
             "mcp_servers": len(mcp_result),
             "mcp_error": mcp_error,
@@ -627,11 +815,8 @@ async def delete_session(request):
     return JSONResponse({"error": "unknown session"}, status_code=404)
 
 
-async def _pump_events(socket: WebSocket, web_session: WebSession):
+async def _pump_events(socket: WebSocket, queue: asyncio.Queue[str]):
     while True:
-        queue = web_session.queue
-        if queue is None:
-            return
         await socket.send_text(await queue.get())
 
 
@@ -666,12 +851,27 @@ async def ws_endpoint(socket: WebSocket):
         await socket.close(code=4404, reason="unknown session")
         return
 
-    connection_id = web_session.attach(asyncio.get_running_loop())
+    takeover = socket.query_params.get("takeover") == "1"
+    previous_socket = web_session.socket if takeover else None
+    connection_id = web_session.attach(
+        asyncio.get_running_loop(),
+        socket,
+        takeover=takeover,
+    )
     if connection_id is None:
         await socket.close(code=4409, reason="session already has a client")
         return
 
     await socket.accept()
+    if previous_socket is not None and previous_socket is not socket:
+        # Mobile browsers can leave a half-open socket behind while suspended.
+        # The authenticated Homelab proxy opts into takeover, making the newest
+        # connection authoritative without waiting for a TCP timeout.
+        with suppress(RuntimeError):
+            await previous_socket.close(
+                code=4410,
+                reason="session resumed by a newer client",
+            )
     session = web_session.session
     await socket.send_text(
         event_to_json(
@@ -685,8 +885,10 @@ async def ws_endpoint(socket: WebSocket):
         )
     )
     await socket.send_text(event_to_json(web_session.snapshot()))
+    assert web_session.queue is not None
+    connection_queue = web_session.queue
     pumps = [
-        asyncio.create_task(_pump_events(socket, web_session)),
+        asyncio.create_task(_pump_events(socket, connection_queue)),
         asyncio.create_task(_pump_telemetry(web_session)),
     ]
     try:
@@ -788,6 +990,27 @@ async def ws_endpoint(socket: WebSocket):
                     )
                 )
                 web_session._emit(web_session.snapshot())
+            elif command_type == "set_max_iterations":
+                if web_session.busy:
+                    web_session._emit(
+                        protocol.Error(
+                            message="cannot change max_iterations mid-turn"
+                        )
+                    )
+                    continue
+                value = command.get("max_iterations")
+                if not _valid_max_iterations(value):
+                    web_session._emit(
+                        protocol.Error(
+                            message=f"max_iterations must be an integer between 1 "
+                                    f"and {MAX_ITERATIONS_LIMIT}"
+                        )
+                    )
+                    continue
+                cap = session.set_max_iterations(value)
+                web_session._emit(
+                    protocol.Notice(text=f"max tool-call rounds per turn: {cap}")
+                )
             elif command_type == "set_system_prompt":
                 if web_session.busy:
                     web_session._emit(
@@ -852,6 +1075,7 @@ def build_app(cfg) -> Starlette:
             Route("/api/providers/{provider}/models", model_catalog, methods=["GET"]),
             Route("/api/skills", list_skills, methods=["GET"]),
             Route("/api/skills/{name}", skill_detail, methods=["GET"]),
+            Route("/api/projects", list_projects, methods=["GET"]),
             Route("/api/sessions", list_sessions, methods=["GET"]),
             Route("/api/sessions", create_session, methods=["POST"]),
             Route("/api/sessions/{session_id}", session_detail, methods=["GET"]),
@@ -914,6 +1138,22 @@ def main(argv=None):
         )
     else:
         print("[!] web.allow_exec=true - exec tools are callable over this socket.")
+    roots = _project_roots(cfg)
+    if roots:
+        print("project roots (a session's cwd must be inside one): " + ", ".join(roots))
+    else:
+        print(
+            "no web.project_roots configured - sessions run in this process's "
+            f"directory ({os.getcwd()}) and any client-sent cwd is rejected."
+        )
+    default_iters = min(
+        MAX_ITERATIONS_LIMIT,
+        max(1, int(web_cfg.get("max_iterations") or DEFAULT_WEB_MAX_ITERATIONS)),
+    )
+    print(
+        f"tool-call rounds per turn: {default_iters} by default "
+        f"(web.max_iterations; a session may ask for up to {MAX_ITERATIONS_LIMIT})"
+    )
     print(
         f"raiko web | ws://{host}:{port}/ws/{{session_id}} | "
         f"protocol v{protocol.PROTOCOL_VERSION}"

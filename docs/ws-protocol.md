@@ -7,7 +7,8 @@ cliente de referencia es `web/scripts/ws_smoke.py`.
 **Versionado:** `PROTOCOL_VERSION` (hoy `"1.1"`) viaja en `session_started.protocol_version`
 y en la respuesta de `POST /api/sessions`. Un cambio incompatible en cualquier evento o
 comando la incrementa — el cliente debe comprobarla al conectar y rehusar/avisar si no
-coincide con la que implementa.
+coincide con la que implementa. Añadidos compatibles (un comando nuevo, un campo nuevo
+en una respuesta REST) NO la mueven: un cliente que los ignore sigue funcionando.
 
 ## Arranque
 
@@ -27,7 +28,8 @@ Config en `tui_config.json` → clave `web`:
   "max_live_sessions": 16,
   "session_ttl_seconds": 3600,
   "queue_size": 4096,
-  "model_catalog_ttl_seconds": 86400
+  "model_catalog_ttl_seconds": 86400,
+  "max_iterations": 60             // rondas de tool calls por turno para una sesión web (techo 500)
 }
 ```
 
@@ -52,6 +54,14 @@ sesiones vivas. Se usa para el SERVICE MATRIX.
 Lista proveedores/modelos configurados, presets, política exec, estado MCP y
 las skills disponibles (`skills`: `[{"name","description"}]`, mismo discovery
 que `GET /api/skills` pero resumido). Nunca expone keys, tokens ni base URLs.
+
+Incluye `project_roots`: las carpetas raíz bajo las que el panel puede elegir
+directorio de trabajo (lista vacía = la función está apagada en este servidor).
+
+También `default_max_iterations` (rondas de tool calls por turno que recibe una
+sesión nueva, de `web.max_iterations`) y `max_iterations_limit` (el techo que el
+servidor acepta). El panel los usa para precargar y acotar su control sin
+codificar el número.
 
 ### `GET /api/providers/{provider}/models`
 
@@ -95,26 +105,70 @@ versión que el engine renderiza para el modelo):
 una ruta de fichero a partir del parámetro de la URL). Sin coincidencia →
 404 `{"error": "unknown skill"}`.
 
+### `GET /api/projects`
+
+Carpetas en las que una sesión puede trabajar: cada root de
+`web.project_roots` y sus hijos directos (los ocultos no se listan).
+
+```json
+{ "roots": ["C:/Users/tu/Desktop"],
+  "projects": [{"path","name","root","sessions"}],
+  "truncated": false }
+```
+`sessions` = cuántas sesiones guardadas hay en esa carpeta, para pintar el
+"3 sesiones en este proyecto" sin una segunda llamada. Sin `web.project_roots`
+configurado la lista va vacía y **ningún** `cwd` es aceptable: las sesiones
+corren en el directorio del proceso.
+
 ### `GET /api/sessions`
 ```json
-{ "saved": [{"id","title","provider","model","updated","messages"}],
-  "live":  [{"session_id","provider","model","busy","connected","engine_session_id"}] }
+{ "saved": [{"id","title","provider","model","updated","cwd",
+             "max_iterations","messages"}],
+  "live":  [{"session_id","provider","model","busy","connected",
+             "engine_session_id","permission_mode","max_iterations","cwd"}],
+  "cwd": "" }
 ```
 `saved` = sesiones persistidas en disco (para el Continue/New del panel). `live` =
 sesiones adjuntables ahora mismo por WS.
 
+`?cwd=<carpeta>` filtra ambas listas a esa carpeta ("sesiones de este proyecto").
+La comparación normaliza la ruta (absoluta, symlinks resueltos, mayúsculas en
+Windows), así que da igual cómo se escriba. Las sesiones guardadas antes de que
+existiera `cwd` traen `"cwd": ""`: salen en el listado completo y son resumibles,
+pero no casan con ningún filtro de carpeta.
+
 ### `POST /api/sessions`
 Body: `{"provider": "...", "model": "...", "ctx_window"?: int,
-"resume"?: "<saved id>", "permission_mode"?: "ask" | "yolo"}`.
+"resume"?: "<saved id>", "permission_mode"?: "ask" | "yolo", "cwd"?: "<carpeta>",
+"max_iterations"?: int}`.
 Con `resume`, provider/model se toman de la sesión guardada si se omiten. `provider:
 "local"` se adjunta a un llama-server YA corriendo (nunca lo arranca).
 `permission_mode` es por sesión y por defecto vale `"ask"`: `"ask"` pausa el turno
 y solicita confirmación web para operaciones sensibles; `"yolo"` las autoriza sin
 interacción. La política dura `web.allow_exec` y la denylist siguen teniendo prioridad.
 
+`cwd` es la carpeta de trabajo de la sesión: las tools resuelven ahí las rutas
+relativas y los `run_*` se ejecutan ahí, igual que si hubieras hecho `cd`. El
+servidor la valida (realpath + debe estar dentro de un `web.project_roots`), así
+que `..`, symlinks y rutas arbitrarias se rechazan con 400. Si se omite y hay
+`resume`, se recupera la carpeta de la sesión guardada **solo si** sigue dentro
+de los roots; si no, la sesión cae al directorio del proceso y la respuesta lo
+avisa en `cwd_note`. Sin `cwd` ni `resume`: directorio del proceso.
+
+`max_iterations` es el número de **rondas de tool calls** que un turno puede
+ejecutar en esta sesión (una ronda = una respuesta del modelo, que puede llevar
+varias tool calls). Es por sesión: el servidor nunca lo escribe en la config
+compartida, así que dos sesiones vivas pueden correr con topes distintos.
+Prioridad: el valor del body → el de la sesión resumida → `web.max_iterations`
+(60 por defecto). Fuera de `1..500` → 400. Al agotarse, el turno acaba con
+`turn_done{reason:"max_iterations"}` precedido de un `notice{kind:"warning"}` que
+nombra el tope.
+
 201 → `{"session_id", "provider", "model", "ctx_window", "protocol_version",
-"exec_enabled", "permission_mode"}`.
-Errores: 400 (body/params/configure), 401, 404 (`resume` desconocido).
+"exec_enabled", "permission_mode", "max_iterations", "cwd", "cwd_note",
+"mcp_tools", "mcp_servers", "mcp_error"}`.
+Errores: 400 (body/params/configure/`cwd`/`max_iterations` inválido), 401,
+404 (`resume` desconocido).
 
 ### `GET /api/sessions/{saved_session_id}`
 
@@ -129,8 +183,12 @@ Elimina una sesión viva o una sesión guardada.
 JSON en ambos sentidos; cada mensaje lleva `"type"` más los campos del payload.
 Al conectar, el servidor envía `session_started` y después `session_snapshot`.
 Cierres: `4401` sin auth, `4404` sesión desconocida y `4409` si ya existe otro
-cliente propietario. Si el cliente desconecta a mitad de turno, el turno se
-interrumpe y cualquier permiso pendiente se deniega inmediatamente.
+cliente propietario. Un cliente autenticado puede conectar con `?takeover=1`
+para reemplazar de forma atómica una conexión anterior que haya quedado
+suspendida; el socket sustituido recibe `4410`. Homelab usa este modo para
+recuperar una sesión al volver del background en móvil. Si el cliente desconecta
+a mitad de turno, el turno se interrumpe y cualquier permiso pendiente se
+deniega inmediatamente.
 
 ### Comandos (cliente → servidor)
 
@@ -144,6 +202,7 @@ interrumpe y cualquier permiso pendiente se deniega inmediatamente.
 | `clear` | `{}` | vacía la conversación (conserva system prompt) |
 | `rewind_last_user` | `{}` | retira el último mensaje de usuario; responde `notice{kind:"rewind", text:<texto retirado>}` |
 | `set_system_prompt` | `{name?, text?}` | `text` gana; `name` refiere a un preset guardado |
+| `set_max_iterations` | `{max_iterations}` | rondas de tool calls por turno, solo para esta sesión (no mid-turn); `1..500`; responde `notice` con el tope efectivo |
 
 ### Eventos (servidor → cliente)
 
@@ -191,6 +250,13 @@ Los exec tools sobre red son **RCE en la máquina**. Por eso:
    En modo `"yolo"` esas confirmaciones se aprueban automáticamente. La denylist
    y `web.allow_exec=false` no se pueden anular seleccionando YOLO.
 4. Token comparado con `secrets.compare_digest`; CORS solo por lista blanca.
+5. **Carpeta de trabajo acotada**: el `cwd` que manda el cliente se resuelve con
+   `realpath` y debe caer dentro de `web.project_roots` — `..` y symlinks no
+   escapan, y sin roots configurados no se acepta ninguno. El `cwd` guardado de
+   una sesión (que pudo crearse desde la TUI en cualquier punto del disco) pasa
+   la misma validación al resumirla. Es un límite de *elección de carpeta*, no
+   de escritura: quien confina las escrituras sigue siendo el workspace, que por
+   defecto es ese mismo `cwd`.
 
 ## Smoke / desarrollo del panel
 

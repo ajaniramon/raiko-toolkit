@@ -6,6 +6,11 @@ One-shot: `raiko run --provider local --base-url http://localhost:25565/v1 \
 --model qwen35-9b "your prompt"` runs a single turn, prints it, and exits.
 Omit the prompt for a REPL (Ctrl+C/EOF exits cleanly).
 
+Sessions are per folder: the run happens in the current directory (or --cwd),
+is saved against it, and `--continue` picks the last conversation of THAT
+folder back up (`--resume <id>` picks a specific one, `--resume` alone lists
+them). `--no-save` runs without leaving a session file.
+
 Permissions: flagged operations (dangerous exec, Jira/Confluence writes, writes
 outside the workspace) follow the persisted allowlist in tui_config.json; anything
 that would need an interactive prompt is DENIED (no one to ask headless) unless
@@ -25,7 +30,7 @@ from rich.text import Text
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from engine import protocol
+from engine import protocol, store
 from engine.config import load_config
 from engine.session import Session
 
@@ -104,20 +109,27 @@ def permission_policy(req: protocol.PermissionRequired) -> str:
 
 
 def make_session(provider=None, model=None, base_url=None, api_key=None,
-                  skip_permissions=False, max_iterations=None) -> Session:
-    """Build a Session from tui_config.json.
+                  skip_permissions=False, max_iterations=None, cwd=None,
+                  resume=None, persist=True, keep_cwd=False) -> Session:
+    """Build a Session from tui_config.json, rooted at `cwd` (default: the
+    process's current directory).
 
     Provider/model resolution mirrors the TUI's startup wizard: an explicit
-    CLI flag wins, otherwise fall back to the last-used pair persisted at
-    cfg["last"] (see tui.py's ProviderScreen.on_mount / AgentTUI._save_last).
-    With neither a flag nor a last-used pair on record, there is nothing
+    CLI flag wins, then the session being resumed, otherwise the last-used
+    pair persisted at cfg["last"] (see tui.py's ProviderScreen.on_mount /
+    AgentTUI._save_last). With none of those on record, there is nothing
     sensible to connect to, so this exits with a clear error instead of
     guessing a default provider.
+
+    `resume` is a saved session dict (from engine.store): its history is
+    installed and further turns are appended to that same session file. It also
+    brings back the folder it was saved in, unless `keep_cwd` says the caller
+    chose one deliberately (an explicit --cwd).
     """
     cfg = load_config()
     last = cfg.get("last") or {}
-    provider = provider or last.get("provider")
-    model = model or last.get("model")
+    provider = provider or (resume or {}).get("provider") or last.get("provider")
+    model = model or (resume or {}).get("model") or last.get("model")
     if not provider or not model:
         print(
             "no provider/model given and no last-used session on record — "
@@ -127,11 +139,15 @@ def make_session(provider=None, model=None, base_url=None, api_key=None,
         raise SystemExit(2)
     cfg["max_iterations"] = max_iterations or MAX_ITERATIONS
     session = Session(cfg, emit=ConsoleRenderer(), ask_permission=permission_policy,
-                      skip_permissions=skip_permissions, persist=False)
+                      skip_permissions=skip_permissions, persist=persist, cwd=cwd)
     # base_url/api_key: pass through only what was explicitly given; Session.configure
     # already falls back to the provider's configured base_url and resolve_key()
     # (config value, then the provider's conventional env var) when left as None.
     session.configure(provider, model, base_url=base_url, api_key=api_key)
+    if resume:
+        # An explicit --cwd wins; otherwise the session comes back in the folder
+        # it was saved in (which for --continue is this one anyway).
+        session.resume(resume, keep_cwd=keep_cwd)
     # apply_persona() (not a raw assignment) so it goes through build_system_prompt:
     # TOOL_RULES and the skills index (if any) get appended instead of clobbered.
     session.apply_persona(SYSTEM_PROMPT)
@@ -153,6 +169,47 @@ def run_once(session: Session, prompt: str) -> str:
     return (last.get("content") or "") if last.get("role") == "assistant" else ""
 
 
+def describe_session(sess) -> str:
+    """One-line summary of a saved session for the --resume listing."""
+    when = (sess.get("updated") or "")[:16].replace("T", " ")
+    turns = sum(1 for m in sess.get("messages", []) if m.get("role") == "user")
+    title = " ".join((sess.get("title") or "(no prompt)").split())
+    return (f"{sess.get('id')}  {when}  {turns:>3} turn{'s' if turns != 1 else ''}  "
+            f"{sess.get('model') or '?'}  {title[:60]}")
+
+
+def pick_saved_session(continue_last, resume_id, cwd):
+    """Resolve --continue/--resume to a saved session of `cwd`. Returns the
+    session dict, or None when there is nothing to continue. Exits (after
+    printing the folder's sessions) for a bare --resume."""
+    if resume_id:
+        saved = store.load_session(resume_id)
+        if not saved:
+            print(f"no saved session with id '{resume_id}'", file=sys.stderr)
+            raise SystemExit(2)
+        return saved
+    if continue_last:
+        saved = store.last_session(cwd)
+        if not saved:
+            console.print(Text(f"no previous session in {cwd} — starting a new one",
+                               style="dim yellow"))
+        return saved
+    return None
+
+
+def list_sessions_and_exit(cwd):
+    """`raiko run --resume` with no id: show what this folder has and stop."""
+    sessions = store.list_sessions(cwd)
+    if not sessions:
+        print(f"no saved sessions in {cwd}")
+        raise SystemExit(0)
+    print(f"sessions in {cwd}:")
+    for sess in sessions:
+        print("  " + describe_session(sess))
+    print("\nresume one with:  raiko run --resume <id> \"your prompt\"")
+    raise SystemExit(0)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="raiko run",
@@ -169,11 +226,33 @@ def main(argv=None):
                     help=f"tool-call rounds per turn (default {MAX_ITERATIONS})")
     ap.add_argument("--dangerously-skip-permissions", action="store_true", dest="skip_perms",
                     help="auto-allow flagged operations (no prompts)")
+    ap.add_argument("--cwd", help="working directory for the agent (default: this one)")
+    ap.add_argument("-c", "--continue", action="store_true", dest="continue_last",
+                    help="continue the last session of this folder")
+    ap.add_argument("-r", "--resume", nargs="?", const="", dest="resume_id",
+                    metavar="SESSION_ID",
+                    help="resume a saved session by id (no id: list this folder's sessions)")
+    ap.add_argument("--no-save", action="store_true",
+                    help="do not write a session file for this run")
     args = ap.parse_args(argv)
+
+    if args.cwd and not os.path.isdir(args.cwd):
+        print(f"--cwd is not a directory: {args.cwd}", file=sys.stderr)
+        raise SystemExit(2)
+    cwd = os.path.abspath(os.path.expanduser(args.cwd)) if args.cwd else os.getcwd()
+    if args.resume_id == "":       # bare --resume → picker-ish listing
+        list_sessions_and_exit(cwd)
+    saved = pick_saved_session(args.continue_last, args.resume_id, cwd)
 
     session = make_session(provider=args.provider, model=args.model, base_url=args.base_url,
                            api_key=args.api_key, skip_permissions=args.skip_perms,
-                           max_iterations=args.max_iterations)
+                           max_iterations=args.max_iterations, cwd=cwd,
+                           resume=saved, persist=not args.no_save,
+                           keep_cwd=bool(args.cwd))
+    if saved:
+        console.print(Text(f"↺ continuing session {saved.get('id')} "
+                           f"({len(saved.get('messages', []))} messages) in {session.cwd}",
+                           style="dim cyan"))
 
     if args.prompt:
         result = run_once(session, args.prompt)

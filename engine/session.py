@@ -81,8 +81,19 @@ class Session:
     """
 
     def __init__(self, cfg, emit=None, ask_permission=None,
-                 skip_permissions=False, persist=True):
+                 skip_permissions=False, persist=True, cwd=None,
+                 max_iterations=None):
         self.cfg = cfg
+        # Tool-call rounds allowed in one turn, for THIS conversation only. None =
+        # fall back to cfg["max_iterations"]. Per-session because `raiko web` runs
+        # many sessions off one shared cfg dict — writing the cap into cfg would
+        # leak it into every other live session.
+        self.max_iterations = self._clean_max_iterations(max_iterations)
+        # Working directory of THIS conversation: relative tool paths resolve
+        # against it and the exec tools run in it. Defaults to the process cwd
+        # (so `cd project && raiko` just works); `raiko web` sets it per session
+        # instead of chdir-ing the shared process.
+        self.cwd = os.path.abspath(os.path.expanduser(str(cwd))) if cwd else os.getcwd()
         self.emit = emit or (lambda e: None)
         # callable(protocol.PermissionRequired) -> "allow_once"|"allow_always"|"deny".
         # None = deny everything that would need a prompt (safe default).
@@ -136,6 +147,34 @@ class Session:
         self._think_leak_calls = []
         self._pending_diff = None       # (path, unified_diff) from the last write tool
         self.cur_think = self.cur_content = ""   # accumulators for the live segment
+
+    @staticmethod
+    def _clean_max_iterations(value):
+        """Normalize a per-session tool-call-round cap: a positive int, or None
+        (= use the config value). Junk (0, negatives, non-numbers) becomes None
+        rather than an exception — a bad cap must never break session creation."""
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    def iteration_cap(self):
+        """Tool-call rounds allowed for one turn: this session's own cap, else the
+        configured one, else the built-in default."""
+        if self.max_iterations:
+            return self.max_iterations
+        try:
+            return int(self.cfg.get("max_iterations", MAX_ITERATIONS) or MAX_ITERATIONS)
+        except (TypeError, ValueError):
+            return MAX_ITERATIONS
+
+    def set_max_iterations(self, value):
+        """Change this session's cap between turns. Returns the effective cap."""
+        self.max_iterations = self._clean_max_iterations(value)
+        return self.iteration_cap()
 
     # ---------- configuration / lifecycle ----------
     def _active_persona(self):
@@ -210,22 +249,36 @@ class Session:
             "provider": self.provider,
             "model": self.model,
             "title": (title or "")[:70],
+            "cwd": self.cwd,
             "ctx_window": getattr(self.tracker, "limit", None),
             "messages": self.messages,
         }
+        if self.max_iterations:
+            sess["max_iterations"] = self.max_iterations
         from engine.config import URL_PROVIDERS
         if self.provider in URL_PROVIDERS:
             sess["base_url"] = self.cfg.get(self.provider, {}).get("base_url", "")
         store.write_session(sess)
 
-    def resume(self, sess):
+    def resume(self, sess, keep_cwd=False):
         """Install a saved session's state. The caller re-`configure()`s first
-        (it owns provider selection / local server boot)."""
+        (it owns provider selection / local server boot).
+
+        The saved working directory comes back with the conversation, so a
+        resumed session keeps reading and writing where it left off — unless
+        the caller already picked one (`keep_cwd`, e.g. the web API validating
+        a client-supplied cwd) or the folder is gone. The saved tool-call-round
+        cap comes back the same way, unless this session was given one."""
         self.messages = sess.get("messages") or [
             {"role": "system", "content": self._system_prompt()}]
         self.session_id = sess.get("id")
         if sess.get("ctx_window") and self.tracker:
             self.tracker.limit = sess["ctx_window"]
+        if not self.max_iterations:
+            self.max_iterations = self._clean_max_iterations(sess.get("max_iterations"))
+        saved_cwd = sess.get("cwd")
+        if not keep_cwd and saved_cwd and os.path.isdir(saved_cwd):
+            self.cwd = os.path.abspath(saved_cwd)
 
     def clear(self):
         """Drop the conversation (keep the system prompt) and start a fresh session.
@@ -320,14 +373,23 @@ class Session:
         return decision == "allow_once"
 
     def workspace(self):
+        """Root writes are confined to. An explicit permissions.workspace still
+        wins (it is a user-level confinement, not a default), otherwise it is
+        this session's working directory."""
         ws = (self.cfg.get("permissions", {}) or {}).get("workspace") or ""
-        return os.path.abspath(ws) if ws else os.getcwd()
+        return os.path.abspath(ws) if ws else self.cwd
+
+    def abspath(self, path):
+        """A tool path argument as the tools will resolve it: relative to this
+        session's cwd, not the process's."""
+        p = os.path.expanduser(str(path))
+        return os.path.abspath(p if os.path.isabs(p) else os.path.join(self.cwd, p))
 
     def _in_workspace(self, path):
         """True if `path` resolves inside the workspace root (writes are confined there)."""
         try:
             root = self.workspace()
-            return os.path.commonpath([root, os.path.abspath(path)]) == root
+            return os.path.commonpath([root, self.abspath(path)]) == root
         except (ValueError, OSError):
             return False   # different drive / bad path → treat as outside
 
@@ -376,7 +438,7 @@ class Session:
         try:
             args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
         except Exception:
-            return self._with_timeout(name, lambda: call_tool(name, raw_args))
+            return self._with_timeout(name, lambda: call_tool(name, raw_args, base_dir=self.cwd))
         if name in ("run_python", "run_powershell", "run_bash"):
             code = args.get("code") or args.get("command") or ""
             force = name in self.always_ask_tools
@@ -458,19 +520,19 @@ class Session:
             if not in_ws or force:
                 snip = (f"{name} OUTSIDE the workspace" if not in_ws
                         else f"{name} on this interface")
-                code = f"target: {os.path.abspath(path)}\nworkspace: {self.workspace()}"
+                code = f"target: {self.abspath(path)}\nworkspace: {self.workspace()}"
                 if not self._permit(name, snip, code, scope="workspace", force=force):
                     return (f"DENIED by user: '{name}' targets a path outside the workspace "
                             f"({path}). Set permissions.workspace or approve it."
                             if not in_ws else
                             f"DENIED by user: '{name}' was not confirmed on this interface.")
             return self._run_with_diff(name, args)
-        return self._with_timeout(name, lambda: call_tool(name, args))
+        return self._with_timeout(name, lambda: call_tool(name, args, base_dir=self.cwd))
 
     def _run_with_diff(self, name, args):
         """Run a file-writing tool, capturing a before/after unified diff for the
         tool_call_result event."""
-        path = args.get("path")
+        path = self.abspath(args.get("path"))   # as the tool will resolve it
 
         def _read():
             try:
@@ -479,7 +541,7 @@ class Session:
                 return ""
 
         before = _read()
-        result = self._with_timeout(name, lambda: call_tool(name, args))
+        result = self._with_timeout(name, lambda: call_tool(name, args, base_dir=self.cwd))
         if not str(result).startswith("ERROR"):
             after = _read()
             if after != before:
@@ -618,8 +680,7 @@ class Session:
         reason = "completed"
         sensitive_values = []
         try:
-            max_iters = int(self.cfg.get("max_iterations", MAX_ITERATIONS) or MAX_ITERATIONS)
-            for _ in range(max_iters):
+            for _ in range(self.iteration_cap()):
                 msg = self.stream_one()
                 # If the model leaked the tool call into its thinking and produced
                 # no real tool_call, retry the whole turn (the discarded attempt is
@@ -679,6 +740,13 @@ class Session:
                     break
             else:
                 reason = "max_iterations"
+                # A turn cut off mid-plan looks like a model that gave up unless
+                # the cap is named. Emitted here (not after TurnDone) so clients
+                # that stop reading on turn_done still see it.
+                self.emit(ev.Notice(kind="warning", text=(
+                    f"stopped after {self.iteration_cap()} tool-call rounds "
+                    f"(max_iterations) — the answer may be unfinished. Raise the "
+                    f"cap to let it keep working.")))
         except Exception as e:
             msg = str(e)
             if "parse tool call" in msg.lower() or "failed to parse" in msg.lower():

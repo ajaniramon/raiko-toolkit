@@ -79,6 +79,48 @@ whitelist, `web.allow_exec=false` hard-disables `run_*` over the socket, and eve
 exec/write requires an explicit `permission_response` even if allowlisted locally.
 Reference client / smoke: `python web/scripts/ws_smoke.py`.
 
+How long a turn may keep working is per session too: `max_iterations` in the
+`POST /api/sessions` body (or the `set_max_iterations` command mid-session) sets the
+tool-call rounds one turn can run, defaulting to `web.max_iterations` (60) and capped
+at 500. Panel sessions run unattended, so they get a much longer leash than the TUI's
+`max_iterations` (8), where a human drives the next step. A turn that hits the cap
+ends with `turn_done{reason:"max_iterations"}` plus a warning notice naming it.
+
+---
+
+## 📁 Sessions live in a folder
+
+The agent works **where you started it**: relative paths in the tools resolve there,
+`run_python` / `run_powershell` / `run_bash` execute there, and the conversation is
+saved against that folder. So each project keeps its own history.
+
+```bash
+cd ~/projects/api && raiko          # the TUI works in ~/projects/api
+raiko --continue                    # or -c: reopen the last session OF THIS FOLDER
+raiko --resume                      # or -r: pick one (press `a` to see every folder)
+
+raiko run "add a healthcheck endpoint"
+raiko run --continue "now write the test for it"   # same conversation, same folder
+raiko run --resume                                 # list this folder's sessions
+raiko run --resume 20260726-101500-ab12cd34 "keep going"
+raiko run --cwd ~/other/project "what is this?"    # work elsewhere without cd
+raiko run --no-save "one-off question"             # leaves no session file
+```
+
+Resuming a session brings its folder back with it, so `-c` from anywhere continues
+where that conversation was working. Writes stay confined to
+`permissions.workspace` if you set one; if you leave it empty (the default), the
+boundary is the session's own folder. Sessions saved before this existed have no
+folder attached: they still list and resume, they just never match a folder filter.
+
+Over the web API a session takes its folder as `cwd` (see
+[`docs/ws-protocol.md`](docs/ws-protocol.md)): `GET /api/projects` lists the folders a
+panel may choose from, and the server only accepts paths inside
+`web.project_roots` — for example `["C:/Users/you/Desktop"]`. With no roots
+configured, web sessions run in the server's own directory and any `cwd` is
+rejected. One `raiko web` process runs many sessions in different folders at once:
+the working directory is per session, never a process-wide `chdir`.
+
 ---
 
 ## 🖥️ The TUI — `tui.py`
@@ -90,6 +132,8 @@ through **provider → model → context**:
 python tui.py                       # interactive wizard
 python tui.py --provider local --model qwen35-9b
 python tui.py --dangerously-skip-permissions
+python tui.py -c                    # continue this folder's last session
+python tui.py -r                    # pick a session of this folder to resume
 ```
 
 - **Provider wizard** with back-navigation, last-used highlighting, and per-provider
@@ -373,7 +417,7 @@ pipx install git+https://github.com/ajaniramon/raiko-toolkit   # then: raiko
 ```bash
 git clone <your-fork-url> raiko-toolkit && cd raiko-toolkit
 python -m venv .venv && .venv\Scripts\activate        # Windows
-pip install -r requirements.txt
+pip install -e .
 
 # create your local config from the templates (these are gitignored)
 copy tui_config.example.json tui_config.json          # add your API keys
