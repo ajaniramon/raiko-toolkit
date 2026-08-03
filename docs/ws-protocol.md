@@ -183,8 +183,12 @@ Elimina una sesión viva o una sesión guardada.
 JSON en ambos sentidos; cada mensaje lleva `"type"` más los campos del payload.
 Al conectar, el servidor envía `session_started` y después `session_snapshot`.
 Cierres: `4401` sin auth, `4404` sesión desconocida y `4409` si ya existe otro
-cliente propietario. Si el cliente desconecta a mitad de turno, el turno se
-interrumpe y cualquier permiso pendiente se deniega inmediatamente.
+cliente propietario. Un cliente autenticado puede conectar con `?takeover=1`
+para reemplazar de forma atómica una conexión anterior que haya quedado
+suspendida; el socket sustituido recibe `4410`. Homelab usa este modo para
+recuperar una sesión al volver del background en móvil. Si el cliente desconecta
+a mitad de turno, el turno se interrumpe y cualquier permiso pendiente se
+deniega inmediatamente.
 
 ### Comandos (cliente → servidor)
 

@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import suppress
 from copy import deepcopy
 from pathlib import Path
 
@@ -119,6 +120,7 @@ class WebSession:
         self.loop: asyncio.AbstractEventLoop | None = None
         self.queue_size = max(64, queue_size)
         self.queue: asyncio.Queue[str] | None = None
+        self.socket: WebSocket | None = None
         self.connection_id: str | None = None
         self.busy = False
         self.turn_task: asyncio.Task | None = None
@@ -142,11 +144,18 @@ class WebSession:
         if permission_mode == "ask":
             self.session.always_ask_tools |= CONFIRM_TOOLS | EXEC_TOOLS
 
-    def attach(self, loop: asyncio.AbstractEventLoop) -> str | None:
-        if self.loop is not None:
+    def attach(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        socket: WebSocket,
+        *,
+        takeover: bool = False,
+    ) -> str | None:
+        if self.loop is not None and not takeover:
             return None
         self.loop = loop
         self.queue = asyncio.Queue(maxsize=self.queue_size)
+        self.socket = socket
         self.connection_id = uuid.uuid4().hex[:12]
         self.last_seen = time.monotonic()
         return self.connection_id
@@ -158,6 +167,7 @@ class WebSession:
         self.session.interrupt()
         self.loop = None
         self.queue = None
+        self.socket = None
         self.connection_id = None
         self.last_seen = time.monotonic()
 
@@ -802,11 +812,8 @@ async def delete_session(request):
     return JSONResponse({"error": "unknown session"}, status_code=404)
 
 
-async def _pump_events(socket: WebSocket, web_session: WebSession):
+async def _pump_events(socket: WebSocket, queue: asyncio.Queue[str]):
     while True:
-        queue = web_session.queue
-        if queue is None:
-            return
         await socket.send_text(await queue.get())
 
 
@@ -841,12 +848,27 @@ async def ws_endpoint(socket: WebSocket):
         await socket.close(code=4404, reason="unknown session")
         return
 
-    connection_id = web_session.attach(asyncio.get_running_loop())
+    takeover = socket.query_params.get("takeover") == "1"
+    previous_socket = web_session.socket if takeover else None
+    connection_id = web_session.attach(
+        asyncio.get_running_loop(),
+        socket,
+        takeover=takeover,
+    )
     if connection_id is None:
         await socket.close(code=4409, reason="session already has a client")
         return
 
     await socket.accept()
+    if previous_socket is not None and previous_socket is not socket:
+        # Mobile browsers can leave a half-open socket behind while suspended.
+        # The authenticated Homelab proxy opts into takeover, making the newest
+        # connection authoritative without waiting for a TCP timeout.
+        with suppress(RuntimeError):
+            await previous_socket.close(
+                code=4410,
+                reason="session resumed by a newer client",
+            )
     session = web_session.session
     await socket.send_text(
         event_to_json(
@@ -860,8 +882,10 @@ async def ws_endpoint(socket: WebSocket):
         )
     )
     await socket.send_text(event_to_json(web_session.snapshot()))
+    assert web_session.queue is not None
+    connection_queue = web_session.queue
     pumps = [
-        asyncio.create_task(_pump_events(socket, web_session)),
+        asyncio.create_task(_pump_events(socket, connection_queue)),
         asyncio.create_task(_pump_telemetry(web_session)),
     ]
     try:

@@ -358,6 +358,33 @@ def test_only_one_socket_owns_a_live_session(client):
         assert caught.value.code == 4409
 
 
+def test_authenticated_takeover_replaces_a_suspended_socket(client):
+    sid, _ = make_ws_session(client, [[]])
+    with client.websocket_connect(f"/ws/{sid}", headers=AUTH) as first:
+        first_started = first.receive_json()
+        first.receive_json()
+
+        with client.websocket_connect(
+            f"/ws/{sid}?takeover=1",
+            headers=AUTH,
+        ) as replacement:
+            replacement_started = replacement.receive_json()
+            replacement_snapshot = replacement.receive_json()
+            assert replacement_started["type"] == "session_started"
+            assert replacement_snapshot["type"] == "session_snapshot"
+            assert replacement_started["connection_id"] != first_started["connection_id"]
+            assert srv.STATE.sessions[sid].connection_id == replacement_started["connection_id"]
+
+            while True:
+                try:
+                    first.receive_json()
+                except WebSocketDisconnect as caught:
+                    assert caught.code == 4410
+                    break
+
+        assert srv.STATE.sessions[sid].connection_id is None
+
+
 def test_disconnect_denies_pending_permission_immediately(client, cfg):
     outside = os.path.join(os.path.dirname(cfg["permissions"]["workspace"]), "disconnect.txt")
     script = [
