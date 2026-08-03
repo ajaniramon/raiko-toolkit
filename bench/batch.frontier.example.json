@@ -1,0 +1,15 @@
+{
+  "tier": "frontier",
+  "mcp_url": "http://192.168.1.9:8765/mcp/REPLACE-WITH-TOKEN-PATH",
+  "local_url": "http://192.168.1.9:25565/v1",
+  "reps": 3,
+  "runs": [
+    {"provider": "local", "model": "qwythos",      "label": "qwythos"},
+    {"provider": "local", "model": "ornith-9b-q5", "label": "q5"},
+    {"provider": "local", "model": "ornith-9b-q4", "label": "q4"},
+    {"provider": "local", "model": "qwen35-9b",    "label": "qwen"},
+    {"provider": "local", "model": "gemma4-12b",   "label": "gemma"},
+    {"provider": "nano",  "model": "deepseek/deepseek-v4-flash", "label": "deepseek",
+     "url": "https://nano-gpt.com/api/v1"}
+  ]
+}
