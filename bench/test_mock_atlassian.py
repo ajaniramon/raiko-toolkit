@@ -152,12 +152,12 @@ from mock_atlassian import MockVault, build_atlas_impls, AtlasCtx
 def test_vault_get_returns_json():
     import json
     v = MockVault({"secret/data/mac": {"host": "h", "port": "22"}})
-    out = v.get("secret/data/mac")
-    assert json.loads(out) == {"host": "h", "port": "22"}
+    out = v.get(name="secret/data/mac", field="custom", field_name="host")
+    assert json.loads(out) == {"value": "h"}
 
 def test_vault_unknown_path():
     v = MockVault({})
-    assert "ERROR" in v.get("secret/data/nope")
+    assert "ERROR" in v.get(name="secret/data/nope")
 
 def test_build_atlas_impls_keys():
     j = MockJira(ISSUES); c = MockConfluence(PAGES, USERS_T); v = MockVault({})
@@ -165,7 +165,7 @@ def test_build_atlas_impls_keys():
     assert set(impls) == {
         "jira_search", "jira_get", "jira_assign", "jira_comment",
         "confluence_search", "confluence_user", "confluence_get",
-        "confluence_create", "confluence_comment", "vault_get_secret",
+        "confluence_create", "confluence_comment", "vaultwarden_get_secret",
     }
 
 def test_atlas_ctx_holds_stores():

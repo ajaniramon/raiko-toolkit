@@ -1,4 +1,4 @@
-"""In-process mocks of the Jira / Confluence / Vault tools for the Advanced tier.
+"""In-process mocks of the Jira / Confluence / Vaultwarden tools for the Advanced tier.
 
 They replicate the SEARCH SEMANTICS and OUTPUT FORMAT of the real tools in
 tools.py so the benchmark measures the agent + the tool DESCRIPTION, not a
@@ -330,11 +330,14 @@ class MockVault:
     def __init__(self, secrets):
         self._secrets = {k: dict(v) for k, v in secrets.items()}
 
-    def get(self, path):
-        p = (path or "").strip()
-        if p not in self._secrets:
-            return f"ERROR: Vault returned 404: no secret at {p}"
-        return json.dumps(self._secrets[p])
+    def get(self, name="", field="password", field_name=""):
+        item_name = (name or "").strip()
+        if item_name not in self._secrets:
+            return f"ERROR: no Vaultwarden item named exactly '{item_name}'"
+        key = (field_name if field == "custom" else field or "password").strip()
+        if key not in self._secrets[item_name]:
+            return f"ERROR: requested field '{key}' is empty"
+        return json.dumps({"value": str(self._secrets[item_name][key])})
 
 
 class AtlasCtx:
@@ -356,5 +359,5 @@ def build_atlas_impls(jira, conf, vault):
         "confluence_get": lambda **kw: conf.get(**kw),
         "confluence_create": lambda **kw: conf.create(**kw),
         "confluence_comment": lambda **kw: conf.comment(**kw),
-        "vault_get_secret": lambda **kw: vault.get(**kw),
+        "vaultwarden_get_secret": lambda **kw: vault.get(**kw),
     }

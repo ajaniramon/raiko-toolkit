@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vaultwarden"
+  short_description: "Crear y usar credenciales con seguridad"
+  default_prompt: "Usa $vaultwarden-vault para crear o recuperar una credencial de mi Vaultwarden de forma segura."

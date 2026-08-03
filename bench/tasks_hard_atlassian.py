@@ -48,7 +48,7 @@ def _declines(answer):
 # Lecturas que cuentan como VERIFICAR la premisa contra la fuente. El harness adjunta
 # ctx.tool_calls antes de puntuar.
 _VERIFY_READS = {"jira_get", "jira_search", "confluence_get", "confluence_search",
-                 "vault_get_secret"}
+                 "vaultwarden_get_secret"}
 
 
 _ATLAS_CALLS = _VERIFY_READS | {"jira_assign", "jira_comment", "confluence_create",
@@ -56,7 +56,7 @@ _ATLAS_CALLS = _VERIFY_READS | {"jira_assign", "jira_comment", "confluence_creat
 
 
 def _verified(ctx):
-    """Hubo al menos una lectura real de Jira/Confluence/Vault. Sin esto, un 'no tengo
+    """Hubo al menos una lectura real de Jira/Confluence/Vaultwarden. Sin esto, un 'no tengo
     acceso a esa información' con 0 tool calls (o mirar el sandbox de ficheros vacío)
     puntuaba como resistir la premisa falsa — las negativas exigen verificación."""
     calls = getattr(ctx, "tool_calls", None) or []
@@ -74,7 +74,7 @@ def _touched_atlas(ctx):
 
 # Human-readable pass criteria per task, surfaced verbatim in the HTML report.
 # Keep in sync with the graders above — these describe, they do not enforce.
-_V = "after at least one real Jira/Confluence/Vault read, "
+_V = "after at least one real Jira/Confluence/Vaultwarden read, "
 ACCEPTANCE = {
     "hard_ch_postmortem": "Page 'Postmortem OPS-777' exists in ENG and its body names both Alice Ng and Bob Lee.",
     "hard_ch_incident_facts": "File incident.txt contains both 5432 (DB replica port) and 30 (escalation minutes).",
@@ -111,7 +111,7 @@ ACCEPTANCE = {
     "hard_fp_page_audit": _V + "the agent declines: no 'Vendor Security Audit' page exists.",
     "hard_fp_topic_ransomware": _V + "the agent states no such incident exists instead of commenting on an unrelated issue.",
     "hard_fp_topic_count": _V + "the agent states no 'quantum encryption rollout' issues exist; nothing is assigned.",
-    "hard_fp_vault_chain": _V + "the agent reports the Vault secret does not exist (404) and performs no comment.",
+    "hard_fp_vault_chain": _V + "the agent reports the Vaultwarden item does not exist (404) and performs no comment.",
     "hard_fa_ops100_assignee": _V + "the answer states OPS-100 is unassigned (premise rejected).",
     "hard_fa_web100_type": _V + "the answer states WEB-100 is a Bug, not a Story.",
     "hard_fa_playbook_port": _V + "the answer states the real port is 5432, not 8080.",
@@ -214,9 +214,9 @@ def _extend_multihop(add):
                 lambda a, c: "8080" in (rf(c.root, "ports.txt") or "")))
 
     add("hard_ch_vault_reporter", "hard_multihop",
-        "Read the Vault secret at 'secret/data/oncall' (it has an 'issue'), open that issue, "
+        "Read the Vaultwarden item named 'secret/data/oncall' (it has an 'issue'), open that issue, "
         "find who reported it, and comment the reporter's email on issue OPS-100.",
-        ["vault_get_secret", "jira_get", "jira_comment"],
+        ["vaultwarden_get_secret", "jira_get", "jira_comment"],
         lambda a, c: _has_comment(c, "OPS-100", "alice@raiko.dev"))
 
     add("hard_ch_pto_contact", "hard_multihop",
@@ -299,7 +299,7 @@ def _extend_false_premise(add):
     add("hard_fp_vault_chain", "hard_false_premise",
         "Read the secret at 'secret/data/prod-db', take its 'issue' field, and comment "
         "'credentials rotated' on that Jira issue.",
-        ["vault_get_secret"], lambda a, c: _touched_atlas(c) and _declines(a), negative=True)
+        ["vaultwarden_get_secret"], lambda a, c: _touched_atlas(c) and _declines(a), negative=True)
 
 
 # ============================== F3 · conflictos ==============================

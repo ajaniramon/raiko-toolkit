@@ -540,7 +540,7 @@
         <div class="toolcat reveal">
           <h3><span class="d" style="background:var(--yellow)"></span>Write &amp; execute · gated</h3>
           <div class="toollist">
-            <code>write_file</code><code>edit_file</code><code>run_python</code><code>run_powershell</code><code>run_bash</code><code>vault_get_secret</code>
+            <code>write_file</code><code>edit_file</code><code>run_python</code><code>run_powershell</code><code>run_bash</code><code>vaultwarden_get_secret</code><code>vaultwarden_copy_secret</code><code>vaultwarden_create_secret</code>
           </div>
           <p>Subprocess sandbox with timeouts and a denylist for genuinely destructive ops. Every flagged call prompts you first.</p>
         </div>
@@ -593,7 +593,7 @@
       <div class="sec-head reveal">
         <p class="eyebrow">bench/</p>
         <h2>A benchmark that actually decides.</h2>
-        <p>A decisive, reproducible tool-calling benchmark for local GGUF models: deterministic decoding, programmatic graders (no vibes), resumable runs, and a weighted leaderboard that tells you which model to burn your VRAM on. Now with a <b>dependency-free mocked Jira/Confluence/Vault battery</b> (search, writes, cross-tool chains, secret-gated flows, and <b>hallucination-resistance</b> negatives), <b>OS-adaptive shell</b> tasks (PowerShell ↔ bash), and a curated <b>HARD tier</b> that separates frontier models where the floor saturates.</p>
+        <p>A decisive, reproducible tool-calling benchmark for local GGUF models: deterministic decoding, programmatic graders (no vibes), resumable runs, and a weighted leaderboard that tells you which model to burn your VRAM on. Now with a <b>dependency-free mocked Jira/Confluence/Vaultwarden battery</b> (search, writes, cross-tool chains, secret-gated flows, and <b>hallucination-resistance</b> negatives), <b>OS-adaptive shell</b> tasks (PowerShell ↔ bash), and a curated <b>HARD tier</b> that separates frontier models where the floor saturates.</p>
       </div>
       <div class="bench-grid">
         <div class="figure reveal rv-l">
@@ -705,7 +705,7 @@
           <h3>…plus 4–6-hop chains</h3>
           <p class="sub">one task, one thread of evidence across four tools — miss a hop, fail the task</p>
           <div class="chain">
-            <div class="hop" style="--d:.1s"><span class="st">1</span><span><span class="fn">vault_get_secret</span><span class="arg">(deploy/api-token)</span> <span class="rr">⎿ ok · scoped token</span></span></div>
+            <div class="hop" style="--d:.1s"><span class="st">1</span><span><span class="fn">vaultwarden_get_secret</span><span class="arg">(deploy/api-token)</span> <span class="rr">⎿ ok · scoped token</span></span></div>
             <div class="hop" style="--d:.35s"><span class="st">2</span><span><span class="fn">jira_search</span><span class="arg">("blocked by deploy token")</span> <span class="rr">⎿ PAG-142</span></span></div>
             <div class="hop" style="--d:.6s"><span class="st">3</span><span><span class="fn">jira_get</span><span class="arg">(PAG-142)</span> <span class="rr">⎿ links → runbook page</span></span></div>
             <div class="hop" style="--d:.85s"><span class="st">4</span><span><span class="fn">confluence_get</span><span class="arg">(runbook, page 2)</span> <span class="rr">⎿ rotation steps found</span></span></div>

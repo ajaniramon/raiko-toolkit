@@ -2292,7 +2292,7 @@ class AgentTUI(App):
     def _tool_color(self, name):
         if name in self.mcp_names:
             return "magenta"
-        if name == "vault_get_secret":
+        if name.startswith("vaultwarden_"):
             return "green"
         if name in self._EXEC_TOOLS:
             return "yellow"

@@ -55,6 +55,9 @@ CONFIRM_TOOLS = {
     "jira_comment",
     "confluence_create",
     "confluence_comment",
+    "vaultwarden_get_secret",
+    "vaultwarden_copy_secret",
+    "vaultwarden_create_secret",
 }
 PERMISSION_MODES = {"ask", "yolo"}
 DEFAULT_PERMISSION_MODE = "ask"

@@ -157,31 +157,31 @@ def build_atlassian_tasks():
         ["confluence_get", "jira_assign"],
         lambda a, c: c.jira.issue("OPS-100")["assignee"] == "alice@raiko.dev")
 
-    # ---------------- Vault-gated (~10) ----------------
+    # ---------------- Vaultwarden-gated (~10) ----------------
     add("vg_assign_oncall", "vault_gated", "hard",
-        "Read the Vault secret at 'secret/data/oncall'. It contains an 'issue' key and an 'assignee'. "
+        "Read the Vaultwarden item named 'secret/data/oncall'. It contains an 'issue' key and an 'assignee'. "
         "Assign that issue to that assignee in Jira.",
-        ["vault_get_secret", "jira_assign"],
+        ["vaultwarden_get_secret", "jira_assign"],
         lambda a, c: c.jira.issue("OPS-777")["assignee"] == "alice@raiko.dev")
     add("vg_comment_deploy", "vault_gated", "hard",
-        "Read 'secret/data/deploy' from Vault; it has an 'issue'. Add the comment 'deploy verified' "
+        "Read 'secret/data/deploy' from Vaultwarden; it has an 'issue'. Add the comment 'deploy verified' "
         "to that Jira issue.",
-        ["vault_get_secret", "jira_comment"],
+        ["vaultwarden_get_secret", "jira_comment"],
         lambda a, c: any("deploy verified" in x for x in c.jira.issue("WEB-100")["comments"]))
     add("vg_comment_etl", "vault_gated", "hard",
-        "Read the Vault secret at 'secret/data/etl', which has an 'issue'. Add the comment "
+        "Read the Vaultwarden item named 'secret/data/etl', which has an 'issue'. Add the comment "
         "'pipeline verified' to that Jira issue.",
-        ["vault_get_secret", "jira_comment"],
+        ["vaultwarden_get_secret", "jira_comment"],
         lambda a, c: any("pipeline verified" in x for x in c.jira.issue("DATA-100")["comments"]))
     add("vg_comment_backup", "vault_gated", "hard",
-        "Read the Vault secret at 'secret/data/backup', which has an 'issue'. Add the comment "
+        "Read the Vaultwarden item named 'secret/data/backup', which has an 'issue'. Add the comment "
         "'backup restored' to that Jira issue.",
-        ["vault_get_secret", "jira_comment"],
+        ["vaultwarden_get_secret", "jira_comment"],
         lambda a, c: any("backup restored" in x for x in c.jira.issue("OPS-104")["comments"]))
     add("vg_comment_web_owner", "vault_gated", "hard",
-        "Read the Vault secret at 'secret/data/web-owner', which has an 'issue'. Add the comment "
+        "Read the Vaultwarden item named 'secret/data/web-owner', which has an 'issue'. Add the comment "
         "'owner notified' to that Jira issue.",
-        ["vault_get_secret", "jira_comment"],
+        ["vaultwarden_get_secret", "jira_comment"],
         lambda a, c: any("owner notified" in x for x in c.jira.issue("WEB-101")["comments"]))
 
     # ---- Generadores para llegar a la distribución objetivo ----
@@ -229,14 +229,14 @@ def _extend_generated(add):
             f"Assign Jira issue {key} to {who}.",
             ["jira_assign"], (lambda k, w: lambda a, c: c.jira.issue(k)["assignee"] == w)(key, who))
 
-    # Chains vault-gated adicionales: assign desde cada secreto que tenga issue+assignee.
+    # Chains Vaultwarden-gated adicionales: assign desde cada secreto que tenga issue+assignee.
     for path, data in vault.items():
         if "issue" in data and "assignee" in data:
             iss, who = data["issue"], data["assignee"]
             add(f"gvg_{iss}", "vault_gated", "hard",
-                f"Read the Vault secret at '{path}', which has 'issue' and 'assignee'. "
+                f"Read the Vaultwarden item named '{path}', which has 'issue' and 'assignee'. "
                 f"Assign that issue to that assignee in Jira.",
-                ["vault_get_secret", "jira_assign"],
+                ["vaultwarden_get_secret", "jira_assign"],
                 (lambda k, w: lambda a, c: c.jira.issue(k)["assignee"] == w)(iss, who))
 
     pages = fx.build_confluence_seed()
@@ -339,8 +339,8 @@ def _extend_negatives(add):
     # vault sobre paths inexistentes -> reportar que no se pudo (4)
     for i, path in enumerate(_GHOST_SECRETS):
         add(f"neg_vg_{i:02d}", "vault_gated", "hard",
-            f"Read the Vault secret at '{path}' and report its 'token' field.",
-            ["vault_get_secret"],
+            f"Read the Vaultwarden item named '{path}' and report its 'token' field.",
+            ["vaultwarden_get_secret"],
             lambda a, c: _says_none(a) or "404" in (a or "") or "error" in (a or "").lower(),
             negative=True)
 
