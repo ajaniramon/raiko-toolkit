@@ -305,8 +305,14 @@ def run_python(code: str, allow_unsafe: bool = False) -> str:
         if blocked:
             return blocked
     try:
+        # Force the child's stdio to UTF-8 and decode as UTF-8. Without the env
+        # var the child would encode with ITS locale (cp1252 here) while a
+        # plain text=True decodes with OURS — any non-ASCII output came back
+        # mojibake ("Ramón" → "RamÃ³n") depending on the ambient PYTHONIOENCODING.
         proc = subprocess.run([sys.executable, "-c", code], cwd=base_dir(),
-                              capture_output=True, text=True, timeout=20)
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=20,
+                              env={**os.environ, "PYTHONIOENCODING": "utf-8"})
     except subprocess.TimeoutExpired:
         return "ERROR: python execution timed out (20s)"
     except Exception as e:
@@ -326,9 +332,15 @@ def run_powershell(command: str, allow_unsafe: bool = False) -> str:
         if blocked:
             return blocked
     try:
+        # PowerShell writes redirected output in the console's OEM codepage
+        # (cp850 here), so non-ASCII came back wrong under ANY parent decoding.
+        # Switch its output to UTF-8 first, then decode UTF-8. The prefix runs
+        # after _danger_check, so it never changes what was screened.
         proc = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
-            cwd=base_dir(), capture_output=True, text=True, timeout=25)
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;" + command],
+            cwd=base_dir(), capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=25)
     except subprocess.TimeoutExpired:
         return "ERROR: powershell execution timed out (25s)"
     except Exception as e:
@@ -352,8 +364,11 @@ def run_bash(command: str, allow_unsafe: bool = False) -> str:
     if not sh:
         return "ERROR: no bash/sh shell found (this tool is for Linux/macOS)."
     try:
+        # Linux/macOS shells emit UTF-8; errors="replace" keeps odd bytes from
+        # raising instead of returning the output.
         proc = subprocess.run([sh, "-c", command], cwd=base_dir(),
-                              capture_output=True, text=True, timeout=25)
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=25)
     except subprocess.TimeoutExpired:
         return "ERROR: bash execution timed out (25s)"
     except Exception as e:
@@ -378,10 +393,15 @@ def _bw_run(args: list[str], timeout: int = 30,
     if not binary:
         return 127, "", "Bitwarden CLI 'bw' is not installed or BW_CLI is invalid"
     try:
+        # bw emits UTF-8 JSON; decoding with the ambient locale (cp1252 on
+        # Windows) corrupts any non-ASCII character in a secret. No
+        # errors="replace" on purpose: handing back a silently mangled password
+        # is worse than raising, which the caller below turns into an error.
         proc = subprocess.run(
             [binary, *args, "--nointeraction"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=timeout,
             env=os.environ.copy(),
             input=input_text,
@@ -503,14 +523,22 @@ def _copy_secret_to_clipboard(value: str, ttl_seconds: int = 45):
     if not pbcopy or not pbpaste:
         return "ERROR: secure clipboard mode requires macOS pbcopy and pbpaste"
     try:
-        subprocess.run([pbcopy], input=value, text=True, check=True, timeout=5)
+        # Every hop below is pinned to UTF-8 on purpose. The auto-clear only
+        # fires when the clipboard still equals `secret`, so if the write, the
+        # pbpaste read-back or the child's stdin disagreed on encoding, a
+        # non-ASCII secret would compare unequal and stay in the clipboard
+        # past its TTL instead of being wiped.
+        subprocess.run([pbcopy], input=value, text=True, encoding="utf-8",
+                       check=True, timeout=5)
         cleanup_code = (
             "import subprocess,sys,time\n"
             "secret=sys.stdin.read()\n"
             "time.sleep(int(sys.argv[1]))\n"
-            "p=subprocess.run([sys.argv[2]],capture_output=True,text=True,timeout=5)\n"
+            "p=subprocess.run([sys.argv[2]],capture_output=True,text=True,"
+            "encoding='utf-8',timeout=5)\n"
             "if p.returncode == 0 and p.stdout == secret:\n"
-            " subprocess.run([sys.argv[3]],input='',text=True,timeout=5)\n"
+            " subprocess.run([sys.argv[3]],input='',text=True,"
+            "encoding='utf-8',timeout=5)\n"
         )
         cleaner = subprocess.Popen(
             [sys.executable, "-c", cleanup_code, str(ttl_seconds), pbpaste, pbcopy],
@@ -518,6 +546,8 @@ def _copy_secret_to_clipboard(value: str, ttl_seconds: int = 45):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             text=True,
+            encoding="utf-8",
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             start_new_session=True,
         )
         if cleaner.stdin is None:
