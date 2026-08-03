@@ -160,3 +160,90 @@ def test_cli_writes_frontier_report_with_tasks_module(tmp_path):
     assert "raiko FRONTIER tier" in text
     assert "x1_ticket_pod_deploy" in text
     assert "Chains (X1)" in text
+
+
+# ---- paired comparison + exact McNemar -------------------------------------
+# "51/52 vs 52/52" is not a result: at n=52 you need >=6 discordant tasks in
+# one direction before the difference clears p<0.05. These pin the arithmetic
+# so a near-tie is reported as inconclusive instead of as a win.
+
+def test_mcnemar_exact_thresholds():
+    assert rh._mcnemar_exact(0, 0) == 1.0
+    assert rh._mcnemar_exact(1, 0) == 1.0          # the "51 vs 52" case
+    assert round(rh._mcnemar_exact(5, 0), 4) == 0.0625   # still not significant
+    assert round(rh._mcnemar_exact(6, 0), 4) == 0.0312   # first significant count
+    assert rh._mcnemar_exact(3, 1) > 0.05
+    assert rh._mcnemar_exact(0, 6) == rh._mcnemar_exact(6, 0)   # symmetric
+
+
+def test_compare_pair_counts_discordant_tasks():
+    a = {"base": "A", "per_task": {"t1": {"passes": 1, "reps": 1},
+                                   "t2": {"passes": 1, "reps": 1},
+                                   "t3": {"passes": 0, "reps": 1},
+                                   "t4": {"passes": 0, "reps": 1}}}
+    b = {"base": "B", "per_task": {"t1": {"passes": 1, "reps": 1},
+                                   "t2": {"passes": 0, "reps": 1},
+                                   "t3": {"passes": 1, "reps": 1},
+                                   "t4": {"passes": 0, "reps": 1}}}
+    r = rh.compare_pair(a, b, ["t1", "t2", "t3", "t4"])
+    assert r["both"] == 1 and r["neither"] == 1
+    assert r["a_only"] == ["t2"] and r["b_only"] == ["t3"]
+    assert r["n_compared"] == 4
+    assert r["p"] == 1.0                     # 1 vs 1 discordant -> nothing
+    assert r["significant"] is False
+
+
+def test_compare_pair_majority_vote_across_reps():
+    """At temperature 0 reps barely differ, so a task counts as passed when a
+    strict majority of its reps passed; 1-of-3 is a fail, 2-of-3 a pass."""
+    a = {"base": "A", "per_task": {"t1": {"passes": 2, "reps": 3},
+                                   "t2": {"passes": 1, "reps": 3}}}
+    b = {"base": "B", "per_task": {"t1": {"passes": 1, "reps": 3},
+                                   "t2": {"passes": 3, "reps": 3}}}
+    r = rh.compare_pair(a, b, ["t1", "t2"])
+    assert r["a_only"] == ["t1"] and r["b_only"] == ["t2"]
+
+
+def test_compare_pair_skips_tasks_missing_for_either_model():
+    a = {"base": "A", "per_task": {"t1": {"passes": 1, "reps": 1},
+                                   "t2": {"passes": 1, "reps": 0}}}
+    b = {"base": "B", "per_task": {"t1": {"passes": 0, "reps": 1},
+                                   "t2": {"passes": 0, "reps": 1}}}
+    r = rh.compare_pair(a, b, ["t1", "t2"])
+    assert r["n_compared"] == 1               # t2 had no reps for A
+    assert r["a_only"] == ["t1"]
+
+
+def test_compare_pair_reports_significance_when_earned():
+    ids = [f"t{i}" for i in range(10)]
+    # A wins 6 tasks, B wins none -> p = 0.031
+    a = {"base": "A", "per_task": {i: {"passes": 1, "reps": 1} for i in ids}}
+    b = {"base": "B", "per_task": {i: {"passes": 0 if n < 6 else 1, "reps": 1}
+                                   for n, i in enumerate(ids)}}
+    r = rh.compare_pair(a, b, ids)
+    assert len(r["a_only"]) == 6 and r["b_only"] == []
+    assert r["significant"] is True and r["p"] < 0.05
+
+
+def test_pairwise_covers_every_pair_and_sorts_by_p():
+    models = [
+        {"base": "A", "per_task": {"t1": {"passes": 1, "reps": 1}}},
+        {"base": "B", "per_task": {"t1": {"passes": 1, "reps": 1}}},
+        {"base": "C", "per_task": {"t1": {"passes": 0, "reps": 1}}},
+    ]
+    rows = rh.pairwise(models, ["t1"])
+    assert len(rows) == 3                     # 3 models -> 3 unordered pairs
+    assert all(r["p"] <= rows[i + 1]["p"] for i, r in enumerate(rows[:-1]))
+
+
+def test_report_html_includes_pairwise_section(tmp_path):
+    all_ids = {t["id"] for t in rh.build_hard_atlassian_tasks()}
+    _fake_run(str(tmp_path), "m1-r1", "model-one", _rows(all_ids), score=90.0)
+    _fake_run(str(tmp_path), "m2-r1", "model-two",
+              _rows(all_ids - {"hard_ch_sla"}), score=80.0)
+    data = rh.collect(str(tmp_path))
+    html = rh.render(data)
+    assert "Head-to-head" in html
+    assert "McNemar" in html
+    # A single discordant task must be reported as inconclusive, not as a win.
+    assert "inconclusive" in html.lower()

@@ -9,6 +9,7 @@ import glob
 import html as _html
 import importlib
 import json
+import math
 import os
 import re
 import sys
@@ -148,6 +149,82 @@ def collect(results_dir, tasks=None):
 
 
 # ---------------------------------------------------------------------------
+# Paired head-to-head comparison.
+#
+# A leaderboard of mean scores invites reading "51/52 vs 52/52" as a win, but
+# that is one task of difference and says nothing. Since every model runs the
+# SAME tasks, the comparison is paired, and what carries signal is the
+# DISCORDANT tasks: the ones where exactly one of the two models passed.
+# Exact McNemar over those counts needs >=6 discordant tasks all in the same
+# direction to clear p<0.05 — so at 52 tasks a near-tie is arithmetically
+# incapable of being significant, and the report now says so.
+# ---------------------------------------------------------------------------
+
+def _mcnemar_exact(b, c):
+    """Two-sided exact McNemar p-value for discordant counts `b` and `c`.
+
+    Under the null each discordant task is a coin flip, so this is the exact
+    binomial two-sided tail. Symmetric in (b, c); 1.0 when there is nothing
+    discordant to test."""
+    n = b + c
+    if n == 0:
+        return 1.0
+    k = min(b, c)
+    tail = sum(math.comb(n, i) for i in range(k + 1)) / 2 ** n
+    return min(1.0, 2 * tail)
+
+
+def _passed(pt):
+    """Did this model pass this task? None when it has no reps for it.
+
+    Strict majority of reps. At temperature 0 (harness pins temperature=0 and
+    seed=42) reps barely differ, so this is mostly a formality — but it keeps a
+    single flaky rep from flipping a task and inventing a discordance."""
+    if not pt or not pt.get("reps"):
+        return None
+    return pt["passes"] * 2 > pt["reps"]
+
+
+def compare_pair(a, b, task_ids):
+    """Paired comparison of two models over `task_ids`.
+
+    Returns the 2x2 counts plus the exact McNemar p-value. `a_only` / `b_only`
+    are the discordant task ids (the interesting ones to eyeball); tasks either
+    model never ran are skipped rather than scored as failures."""
+    both = neither = 0
+    a_only, b_only = [], []
+    for tid in task_ids:
+        pa, pb = _passed(a["per_task"].get(tid)), _passed(b["per_task"].get(tid))
+        if pa is None or pb is None:
+            continue
+        if pa and pb:
+            both += 1
+        elif not pa and not pb:
+            neither += 1
+        elif pa:
+            a_only.append(tid)
+        else:
+            b_only.append(tid)
+    p = _mcnemar_exact(len(a_only), len(b_only))
+    return {"a": a["base"], "b": b["base"], "both": both, "neither": neither,
+            "a_only": a_only, "b_only": b_only,
+            "n_compared": both + neither + len(a_only) + len(b_only),
+            "p": p, "significant": p < 0.05,
+            "leader": (a["base"] if len(a_only) > len(b_only)
+                       else b["base"] if len(b_only) > len(a_only) else None)}
+
+
+def pairwise(models, task_ids):
+    """Every unordered model pair, most-separated first."""
+    rows = []
+    for i, a in enumerate(models):
+        for b in models[i + 1:]:
+            rows.append(compare_pair(a, b, task_ids))
+    rows.sort(key=lambda r: (r["p"], -abs(len(r["a_only"]) - len(r["b_only"]))))
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # HTML renderer — dark, futuristic, self-contained (no external assets/fonts).
 # ---------------------------------------------------------------------------
 
@@ -265,6 +342,50 @@ def _render_board(M):
             f'<th>#</th><th>Model</th><th>Score</th><th>Correct (min&ndash;max)</th>'
             f'<th>Max iter</th><th>Halluc.</th></tr></thead>'
             f'<tbody>{"".join(rows)}</tbody></table></div></section>')
+
+
+def _render_pairwise(M, T):
+    """Head-to-head table. Deliberately leads with the discordant counts and
+    the verdict rather than the score gap, because the score gap is what makes
+    a 1-task difference look like a result."""
+    if len(M) < 2:
+        return ""
+    ids = [t["id"] for t in T]
+    rows = []
+    for r in pairwise(M, ids):
+        if r["significant"]:
+            verdict = (f'<span class="mk ok">{_esc(r["leader"] or "?")} wins</span>')
+        else:
+            verdict = '<span class="mk none">inconclusive</span>'
+        need = ""
+        if not r["significant"]:
+            disc = len(r["a_only"]) + len(r["b_only"])
+            need = (f'<div class="mreps">{disc} discordant &mdash; '
+                    f'needs &ge;6 one-way for p&lt;.05</div>')
+        sample = ", ".join(_esc(t) for t in (r["a_only"] + r["b_only"])[:4])
+        rows.append(
+            '<tr>'
+            f'<td><div class="mname">{_esc(r["a"])} vs {_esc(r["b"])}</div>'
+            f'<div class="mreps">{r["n_compared"]} tasks compared</div></td>'
+            f'<td class="num">{len(r["a_only"])}</td>'
+            f'<td class="num">{len(r["b_only"])}</td>'
+            f'<td class="num">{r["both"]}</td>'
+            f'<td class="num">{r["neither"]}</td>'
+            f'<td class="num">{r["p"]:.3f}</td>'
+            f'<td>{verdict}{need}</td>'
+            f'<td class="mreps">{sample or "&mdash;"}</td>'
+            '</tr>')
+    note = ('Paired per-task comparison, exact McNemar over the discordant '
+            'tasks (the ones exactly one model passed). Concordant tasks carry '
+            'no signal about which model is better, so a high mean score with '
+            'few discordances is not a win: at 52 tasks you need at least 6 '
+            'discordant tasks all in the same direction to reach p&lt;0.05.')
+    return (f'<section class="panel board"><h2 class="section-label">Head-to-head</h2>'
+            f'<p class="scoring">{note}</p>'
+            f'<div class="scroll"><table class="tbl"><thead><tr>'
+            f'<th>Pair</th><th>A only</th><th>B only</th><th>Both</th><th>Neither</th>'
+            f'<th>p</th><th>Verdict</th><th>Discordant (first 4)</th>'
+            f'</tr></thead><tbody>{"".join(rows)}</tbody></table></div></section>')
 
 
 def _render_heatmap(M):
@@ -536,11 +657,13 @@ def render(data, artifact=False, title="raiko HARD tier — full results"):
     M, T = data["models"], data["tasks"]
     css = _CSS                                   # single inline <style> string
     head = f"<title>{_esc(title)}</title>\n<style>{css}</style>"
-    # 1. header + KPI chips  2. verdict callout  3. leaderboard  4. family heatmap
-    # 5. per-family task cards  — each section is a small helper returning HTML,
-    # all text interpolated through _esc(), all numbers preformatted in Python.
+    # 1. header + KPI chips  2. verdict callout  3. leaderboard  4. head-to-head
+    # 5. family heatmap  6. per-family task cards — each section is a small
+    # helper returning HTML, all text interpolated through _esc(), all numbers
+    # preformatted in Python.
     body_inner = "\n".join([_render_header(data, title), _render_verdict(M), _render_board(M),
-                            _render_heatmap(M), _render_tasks(M, T)])
+                            _render_pairwise(M, T), _render_heatmap(M),
+                            _render_tasks(M, T)])
     body = f'<div class="wrap">{body_inner}</div>'
     frag = f"{head}\n{body}"
     if artifact:
