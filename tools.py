@@ -2,6 +2,7 @@ import base64
 import contextvars
 import json
 import os
+import platform
 import re
 import secrets
 import shutil
@@ -255,6 +256,48 @@ def find_in_files(pattern: str, path: str = ".", glob: str = "**/*") -> str:
 # Designed to run inside a sandbox; they have a denylist + timeout.
 # ---------------------------------------------------------------------------
 
+_IS_WIN = (os.name == "nt")
+
+# The model may pass `timeout` (seconds) on exec tools; the host clamps it.
+EXEC_DEFAULT_TIMEOUT = 30
+EXEC_MAX_TIMEOUT = 300
+
+
+def _exec_timeout(timeout) -> int:
+    """Clamp a model-requested timeout to [1, EXEC_MAX_TIMEOUT]; fall back to
+    the default when it is missing or not a number."""
+    try:
+        t = int(timeout)
+    except (TypeError, ValueError):
+        return EXEC_DEFAULT_TIMEOUT
+    return max(1, min(t, EXEC_MAX_TIMEOUT))
+
+
+def _clip_output(out: str, limit: int = 4000) -> str:
+    """Truncate the middle, keeping head and tail — errors usually sit at the
+    end of a command's output, so a plain head-cut loses exactly what matters."""
+    if len(out) <= limit:
+        return out
+    head, tail = out[: limit - 1200], out[-1000:]
+    return f"{head}\n... ({len(out) - len(head) - len(tail)} chars truncated) ...\n{tail}"
+
+
+def _timeout_result(e: subprocess.TimeoutExpired, label: str, seconds: int) -> str:
+    """Partial output captured before the kill, plus a retry hint. On timeout
+    subprocess.run may hand back str, bytes or None depending on the platform."""
+    parts = []
+    for chunk in (e.stdout, e.stderr):
+        if isinstance(chunk, bytes):
+            chunk = chunk.decode("utf-8", "replace")
+        if chunk:
+            parts.append(chunk)
+    partial = _clip_output("".join(parts).strip())
+    msg = (f"ERROR: {label} timed out after {seconds}s and was killed. If it just "
+           f"needs more time, retry with a larger `timeout` (max {EXEC_MAX_TIMEOUT}s).")
+    if partial:
+        return f"{partial}\n{msg} Output above is partial."
+    return f"{msg} It produced no output before the kill."
+
 # Only clearly DESTRUCTIVE/irreversible operations are blocked. System introspection
 # (socket, platform, subprocess) and read-only network access ARE allowed — it's your machine.
 _DANGER = [
@@ -296,14 +339,16 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
     return f"OK: edited {path} (replaced 1 occurrence)"
 
 
-def run_python(code: str, allow_unsafe: bool = False) -> str:
-    """Run a short Python snippet in a subprocess (cwd = current dir), 20s timeout.
-    Stdout+stderr returned. Destructive ops are blocked unless allow_unsafe=True
-    (the UI sets that after the user approves a permission prompt)."""
+def run_python(code: str, allow_unsafe: bool = False, timeout: int | None = None) -> str:
+    """Run a short Python snippet in a subprocess (cwd = current dir). Stdout+stderr
+    returned. `timeout` is model-chosen seconds, clamped by the host. Destructive
+    ops are blocked unless allow_unsafe=True (the UI sets that after the user
+    approves a permission prompt)."""
     if not allow_unsafe:
         blocked = _danger_check(code)
         if blocked:
             return blocked
+    t = _exec_timeout(timeout)
     try:
         # Force the child's stdio to UTF-8 and decode as UTF-8. Without the env
         # var the child would encode with ITS locale (cp1252 here) while a
@@ -311,26 +356,26 @@ def run_python(code: str, allow_unsafe: bool = False) -> str:
         # mojibake ("Ramón" → "RamÃ³n") depending on the ambient PYTHONIOENCODING.
         proc = subprocess.run([sys.executable, "-c", code], cwd=base_dir(),
                               capture_output=True, text=True, encoding="utf-8",
-                              errors="replace", timeout=20,
+                              errors="replace", timeout=t,
                               env={**os.environ, "PYTHONIOENCODING": "utf-8"})
-    except subprocess.TimeoutExpired:
-        return "ERROR: python execution timed out (20s)"
+    except subprocess.TimeoutExpired as e:
+        return _timeout_result(e, "python execution", t)
     except Exception as e:
         return f"ERROR: {type(e).__name__}: {e}"
     out = ((proc.stdout or "") + (proc.stderr or "")).strip()
-    if len(out) > 4000:
-        out = out[:4000] + "\n... (truncated)"
-    return out or "(no output)"
+    return _clip_output(out) or "(no output)"
 
 
-def run_powershell(command: str, allow_unsafe: bool = False) -> str:
-    """Run a PowerShell command (cwd = current dir), 25s timeout. Stdout+stderr
-    returned. Destructive ops are blocked unless allow_unsafe=True (set by the UI
-    after the user approves a permission prompt)."""
+def run_powershell(command: str, allow_unsafe: bool = False, timeout: int | None = None) -> str:
+    """Run a PowerShell command (cwd = current dir). Stdout+stderr returned.
+    `timeout` is model-chosen seconds, clamped by the host. Destructive ops are
+    blocked unless allow_unsafe=True (set by the UI after the user approves a
+    permission prompt)."""
     if not allow_unsafe:
         blocked = _danger_check(command)
         if blocked:
             return blocked
+    t = _exec_timeout(timeout)
     try:
         # PowerShell writes redirected output in the console's OEM codepage
         # (cp850 here), so non-ASCII came back wrong under ANY parent decoding.
@@ -340,21 +385,20 @@ def run_powershell(command: str, allow_unsafe: bool = False) -> str:
             ["powershell", "-NoProfile", "-NonInteractive", "-Command",
              "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;" + command],
             cwd=base_dir(), capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=25)
-    except subprocess.TimeoutExpired:
-        return "ERROR: powershell execution timed out (25s)"
+            errors="replace", timeout=t)
+    except subprocess.TimeoutExpired as e:
+        return _timeout_result(e, "powershell execution", t)
     except Exception as e:
         return f"ERROR: {type(e).__name__}: {e}"
     out = ((proc.stdout or "") + (proc.stderr or "")).strip()
-    if len(out) > 4000:
-        out = out[:4000] + "\n... (truncated)"
-    return out or "(no output)"
+    return _clip_output(out) or "(no output)"
 
 
-def run_bash(command: str, allow_unsafe: bool = False) -> str:
-    """Run a bash/sh shell command on Linux/macOS (cwd = current dir), 25s timeout.
-    Stdout+stderr returned. Destructive ops are blocked unless allow_unsafe=True
-    (set by the UI after the user approves a permission prompt)."""
+def run_bash(command: str, allow_unsafe: bool = False, timeout: int | None = None) -> str:
+    """Run a bash/sh shell command on Linux/macOS (cwd = current dir). Stdout+stderr
+    returned. `timeout` is model-chosen seconds, clamped by the host. Destructive
+    ops are blocked unless allow_unsafe=True (set by the UI after the user
+    approves a permission prompt)."""
     if not allow_unsafe:
         blocked = _danger_check(command)
         if blocked:
@@ -363,20 +407,19 @@ def run_bash(command: str, allow_unsafe: bool = False) -> str:
     sh = shutil.which("bash") or shutil.which("zsh") or shutil.which("sh")
     if not sh:
         return "ERROR: no bash/sh shell found (this tool is for Linux/macOS)."
+    t = _exec_timeout(timeout)
     try:
         # Linux/macOS shells emit UTF-8; errors="replace" keeps odd bytes from
         # raising instead of returning the output.
         proc = subprocess.run([sh, "-c", command], cwd=base_dir(),
                               capture_output=True, text=True, encoding="utf-8",
-                              errors="replace", timeout=25)
-    except subprocess.TimeoutExpired:
-        return "ERROR: bash execution timed out (25s)"
+                              errors="replace", timeout=t)
+    except subprocess.TimeoutExpired as e:
+        return _timeout_result(e, "bash execution", t)
     except Exception as e:
         return f"ERROR: {type(e).__name__}: {e}"
     out = ((proc.stdout or "") + (proc.stderr or "")).strip()
-    if len(out) > 4000:
-        out = out[:4000] + "\n... (truncated)"
-    return out or "(no output)"
+    return _clip_output(out) or "(no output)"
 
 
 def _bw_binary() -> str | None:
@@ -1353,34 +1396,45 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "run_python",
-            "description": "Run a Python 3 snippet and get its printed output. This is your GO-TO tool for ANY computation, data processing, or logic — math, counting, summing/averaging, parsing or aggregating CSV/JSON, regex extraction, date/time, and reading/transforming/writing files programmatically. Whenever a question needs a calculation or data manipulation, use this instead of guessing or doing it in your head. If the user explicitly says to 'use Python' (or run/execute Python), ALWAYS call this tool. Remember to print() the result. Working dir = current directory, 20s timeout. Keep snippets short; for long scripts, write_file first then run it.",
+            "description": f"Run a Python 3 snippet and get its printed output. This is your GO-TO tool for ANY computation, data processing, or logic — math, counting, summing/averaging, parsing or aggregating CSV/JSON, regex extraction, date/time, and reading/transforming/writing files programmatically. Whenever a question needs a calculation or data manipulation, use this instead of guessing or doing it in your head. If the user explicitly says to 'use Python' (or run/execute Python), ALWAYS call this tool. Remember to print() the result. Working dir = current directory. Default timeout {EXEC_DEFAULT_TIMEOUT}s — pass `timeout` for slow code. Keep snippets short; for long scripts, write_file first then run it.",
             "parameters": {
                 "type": "object",
-                "properties": {"code": {"type": "string", "description": "Python source to run with `python -c`."}},
+                "properties": {
+                    "code": {"type": "string", "description": "Python source to run with `python -c`."},
+                    "timeout": {"type": "integer", "description": f"Seconds before the snippet is killed (default {EXEC_DEFAULT_TIMEOUT}, max {EXEC_MAX_TIMEOUT}). Raise it for slow code; on timeout you still get the partial output."},
+                },
                 "required": ["code"],
             },
         },
     },
+    # Only the current platform's shell tool is offered — presenting both made
+    # models (especially small local ones) call the wrong shell for the OS.
+    # Both functions stay in DISPATCH so bench tasks and old transcripts resolve.
     {
         "type": "function",
         "function": {
             "name": "run_powershell",
-            "description": "Execute a PowerShell command in the current directory and return its output. Use for system/filesystem inspection or scripting on Windows. 25s timeout. Destructive operations are blocked.",
+            "description": f"Execute a PowerShell command in the current directory and return its output. This machine runs Windows and this is its ONLY shell tool — use it for any shell, system, or filesystem task. Default timeout {EXEC_DEFAULT_TIMEOUT}s; pass `timeout` for longer-running commands. Destructive operations are blocked.",
             "parameters": {
                 "type": "object",
-                "properties": {"command": {"type": "string", "description": "PowerShell command to run."}},
+                "properties": {
+                    "command": {"type": "string", "description": "PowerShell command to run."},
+                    "timeout": {"type": "integer", "description": f"Seconds before the command is killed (default {EXEC_DEFAULT_TIMEOUT}, max {EXEC_MAX_TIMEOUT}). Raise it for slow commands (installs, builds, scans); on timeout you still get the partial output."},
+                },
                 "required": ["command"],
             },
         },
-    },
-    {
+    } if _IS_WIN else {
         "type": "function",
         "function": {
             "name": "run_bash",
-            "description": "Execute a bash/sh shell command in the current directory and return its output. Use this for shell/system tasks on Linux or macOS (the equivalent of run_powershell on Windows). 25s timeout. Destructive operations are blocked.",
+            "description": f"Execute a bash/sh shell command in the current directory and return its output. This machine runs {platform.system() or 'a POSIX OS'} and this is its ONLY shell tool — use it for any shell, system, or filesystem task. Default timeout {EXEC_DEFAULT_TIMEOUT}s; pass `timeout` for longer-running commands. Destructive operations are blocked.",
             "parameters": {
                 "type": "object",
-                "properties": {"command": {"type": "string", "description": "bash/sh command to run."}},
+                "properties": {
+                    "command": {"type": "string", "description": "bash/sh command to run."},
+                    "timeout": {"type": "integer", "description": f"Seconds before the command is killed (default {EXEC_DEFAULT_TIMEOUT}, max {EXEC_MAX_TIMEOUT}). Raise it for slow commands (installs, builds, scans); on timeout you still get the partial output."},
+                },
                 "required": ["command"],
             },
         },

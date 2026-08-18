@@ -121,10 +121,10 @@ DEFAULT_PERSONA = (
 )
 TOOL_RULES = (
     "TOOL ARGUMENTS RULE: every tool call's arguments must be ONE valid JSON object — escape "
-    "newlines as \\n and double quotes as \\\". Keep run_python / run_shell code SHORT (a few "
+    "newlines as \\n and double quotes as \\\". Keep run_python / shell-tool code SHORT (a few "
     "lines). If you need a longer or multi-line script, do NOT paste it as a tool argument: "
-    "first save it to a file with write_file, then run it with run_python or run_shell. This "
-    "avoids invalid-JSON errors from large code blocks.\n"
+    "first save it to a file with write_file, then run it with run_python or the shell tool. "
+    "This avoids invalid-JSON errors from large code blocks.\n"
     "When you have the answer, give it directly. Format your final answers in clean Markdown."
 )
 
