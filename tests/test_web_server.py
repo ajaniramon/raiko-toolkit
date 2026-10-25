@@ -353,8 +353,8 @@ def test_only_one_socket_owns_a_live_session(client):
         first.receive_json()
         first.receive_json()
         with pytest.raises(WebSocketDisconnect) as caught:
-            with client.websocket_connect(f"/ws/{sid}", headers=AUTH):
-                pass
+            with client.websocket_connect(f"/ws/{sid}", headers=AUTH) as second:
+                second.receive_json()
         assert caught.value.code == 4409
 
 
@@ -836,3 +836,148 @@ def test_set_max_iterations_command_retunes_a_live_session(client):
                 break
         assert event["type"] == "error" and "max_iterations" in event["message"]
         assert live.iteration_cap() == 150          # rejected, cap unchanged
+
+
+def test_takeover_resends_a_pending_permission_prompt(client, cfg):
+    outside = os.path.join(os.path.dirname(cfg["permissions"]["workspace"]), "takeover.txt")
+    script = [
+        [tool_delta(0, "c1", "write_file",
+                    json.dumps({"path": outside, "content": "tras takeover\n"})),
+         usage_chunk(10, 2)],
+        [text_delta("hecho"), usage_chunk(12, 2)],
+    ]
+    # one portal (event loop) for both sockets, as in the real server
+    with client:
+        sid, _ = make_ws_session(client, script)
+        with client.websocket_connect(f"/ws/{sid}", headers=AUTH) as first:
+            first.receive_json()
+            first.receive_json()
+            first.send_json({"type": "send", "text": "escribe"})
+            while first.receive_json()["type"] != "permission_required":
+                pass
+            # the phone went to the background; a new client takes the session over
+            with client.websocket_connect(f"/ws/{sid}?takeover=1", headers=AUTH) as second:
+                assert second.receive_json()["type"] == "session_started"
+                assert second.receive_json()["type"] == "session_snapshot"
+                prompt = second.receive_json()
+                assert prompt["type"] == "permission_required"
+                assert prompt["tool"] == "write_file"
+                second.send_json({"type": "permission_response",
+                                  "perm_id": prompt["perm_id"], "decision": "allow_once"})
+                while second.receive_json()["type"] != "turn_done":
+                    pass
+    assert open(outside).read() == "tras takeover\n"
+
+
+def test_ask_mode_confirms_mcp_tools_and_yolo_does_not(client):
+    _, _ = make_ws_session(client, [[]])
+    ask = next(iter(srv.STATE.sessions.values())).session
+    _, _ = make_ws_session(client, [[]], permission_mode="yolo")
+    yolo = [w.session for w in srv.STATE.sessions.values() if w.permission_mode == "yolo"][0]
+    assert ask.confirm_mcp_tools is True
+    assert yolo.skip_permissions is True
+
+
+def test_ws_rejections_reach_a_real_client_as_close_codes(cfg):
+    """Through a real server (TestClient hides it): closing before accept() turned
+    every rejection into an HTTP 403 handshake failure, so clients never saw
+    4401/4404."""
+    import asyncio
+    import socket as socketlib
+
+    import uvicorn
+    import websockets
+
+    cfg["web"]["token"] = "secreto"
+    app = srv.build_app(cfg)
+    with socketlib.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    async def close_code(path, headers):
+        async with websockets.connect(f"ws://127.0.0.1:{port}{path}",
+                                      additional_headers=headers, proxy=None) as ws:
+            with pytest.raises(websockets.ConnectionClosed):
+                await ws.recv()
+            return ws.close_code
+
+    async def scenario():
+        server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port,
+                                               log_level="error"))
+        task = asyncio.create_task(server.serve())
+        while not server.started:
+            await asyncio.sleep(0.02)
+        try:
+            return (await close_code("/ws/nope", {}),
+                    # a fresh dict: TestClient adds handshake headers to AUTH in place
+                    await close_code("/ws/nope", {"Authorization": "Bearer secreto"}))
+        finally:
+            server.should_exit = True
+            await task
+
+    assert asyncio.run(scenario()) == (4401, 4404)
+
+
+def test_tokenless_server_refuses_a_rebound_hostname(cfg):
+    """DNS rebinding: evil.example re-resolves to 127.0.0.1, so the browser
+    treats it as same-origin — but the Host header still says evil.example."""
+    cfg["web"]["token"] = ""
+    rebound = TestClient(srv.build_app(cfg), base_url="http://evil.example:8484")
+    assert rebound.get("/api/sessions").status_code == 401
+    local = TestClient(srv.build_app(cfg), base_url="http://127.0.0.1:8484")
+    assert local.get("/api/sessions").status_code == 200
+    assert local.get("/api/health", headers={"host": "[::1]:8484"}).status_code == 200
+    assert local.get("/api/health", headers={"host": "localhost"}).status_code == 200
+
+
+def test_ws_refuses_browser_origins_outside_the_whitelist(client):
+    sid, _ = make_ws_session(client, [[]])
+    with pytest.raises(WebSocketDisconnect) as caught:
+        with client.websocket_connect(
+            f"/ws/{sid}", headers={**AUTH, "origin": "https://evil.example"},
+        ) as ws:
+            ws.receive_json()
+    assert caught.value.code == 4403
+
+
+def test_ws_accepts_whitelisted_and_originless_clients(cfg):
+    cfg["web"]["token"] = "secreto"
+    cfg["web"]["allowed_origins"] = ["http://homelab.local:5173"]
+    client = TestClient(srv.build_app(cfg))
+    sid, _ = make_ws_session(client, [[]])
+    with client.websocket_connect(
+        f"/ws/{sid}", headers={**AUTH, "origin": "http://homelab.local:5173"},
+    ) as ws:
+        assert ws.receive_json()["type"] == "session_started"
+
+
+def test_create_session_requires_a_json_content_type(client):
+    response = client.post(
+        "/api/sessions",
+        headers={**AUTH, "content-type": "text/plain"},
+        content=json.dumps({"provider": "openai", "model": "gpt-test"}),
+    )
+    assert response.status_code == 415
+
+
+def test_a_full_queue_sheds_deltas_but_never_control_events(client):
+    import asyncio
+
+    sid, _ = make_ws_session(client, [[]])
+    live = srv.STATE.sessions[sid]
+
+    async def scenario():
+        live.loop = asyncio.get_running_loop()
+        live.queue = asyncio.Queue()
+        live.queue_size = 64
+        for _ in range(200):
+            live._emit(srv.protocol.TextDelta(text="x"))
+        live._emit(srv.protocol.TurnDone(reason="completed"))
+        await asyncio.sleep(0)
+        types = []
+        while not live.queue.empty():
+            types.append(json.loads(live.queue.get_nowait())["type"])
+        return types
+
+    types = asyncio.run(scenario())
+    assert types.count("text_delta") == 64 and types[-1] == "turn_done"

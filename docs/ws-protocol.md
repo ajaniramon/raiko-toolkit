@@ -182,11 +182,16 @@ Elimina una sesión viva o una sesión guardada.
 
 JSON en ambos sentidos; cada mensaje lleva `"type"` más los campos del payload.
 Al conectar, el servidor envía `session_started` y después `session_snapshot`.
-Cierres: `4401` sin auth, `4404` sesión desconocida y `4409` si ya existe otro
-cliente propietario. Un cliente autenticado puede conectar con `?takeover=1`
+Cierres: `4401` sin auth, `4403` origen no permitido, `4404` sesión desconocida
+y `4409` si ya existe otro cliente propietario. El servidor acepta el handshake antes de cerrar con estos
+códigos, así que el cliente los recibe en el evento `close` (antes llegaban como un
+HTTP 403 del handshake y el navegador solo veía `1006`). Un cliente autenticado puede conectar con `?takeover=1`
 para reemplazar de forma atómica una conexión anterior que haya quedado
 suspendida; el socket sustituido recibe `4410`. Homelab usa este modo para
-recuperar una sesión al volver del background en móvil. Si el cliente desconecta
+recuperar una sesión al volver del background en móvil. Si al conectar el turno
+está en pausa esperando un permiso, tras `session_snapshot` se reenvía cada
+`permission_required` pendiente, para que el nuevo cliente pueda responderlo
+(deduplicar por `perm_id`: en una carrera puede llegar dos veces). Si el cliente desconecta
 a mitad de turno, el turno se interrumpe y cualquier permiso pendiente se
 deniega inmediatamente.
 
@@ -209,13 +214,13 @@ deniega inmediatamente.
 | type | payload |
 |---|---|
 | `session_started` | `{session_id, provider, model, ctx_window, protocol_version, connection_id}` |
-| `session_snapshot` | `{session_id, engine_session_id, busy, provider, model, ctx_window, messages, input_tokens, output_tokens, session_usd}` — estado canónico al conectar/reconectar y después de mutaciones de historial |
+| `session_snapshot` | `{session_id, engine_session_id, busy, provider, model, ctx_window, messages, input_tokens, output_tokens, session_usd}` — estado canónico al conectar/reconectar y después de mutaciones de historial. Los mensajes `assistant` pueden traer `reasoning` (el razonamiento de ese segmento, solo para mostrar: nunca se reenvía al modelo) |
 | `turn_started` | `{text}` — eco del mensaje del usuario, tras el posible auto-compact |
 | `thinking_delta` / `text_delta` | `{text}` — streaming del razonamiento / la respuesta |
 | `segment_end` | `{content, thinking}` — textos FINALES del segmento (pueden diferir de la concatenación de deltas si se recuperó un tool-call emitido como texto); cierra el bloque vivo |
 | `tool_call_started` | `{call_id, name, args}` (`args` = JSON string crudo del modelo) |
 | `tool_call_result` | `{call_id, name, ok, summary, result, diff?, path?}` — `diff` = unified diff en `write_file`/`edit_file`; `ok=false` en ERROR/DENIED |
-| `permission_required` | `{perm_id, tool, action, detail, scope, allowed_decisions}` — el turno queda EN PAUSA hasta el `permission_response` con ese `perm_id` (timeout 300 s → deny). `scope`: `danger` \| `workspace` \| `external_write` |
+| `permission_required` | `{perm_id, tool, action, detail, scope, allowed_decisions}` — el turno queda EN PAUSA hasta el `permission_response` con ese `perm_id` (timeout 300 s → deny). `scope`: `danger` \| `workspace` \| `external_write` \| `secret_read` \| `mcp` (tratar valores desconocidos de forma genérica) |
 | `cost_update` | `{input_tokens, output_tokens, turn_usd, session_usd, budget_usd?}` — tras cada request al modelo |
 | `turn_done` | `{reason, elapsed_s, output_tokens, tok_s, turn_usd}` — `reason`: `completed` \| `interrupted` \| `error` \| `max_iterations` \| `budget_exceeded` |
 | `compacted` | `{before_messages, after_messages, summary, auto}` |
@@ -223,6 +228,15 @@ deniega inmediatamente.
 | `telemetry` | `{gpu_name, gpu_util, vram_used_mb, vram_total_mb, ram_used_gb, ram_total_gb, cpu, temp_c, power_w, tok_s?}` — cada ~2 s; campos `null` si el sensor no existe |
 | `notice` | `{text, kind}` — informativo (`info` \| `warning` \| `rewind`) |
 | `error` | `{message}` |
+
+### Entrega de eventos
+
+Si el cliente lee más despacio de lo que el engine emite y la cola del socket
+pasa de `web.queue_size`, el servidor descarta **solo** `text_delta`,
+`thinking_delta` y `telemetry` (el `segment_end` siguiente trae el texto final
+del segmento, así que basta con reemplazar lo acumulado por él). El resto de
+eventos (`permission_required`, `tool_call_result`, `turn_done`…) no se pierde
+nunca. La telemetría la muestrea un único proceso para todas las sesiones.
 
 ### Flujo de un turno
 
@@ -247,9 +261,20 @@ Los exec tools sobre red son **RCE en la máquina**. Por eso:
    La denylist (`permissions.deny`) y el confinamiento a `permissions.workspace`
    siguen aplicando. Para estas operaciones `allowed_decisions` es
    `["allow_once","deny"]`; no se ofrece un “always” que no tendría efecto.
+   Las tools de servidores MCP también piden confirmación en cada llamada en modo
+   `"ask"` (`scope: "mcp"`): un servidor MCP puede exponer shells o escrituras.
+   Las tools bloqueadas por política (`run_*` con `allow_exec=false`) ya no se
+   ofrecen al modelo, que no gasta rondas en llamadas que siempre fallarían.
    En modo `"yolo"` esas confirmaciones se aprueban automáticamente. La denylist
    y `web.allow_exec=false` no se pueden anular seleccionando YOLO.
 4. Token comparado con `secrets.compare_digest`; CORS solo por lista blanca.
+   Sin token (solo en loopback) se exige además una cabecera `Host` de loopback
+   (`127.0.0.1`, `localhost`, `::1`): una página con DNS rebinding hacia 127.0.0.1
+   es same-origin para el navegador, pero sigue mandando su propio hostname → 401.
+   El WS rechaza con `4403` cualquier `Origin` fuera de `web.allowed_origins`
+   (los clientes de servidor, como el proxy de Homelab, no envían `Origin`), y
+   `POST /api/sessions` exige `Content-Type: application/json` (415 si no), para
+   que un formulario cross-site no pueda crear sesiones sin pasar por CORS.
 5. **Carpeta de trabajo acotada**: el `cwd` que manda el cliente se resuelve con
    `realpath` y debe caer dentro de `web.project_roots` — `..` y symlinks no
    escapan, y sin roots configurados no se acepta ninguno. El `cwd` guardado de

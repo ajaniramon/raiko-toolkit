@@ -69,6 +69,10 @@ DEFAULT_WEB_MAX_ITERATIONS = 60
 MAX_ITERATIONS_LIMIT = 500
 PERMISSION_TIMEOUT = 300
 TELEMETRY_INTERVAL = 2.0
+# Events a slow client may lose without harm: deltas are reconciled by the
+# segment_end that closes their segment, telemetry by the next sample. Anything
+# else (permission_required, turn_done…) is never dropped.
+DROPPABLE_EVENTS = (protocol.TextDelta, protocol.ThinkingDelta, protocol.Telemetry)
 MAX_COMMAND_CHARS = 262_144
 MAX_PROMPT_CHARS = 100_000
 MAX_MODEL_CHARS = 191
@@ -146,6 +150,8 @@ class WebSession:
             self.session.blocked_tools |= EXEC_TOOLS
         if permission_mode == "ask":
             self.session.always_ask_tools |= CONFIRM_TOOLS | EXEC_TOOLS
+            # an MCP server can expose shells or writes: confirm its tools too
+            self.session.confirm_mcp_tools = True
 
     def attach(
         self,
@@ -157,7 +163,8 @@ class WebSession:
         if self.loop is not None and not takeover:
             return None
         self.loop = loop
-        self.queue = asyncio.Queue(maxsize=self.queue_size)
+        # unbounded: _push enforces queue_size on droppable events only
+        self.queue = asyncio.Queue()
         self.socket = socket
         self.connection_id = uuid.uuid4().hex[:12]
         self.last_seen = time.monotonic()
@@ -175,9 +182,13 @@ class WebSession:
         self.last_seen = time.monotonic()
 
     def _emit(self, event) -> None:
-        self._push(event_to_json(event))
+        self._push(event_to_json(event), droppable=isinstance(event, DROPPABLE_EVENTS))
 
-    def _push(self, payload: str) -> None:
+    def _push(self, payload: str, droppable: bool = False) -> None:
+        """Queue an event for the socket. Past `queue_size` pending events only
+        droppable ones are shed; control events always go through (they are
+        few, and losing one used to hang the client: a dropped turn_done or
+        permission_required left it waiting forever)."""
         loop = self.loop
         if loop is None:
             return
@@ -186,11 +197,8 @@ class WebSession:
             queue = self.queue
             if queue is None:
                 return
-            if queue.full():
-                try:
-                    queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
+            if droppable and queue.qsize() >= self.queue_size:
+                return
             queue.put_nowait(payload)
 
         loop.call_soon_threadsafe(enqueue)
@@ -208,6 +216,8 @@ class WebSession:
             "event": threading.Event(),
             "decision": "deny",
             "allowed": set(request.allowed_decisions),
+            # kept so a client that takes over the session can be re-asked
+            "request": request,
         }
         with self._perm_lock:
             self._pending_perms[request.perm_id] = waiter
@@ -225,6 +235,12 @@ class WebSession:
             waiter["decision"] = decision if decision in waiter["allowed"] else "deny"
             waiter["event"].set()
             return True
+
+    def pending_permission_requests(self) -> list[protocol.PermissionRequired]:
+        """Permission prompts the turn is still blocked on, oldest first."""
+        with self._perm_lock:
+            return [w["request"] for w in self._pending_perms.values()
+                    if not w["event"].is_set()]
 
     def deny_pending_permissions(self) -> None:
         with self._perm_lock:
@@ -284,8 +300,25 @@ class AppState:
                 or MODEL_CATALOG_TTL_SECONDS
             ),
         )
+        self.allowed_origins = {
+            origin
+            for origin in (self.web_cfg.get("allowed_origins") or [])
+            if isinstance(origin, str) and origin and origin != "*"
+        }
         self.sessions: dict[str, WebSession] = {}
         self.started_at = time.monotonic()
+        # one host sampler for every connected socket (nvidia-smi is a process
+        # spawn; psutil.cpu_percent is meaningless when called from N threads)
+        self._telemetry: tuple[float, str] | None = None
+        self._telemetry_lock = asyncio.Lock()
+
+    async def telemetry_payload(self) -> str:
+        async with self._telemetry_lock:
+            now = time.monotonic()
+            if self._telemetry is None or now - self._telemetry[0] >= TELEMETRY_INTERVAL * 0.9:
+                sample = await asyncio.to_thread(telemetry.sample)
+                self._telemetry = (time.monotonic(), event_to_json(sample))
+            return self._telemetry[1]
 
     def cleanup_idle(self) -> None:
         now = time.monotonic()
@@ -309,10 +342,24 @@ def _state() -> AppState:
     return STATE
 
 
+def _loopback_host(request_or_ws) -> bool:
+    """True if the Host header names this machine's loopback interface. Without
+    a token this is what stops DNS rebinding: a hostile page whose domain
+    re-resolves to 127.0.0.1 is same-origin to the browser, but its requests
+    still carry the attacker's hostname."""
+    host = (request_or_ws.headers.get("host") or "").strip().lower()
+    if host.startswith("["):                 # [::1]:8484
+        host = host[1:].split("]", 1)[0]
+    elif host.count(":") == 1:               # 127.0.0.1:8484 / localhost:8484
+        host = host.split(":", 1)[0]
+    return host in _LOOPBACK
+
+
 def _authorized(request_or_ws) -> bool:
     state = _state()
     if not state.token:
-        return True
+        # tokenless is only acceptable on loopback (main() refuses otherwise)
+        return _loopback_host(request_or_ws)
     auth = request_or_ws.headers.get("authorization", "")
     return (
         auth.startswith("Bearer ")
@@ -664,6 +711,10 @@ async def session_detail(request):
 async def create_session(request):
     if not _authorized(request):
         return _unauthorized()
+    # A cross-site page can POST text/plain without a CORS preflight; insisting
+    # on JSON forces one, which the CORS whitelist then refuses.
+    if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
+        return JSONResponse({"error": "Content-Type must be application/json"}, status_code=415)
     try:
         body = await request.json()
     except Exception:
@@ -821,9 +872,9 @@ async def _pump_events(socket: WebSocket, queue: asyncio.Queue[str]):
 
 
 async def _pump_telemetry(web_session: WebSession):
+    state = _state()
     while True:
-        sample = await asyncio.to_thread(telemetry.sample)
-        web_session._push(event_to_json(sample))
+        web_session._push(await state.telemetry_payload(), droppable=True)
         await asyncio.sleep(TELEMETRY_INTERVAL)
 
 
@@ -842,13 +893,32 @@ async def _run_compaction(web_session: WebSession):
         web_session.busy = False
 
 
+async def _reject(socket: WebSocket, code: int, reason: str) -> None:
+    """Close with an application code the client can actually read. Closing
+    before accept() makes the server refuse the handshake with a bare HTTP 403,
+    so browsers only ever saw 1006 and could not tell these cases apart."""
+    await socket.accept()
+    await socket.close(code=code, reason=reason)
+
+
+def _origin_allowed(socket: WebSocket) -> bool:
+    """WebSockets are not covered by CORS: any page may open one to us. Server
+    clients (the Homelab proxy, ws_smoke) send no Origin; a browser always
+    does, and then it must be one of web.allowed_origins."""
+    origin = socket.headers.get("origin")
+    return origin is None or origin in _state().allowed_origins
+
+
 async def ws_endpoint(socket: WebSocket):
     if not _authorized(socket):
-        await socket.close(code=4401, reason="unauthorized")
+        await _reject(socket, 4401, "unauthorized")
+        return
+    if not _origin_allowed(socket):
+        await _reject(socket, 4403, "origin not allowed")
         return
     web_session = _state().sessions.get(socket.path_params["session_id"])
     if web_session is None:
-        await socket.close(code=4404, reason="unknown session")
+        await _reject(socket, 4404, "unknown session")
         return
 
     takeover = socket.query_params.get("takeover") == "1"
@@ -859,7 +929,7 @@ async def ws_endpoint(socket: WebSocket):
         takeover=takeover,
     )
     if connection_id is None:
-        await socket.close(code=4409, reason="session already has a client")
+        await _reject(socket, 4409, "session already has a client")
         return
 
     await socket.accept()
@@ -885,6 +955,10 @@ async def ws_endpoint(socket: WebSocket):
         )
     )
     await socket.send_text(event_to_json(web_session.snapshot()))
+    # A turn paused on a prompt sent to a previous (now replaced) socket would
+    # otherwise wait out PERMISSION_TIMEOUT with no one able to answer it.
+    for pending in web_session.pending_permission_requests():
+        await socket.send_text(event_to_json(pending))
     assert web_session.queue is not None
     connection_queue = web_session.queue
     pumps = [
@@ -1053,11 +1127,7 @@ async def ws_endpoint(socket: WebSocket):
 def build_app(cfg) -> Starlette:
     global STATE
     STATE = AppState(cfg)
-    origins = [
-        origin
-        for origin in (STATE.web_cfg.get("allowed_origins") or [])
-        if origin and origin != "*"
-    ]
+    origins = sorted(STATE.allowed_origins)
     middleware = []
     if origins:
         middleware.append(

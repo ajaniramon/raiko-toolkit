@@ -26,7 +26,7 @@ import context
 import mcp_client
 import pricing
 from context import ContextTracker
-from tools import TOOLS, call_tool, danger_match
+from tools import TOOLS, _exec_timeout, call_tool, danger_match
 
 from engine import protocol as ev
 from engine import skills as skills_mod
@@ -56,6 +56,20 @@ def tool_arg_summary(name, args):
         val = str(args or "")
     val = " ".join(val.split())
     return val[:70] + "…" if len(val) > 70 else val
+
+
+EXEC_TOOLS = ("run_python", "run_powershell", "run_bash")
+# Head-room over an exec tool's own (model-chosen) timeout before the engine's
+# ceiling gives up on it: the tool kills its subprocess and reports partial
+# output itself, which is far more useful than the engine's generic timeout.
+EXEC_TIMEOUT_MARGIN = 15
+
+
+def new_call_id():
+    """A unique tool-call id. Providers may omit ids (some llama.cpp/vLLM builds)
+    and the text-recovery fallbacks have none; strict APIs (Anthropic) reject a
+    missing or repeated id anywhere in the conversation."""
+    return "call_" + uuid.uuid4().hex[:16]
 
 
 def result_summary(result):
@@ -106,6 +120,9 @@ class Session:
         # tools that must confirm EVERY call on this frontend: the allowlist and
         # skip_permissions shortcuts do not apply (web exec/write hardening)
         self.always_ask_tools = set()
+        # True = every MCP tool call needs a confirmation on this frontend (web
+        # "ask" mode): an MCP server can expose anything, shells included.
+        self.confirm_mcp_tools = False
 
         self.provider = None
         self.model = None
@@ -386,15 +403,19 @@ class Session:
         return os.path.abspath(p if os.path.isabs(p) else os.path.join(self.cwd, p))
 
     def _in_workspace(self, path):
-        """True if `path` resolves inside the workspace root (writes are confined there)."""
+        """True if `path` resolves inside the workspace root (writes are confined there).
+        Both sides go through realpath: a symlink inside the workspace that points
+        elsewhere (or a symlinked workspace) must not turn an outside write into
+        an inside one."""
         try:
-            root = self.workspace()
-            return os.path.commonpath([root, self.abspath(path)]) == root
+            root = os.path.normcase(os.path.realpath(self.workspace()))
+            target = os.path.normcase(os.path.realpath(self.abspath(path)))
+            return os.path.commonpath([root, target]) == root
         except (ValueError, OSError):
             return False   # different drive / bad path → treat as outside
 
     # ---------- tool execution ----------
-    def _with_timeout(self, name, fn):
+    def _with_timeout(self, name, fn, timeout=None):
         """Run a (blocking) tool call with a hard ceiling so a hung tool or an
         unreachable MCP server can't freeze the turn. The work runs in a daemon
         thread; on timeout we return an ERROR and move on (it keeps running in the
@@ -407,11 +428,12 @@ class Session:
             except Exception as e:
                 box["v"] = f"ERROR: {type(e).__name__}: {e}"
 
+        limit = timeout or TOOL_TIMEOUT
         t = threading.Thread(target=run, daemon=True)
         t.start()
-        t.join(TOOL_TIMEOUT)
+        t.join(limit)
         if t.is_alive():
-            return (f"ERROR: tool '{name}' timed out after {TOOL_TIMEOUT}s "
+            return (f"ERROR: tool '{name}' timed out after {limit}s "
                     f"(it may still be running in the background; the turn continued)")
         return box.get("v", "ERROR: tool produced no result")
 
@@ -434,12 +456,25 @@ class Session:
             return skills_mod.load_skill(self.skills, str((skill_args or {}).get("name", "")))
         if name in self.mcp_route:   # remote tool (MCP) → run on its server
             url, orig = self.mcp_route[name]
+            if self.confirm_mcp_tools and not self.skip_permissions:
+                detail = f"server: {url}\ntool: {orig}\narguments: {raw_args}"
+                if not self._permit(name, f"MCP tool {orig}", detail,
+                                    scope="mcp", force=True, once_only=True):
+                    return f"DENIED by user: refused MCP tool '{name}'"
             return self._with_timeout(name, lambda: mcp_client.call_tool(url, orig, raw_args))
         try:
             args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
         except Exception:
             return self._with_timeout(name, lambda: call_tool(name, raw_args, base_dir=self.cwd))
-        if name in ("run_python", "run_powershell", "run_bash"):
+        if not isinstance(args, dict):
+            # valid JSON but not an object: a recoverable error for the model,
+            # not an exception that aborts the whole turn
+            return f"ERROR: arguments for '{name}' must be a JSON object."
+        ceiling = None
+        if name in EXEC_TOOLS:
+            # the permission decision belongs to the host, never to the model
+            args.pop("allow_unsafe", None)
+            ceiling = max(TOOL_TIMEOUT, _exec_timeout(args.get("timeout")) + EXEC_TIMEOUT_MARGIN)
             code = args.get("code") or args.get("command") or ""
             force = name in self.always_ask_tools
             if self.skip_permissions and not force:
@@ -527,7 +562,8 @@ class Session:
                             if not in_ws else
                             f"DENIED by user: '{name}' was not confirmed on this interface.")
             return self._run_with_diff(name, args)
-        return self._with_timeout(name, lambda: call_tool(name, args, base_dir=self.cwd))
+        return self._with_timeout(name, lambda: call_tool(name, args, base_dir=self.cwd),
+                                  timeout=ceiling)
 
     def _run_with_diff(self, name, args):
         """Run a file-writing tool, capturing a before/after unified diff for the
@@ -612,10 +648,21 @@ class Session:
                      "history. Preserve the user's goals and decisions, key facts, file paths and "
                      "edits, important tool results, and any open/unfinished tasks. Be concise but "
                      "complete; use bullet points. Do not invent anything not in the conversation.")
-            resp = self.client.chat.completions.create(
-                model=self.model, stream=False, max_tokens=1200,
-                messages=[{"role": "system", "content": instr},
-                          {"role": "user", "content": self._transcript(self.messages[1:])}])
+            params = dict(model=self.model, stream=False,
+                          messages=[{"role": "system", "content": instr},
+                                    {"role": "user", "content": self._transcript(self.messages[1:])}])
+            if self.provider == "openai":
+                # gpt-5 / o-series reject max_tokens, and their reasoning tokens
+                # count against the cap — leave room for both
+                params["max_completion_tokens"] = 8000
+            else:
+                params["max_tokens"] = 1200
+            resp = self.client.chat.completions.create(**params)
+            usage = getattr(resp, "usage", None)
+            if usage is not None:
+                self._account_cost(getattr(usage, "prompt_tokens", 0) or 0,
+                                   getattr(usage, "completion_tokens", 0) or 0,
+                                   {"usage": {"cost": getattr(usage, "cost", None)}})
             summary = (resp.choices[0].message.content or "").strip()
             if not summary:
                 raise ValueError("empty summary")
@@ -647,6 +694,26 @@ class Session:
             self.compact(auto=True)
 
     # ---------- the turn loop ----------
+    def _offered_tools(self):
+        """Tool schemas sent to the model: everything but the tools this
+        frontend refuses outright (no point letting it plan around them)."""
+        return [t for t in TOOLS + self.mcp_tools + self._skill_tools
+                if t["function"]["name"] not in self.blocked_tools]
+
+    def _real_tool_calls(self, calls):
+        """Keep only text-recovered calls that name a tool the model was given.
+        The recovery parsers accept any JSON with a "name" key, so without this
+        a package.json in an answer (or in the thinking) became a tool call."""
+        known = {t["function"]["name"] for t in self._offered_tools()}
+        return [c for c in calls if c.get("name") in known]
+
+    def _request_messages(self):
+        """The history as providers must see it: without the display-only
+        `reasoning` key (strict APIs reject unknown message fields, and feeding
+        old reasoning back would only cost tokens)."""
+        return [{k: v for k, v in m.items() if k != "reasoning"} if "reasoning" in m else m
+                for m in self.messages]
+
     def _repair_history(self):
         """Keep the message list valid for strict providers (e.g. Anthropic) after an
         interrupt or when resuming a session saved mid-turn: drop assistant messages
@@ -695,9 +762,9 @@ class Session:
                     msg = self.stream_one()
                 if self._think_leak_calls and not msg.get("tool_calls"):
                     msg["tool_calls"] = [
-                        {"id": f"tk_{i}", "type": "function",
+                        {"id": new_call_id(), "type": "function",
                          "function": {"name": tc["name"], "arguments": tc["arguments"]}}
-                        for i, tc in enumerate(self._think_leak_calls)]
+                        for tc in self._think_leak_calls]
                     self.emit(ev.Notice(kind="warning",
                                         text="↻ recovered the tool call from the thinking"))
                 # An interrupt can end a segment with no content and no tool_calls;
@@ -771,13 +838,14 @@ class Session:
                 # Values are available to the local model only for this turn. Never
                 # write them to Raiko's persisted conversation JSON.
                 for message in self.messages:
-                    content = message.get("content")
-                    if not isinstance(content, str):
-                        continue
-                    for value in sensitive_values:
-                        if value:
-                            content = content.replace(value, "[REDACTED_SECRET]")
-                    message["content"] = content
+                    for key in ("content", "reasoning"):
+                        text = message.get(key)
+                        if not isinstance(text, str):
+                            continue
+                        for value in sensitive_values:
+                            if value:
+                                text = text.replace(value, "[REDACTED_SECRET]")
+                        message[key] = text
             self.save()   # persist the conversation after every turn
         return reason
 
@@ -786,8 +854,8 @@ class Session:
         accumulates tool-call deltas; accounts usage/cost. Returns the assistant
         message as a dict."""
         self._repair_history()
-        params = dict(model=self.model, messages=self.messages,
-                      tools=TOOLS + self.mcp_tools + self._skill_tools,
+        params = dict(model=self.model, messages=self._request_messages(),
+                      tools=self._offered_tools(),
                       tool_choice="auto", stream=True)
         params["stream_options"] = {"include_usage": True}
         if self.is_local:
@@ -810,6 +878,7 @@ class Session:
         splitter = ThinkSplitter()
         self.cur_think = self.cur_content = ""
         last_pricing = None
+        cancelled = False
 
         def emit_delta(mode, t):
             if not t:
@@ -824,6 +893,7 @@ class Session:
 
         for chunk in stream:
             if self._cancel.is_set():
+                cancelled = True
                 try:
                     stream.close()
                 except Exception:
@@ -856,7 +926,9 @@ class Session:
                     if tcd.id:
                         slot["id"] = tcd.id
                     if tcd.function:
-                        if tcd.function.name:
+                        # most servers send the name once; some repeat it in
+                        # every delta — don't turn that into "read_fileread_file"
+                        if tcd.function.name and slot["name"] != tcd.function.name:
                             slot["name"] += tcd.function.name
                         if tcd.function.arguments:
                             slot["arguments"] += tcd.function.arguments
@@ -872,12 +944,19 @@ class Session:
         self._turn_tokens += out_t
         self._account_cost(in_t, out_t, last_pricing or {})
 
+        if cancelled:
+            # calls cut off mid-stream carry truncated JSON arguments; they will
+            # never run, and strict providers 400 on the next request if they
+            # stay in the history
+            tool_calls = {}
+
         # fallback: the model emitted the tool-call as plain text -> recover it
-        if not tool_calls:
-            fb = parse_text_tool_calls("".join(content_parts))
+        if not tool_calls and not cancelled:
+            fb = self._real_tool_calls(parse_text_tool_calls("".join(content_parts)))
             if fb:
                 for i, tc in enumerate(fb):
-                    tool_calls[i] = {"id": f"fb_{i}", "name": tc["name"], "arguments": tc["arguments"]}
+                    tool_calls[i] = {"id": new_call_id(), "name": tc["name"],
+                                     "arguments": tc["arguments"]}
                 cleaned = strip_tool_call_text(self.cur_content)
                 self.cur_content = cleaned
                 content_parts[:] = [cleaned] if cleaned else []
@@ -886,13 +965,18 @@ class Session:
 
         # detect a tool call leaked into the THINKING (qwen sometimes stops there
         # and emits the call as part of its reasoning instead of a real tool_call)
-        self._think_leak_calls = parse_text_tool_calls(self.cur_think) if not tool_calls else []
+        self._think_leak_calls = (self._real_tool_calls(parse_text_tool_calls(self.cur_think))
+                                  if not tool_calls and not cancelled else [])
 
         self.emit(ev.SegmentEnd(content=self.cur_content, thinking=self.cur_think))
 
         msg = {"role": "assistant", "content": "".join(content_parts) or None}
+        if self.cur_think:
+            # Display-only: lets a reloaded conversation show its reasoning.
+            # _request_messages() strips it before anything goes to a provider.
+            msg["reasoning"] = self.cur_think
         if tool_calls:
-            msg["tool_calls"] = [{"id": tc["id"], "type": "function",
+            msg["tool_calls"] = [{"id": tc["id"] or new_call_id(), "type": "function",
                                   "function": {"name": tc["name"], "arguments": tc["arguments"]}}
                                  for _, tc in sorted(tool_calls.items())]
         return msg

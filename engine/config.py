@@ -5,13 +5,16 @@ engine, the TUI and the web layer read the same configuration."""
 import json
 import os
 import sys
+import tempfile
 
 MAX_ITERATIONS = 8
 # How many times to retry a turn when the model leaks its tool call into the
 # thinking and emits no real tool_call (qwen sometimes "thinks" the call and stops).
 THINK_RETRIES = 2
 # Hard ceiling for a single tool call so a hung tool / unreachable MCP can't freeze
-# the turn. Above every tool's own timeout (run_python 20s, powershell/shell 25s).
+# the turn. The exec tools take a model-chosen timeout (up to 300s); for those the
+# engine raises its ceiling above the requested value, so they report their own
+# timeout (with partial output) instead of being abandoned here.
 TOOL_TIMEOUT = 60
 # Auto-compact the conversation once context usage crosses this fraction of the window.
 AUTO_COMPACT_PCT = 0.85
@@ -42,6 +45,11 @@ def _app_home():
 
 
 CONFIG_PATH = os.path.join(_app_home(), "tui_config.json")
+
+# Set when tui_config.json exists but could not be parsed. The defaults are used
+# for this run, and save_config refuses to write: persisting them would replace
+# the user's file (API keys, token, presets) with the defaults.
+_LOAD_ERROR = None
 
 DEFAULT_CONFIG = {
     "nano": {"base_url": "https://nano-gpt.com/api/v1",
@@ -144,17 +152,25 @@ SYSTEM_PROMPT = build_system_prompt(DEFAULT_PERSONA)
 
 
 def load_config():
+    global _LOAD_ERROR
     cfg = json.loads(json.dumps(DEFAULT_CONFIG))
     if os.path.exists(CONFIG_PATH):
         try:
-            user = json.load(open(CONFIG_PATH, encoding="utf-8"))
+            with open(CONFIG_PATH, encoding="utf-8") as f:
+                user = json.load(f)
+            if not isinstance(user, dict):
+                raise ValueError("top level is not a JSON object")
             for k, v in user.items():
                 if isinstance(v, dict) and isinstance(cfg.get(k), dict):
                     cfg[k].update(v)
                 else:
                     cfg[k] = v
-        except Exception:
-            pass
+            _LOAD_ERROR = None
+        except Exception as e:
+            _LOAD_ERROR = f"{type(e).__name__}: {e}"
+            print(f"[!] cannot read {CONFIG_PATH} ({_LOAD_ERROR}). Running with the "
+                  f"defaults; settings will NOT be saved until the file is fixed.",
+                  file=sys.stderr)
     else:
         json.dump(DEFAULT_CONFIG, open(CONFIG_PATH, "w", encoding="utf-8"), indent=2)
     cfg.setdefault("last", {"provider": None, "model": None})
@@ -188,12 +204,25 @@ def load_config():
 
 def save_config(cfg):
     """Persist config to CONFIG_PATH. Returns True on success, False on failure so
-    callers can surface it (a silent failure is how a 'saved' config vanishes)."""
+    callers can surface it (a silent failure is how a 'saved' config vanishes).
+    Refuses while the file on disk could not be parsed (see _LOAD_ERROR), and
+    writes atomically so a crash mid-write cannot truncate it."""
+    if _LOAD_ERROR is not None:
+        return False
+    tmp_path = None
     try:
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        fd, tmp_path = tempfile.mkstemp(prefix=".tui_config.", suffix=".tmp",
+                                        dir=os.path.dirname(CONFIG_PATH))
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
+        os.replace(tmp_path, CONFIG_PATH)
         return True
     except Exception:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
         return False
 
 

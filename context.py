@@ -44,6 +44,8 @@ def estimate_messages(messages) -> int:
             if k == "role":
                 total += 1
                 continue
+            if k == "reasoning":   # kept for display only, never sent to the model
+                continue
             if isinstance(v, str):
                 total += _ntok(v)
             elif isinstance(v, list):
