@@ -7,7 +7,7 @@ import os
 import threading
 from pathlib import Path
 
-from conftest import fake_client, text_delta, tool_delta, usage_chunk
+from conftest import NS, Chunk, fake_client, text_delta, tool_delta, usage_chunk
 
 import tools
 from engine import protocol as p
@@ -501,3 +501,138 @@ def test_exec_tools_run_in_the_session_cwd(cfg, tmp_path):
     s.run_turn("dime el cwd")
     tr = next(e for e in events if isinstance(e, p.ToolCallResult))
     assert os.path.realpath(tr.result.strip()) == os.path.realpath(str(project))
+
+
+# ---------------------------------------------------------------------------
+# Tool-call robustness: ids, phantom recoveries, cancellation, bad args
+# ---------------------------------------------------------------------------
+
+def test_json_with_a_name_key_in_the_answer_is_not_a_tool_call(cfg):
+    answer = 'Tu package.json:\n```json\n{"name": "my-app", "version": "1.0.0"}\n```'
+    s, events = make_session(cfg, [[text_delta(answer), usage_chunk(10, 5)]])
+    assert s.run_turn("dame un package.json") == "completed"
+    assert not any(isinstance(e, p.ToolCallStarted) for e in events)
+    assert s.messages[-1] == {"role": "assistant", "content": answer}
+
+
+def test_json_with_a_name_key_in_the_thinking_is_not_retried_or_run(cfg):
+    thought = Chunk(delta=NS(content=None, tool_calls=None, model_extra=None,
+                             reasoning_content='el fichero tiene {"name": "my-app"}'))
+    script = [[thought, text_delta("listo"), usage_chunk(10, 5)]]
+    s, events = make_session(cfg, script)    # a retry would exhaust the script
+    assert s.run_turn("mira el package.json") == "completed"
+    assert not any(isinstance(e, p.ToolCallStarted) for e in events)
+
+
+def test_text_recovered_call_to_a_real_tool_still_runs_with_a_unique_id(cfg):
+    ws = cfg["permissions"]["workspace"]
+    Path(ws, "a.txt").write_text("hola\n", encoding="utf-8")
+    call = '<tool_call>{"name": "read_file", "arguments": {"path": "%s"}}</tool_call>' % (
+        os.path.join(ws, "a.txt").replace("\\", "\\\\"))
+    script = [[text_delta(call), usage_chunk(10, 5)],
+              [text_delta(call), usage_chunk(10, 5)],
+              [text_delta("ok"), usage_chunk(10, 5)]]
+    s, events = make_session(cfg, script)
+    s.run_turn("lee a.txt")
+    ids = [e.call_id for e in events if isinstance(e, p.ToolCallStarted)]
+    assert len(ids) == 2 and len(set(ids)) == 2 and all(ids)
+
+
+def test_missing_provider_call_ids_are_generated(cfg):
+    script = [[tool_delta(0, None, "get_current_directory", "{}"), usage_chunk(10, 5)],
+              [text_delta("ok"), usage_chunk(10, 5)]]
+    s, events = make_session(cfg, script)
+    s.run_turn("donde estoy")
+    call = next(m for m in s.messages if m.get("tool_calls"))["tool_calls"][0]
+    result = next(m for m in s.messages if m.get("role") == "tool")
+    assert call["id"] and result["tool_call_id"] == call["id"]
+
+
+def test_name_repeated_in_every_delta_is_not_concatenated(cfg):
+    script = [[tool_delta(0, "c1", "get_current_directory", ""),
+               tool_delta(0, None, "get_current_directory", "{}"),
+               usage_chunk(10, 5)],
+              [text_delta("ok"), usage_chunk(10, 5)]]
+    s, events = make_session(cfg, script)
+    s.run_turn("donde estoy")
+    started = next(e for e in events if isinstance(e, p.ToolCallStarted))
+    assert started.name == "get_current_directory"
+
+
+def test_interrupt_mid_tool_call_keeps_no_truncated_arguments(cfg):
+    s, events = make_session(cfg, [[]])
+    class InterruptingChunks:
+        def __iter__(self):
+            yield text_delta("voy a escribir")
+            yield tool_delta(0, "c1", "write_file", '{"path": "a.txt", "cont')
+            s.interrupt()
+            yield tool_delta(0, None, None, 'ent": "x"}')
+        def close(self):
+            pass
+    s.client = fake_client([InterruptingChunks()])
+    assert s.run_turn("escribe") == "interrupted"
+    s._repair_history()
+    assert not any(m.get("tool_calls") for m in s.messages)
+    assert not any(m.get("role") == "tool" for m in s.messages)
+    assert s.messages[-1] == {"role": "assistant", "content": "voy a escribir"}
+
+
+def test_non_object_arguments_are_a_recoverable_error(cfg):
+    s, _ = make_session(cfg, [[]])
+    for raw in ("[]", '"x"', "3"):
+        assert s.execute_tool("run_python", raw).startswith("ERROR: arguments")
+
+
+def test_exec_ceiling_follows_the_model_chosen_timeout(cfg, monkeypatch):
+    s, _ = make_session(cfg, [[]])
+    s.skip_permissions = True
+    seen = {}
+    monkeypatch.setattr(s, "_with_timeout",
+                        lambda name, fn, timeout=None: seen.setdefault(name, timeout) and "ok")
+    s.execute_tool("run_python", json.dumps({"code": "print(1)", "timeout": 200}))
+    s.execute_tool("run_bash", json.dumps({"command": "true"}))
+    assert seen["run_python"] > 200
+    assert seen["run_bash"] >= 60
+
+
+def test_model_cannot_set_allow_unsafe_itself(cfg, monkeypatch):
+    s, _ = make_session(cfg, [[]])     # no hook: anything flagged is denied
+    ran = []
+    monkeypatch.setattr("engine.session.call_tool",
+                        lambda name, args, base_dir=None: ran.append(args) or "ok")
+    out = s.execute_tool("run_python", json.dumps(
+        {"code": "print(1)", "allow_unsafe": True}))
+    assert out == "ok" and "allow_unsafe" not in ran[0]
+
+
+def test_blocked_tools_are_not_offered_to_the_model(cfg):
+    s, _ = make_session(cfg, [[]])
+    s.blocked_tools |= {"run_python", "run_bash", "run_powershell"}
+    names = {t["function"]["name"] for t in s._offered_tools()}
+    assert "read_file" in names and not names & s.blocked_tools
+
+
+def test_mcp_tools_ask_when_confirmation_is_required(cfg, monkeypatch):
+    asked = []
+    s, _ = make_session(cfg, [[]], hook=lambda r: (asked.append(r), "deny")[1])
+    s.mcp_route = {"x_shell": ("http://mcp.invalid", "shell")}
+    monkeypatch.setattr("engine.session.mcp_client.call_tool", lambda *a: "ran")
+    assert s.execute_tool("x_shell", "{}") == "ran"          # TUI default: no prompt
+    s.confirm_mcp_tools = True
+    assert s.execute_tool("x_shell", "{}").startswith("DENIED")
+    assert asked[0].scope == "mcp" and asked[0].allowed_decisions == ("allow_once", "deny")
+
+
+def test_openai_compaction_uses_max_completion_tokens_and_is_billed(cfg):
+    sent = {}
+    def create(**params):
+        sent.update(params)
+        return NS(choices=[NS(message=NS(content="- resumen"))],
+                  usage=NS(prompt_tokens=1000, completion_tokens=100))
+    s, events = make_session(cfg, [[]])
+    s.model = "gpt-5"
+    s.client = NS(chat=NS(completions=NS(create=create)))
+    s.messages += [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}] * 2
+    assert s.compact()
+    assert "max_tokens" not in sent and sent["max_completion_tokens"] > 1200
+    assert s.session_cost > 0 and any(isinstance(e, p.CostUpdate) for e in events)
