@@ -302,7 +302,12 @@ def _timeout_result(e: subprocess.TimeoutExpired, label: str, seconds: int) -> s
 # (socket, platform, subprocess) and read-only network access ARE allowed — it's your machine.
 _DANGER = [
     r"Remove-Item\b[^\n]*-Recurse", r"\brmdir\b[^\n]*/s", r"\bdel\b[^\n]*/s",
-    r"\brm\b[^\n]*-rf\b", r"shutil\.rmtree", r"os\.removedirs",
+    # rm with any recursive flag, in any spelling/order: -rf, -fr, -r -f, -Rf, --recursive
+    r"\brm\b[^\n;|&]*\s-[a-zA-Z]*[rR][a-zA-Z]*\b", r"\brm\b[^\n;|&]*\s--recursive\b",
+    r"\bfind\b[^\n;|&]*\s-delete\b", r"\bfind\b[^\n]*-exec\s+rm\b",
+    r"\bgit\s+clean\b[^\n;|&]*\s-[a-zA-Z]*f", r"\bshred\b",
+    r"\bdd\b[^\n]*\bof=/dev/", r">\s*/dev/(sd|nvme|disk|hd)",
+    r"shutil\.rmtree", r"os\.removedirs",
     r"\bformat\b\s+[a-zA-Z]:", r"\bmkfs\b", r"\bdiskpart\b",
     r"shutdown\b", r"Stop-Computer", r"Restart-Computer", r"\breboot\b",
     r"reg\s+delete", r"Remove-Item[^\n]*HK(LM|CU)", r"Set-ItemProperty[^\n]*HKLM",

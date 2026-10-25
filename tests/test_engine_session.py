@@ -636,3 +636,21 @@ def test_openai_compaction_uses_max_completion_tokens_and_is_billed(cfg):
     assert s.compact()
     assert "max_tokens" not in sent and sent["max_completion_tokens"] > 1200
     assert s.session_cost > 0 and any(isinstance(e, p.CostUpdate) for e in events)
+
+
+def test_a_symlink_inside_the_workspace_does_not_confine_writes(cfg, tmp_path):
+    ws = Path(cfg["permissions"]["workspace"])
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    try:
+        (ws / "escape").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        import pytest
+        pytest.skip("symlinks not available")
+    asked = []
+    s, _ = make_session(cfg, [[]], hook=lambda r: (asked.append(r), "deny")[1])
+    out = s.execute_tool("write_file", json.dumps({"path": str(ws / "escape" / "x.txt"),
+                                                   "content": "no"}))
+    assert out.startswith("DENIED") and asked and asked[0].scope == "workspace"
+    assert not (outside / "x.txt").exists()
+    assert s._in_workspace(str(ws / "real.txt"))

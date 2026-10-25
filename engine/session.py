@@ -403,10 +403,14 @@ class Session:
         return os.path.abspath(p if os.path.isabs(p) else os.path.join(self.cwd, p))
 
     def _in_workspace(self, path):
-        """True if `path` resolves inside the workspace root (writes are confined there)."""
+        """True if `path` resolves inside the workspace root (writes are confined there).
+        Both sides go through realpath: a symlink inside the workspace that points
+        elsewhere (or a symlinked workspace) must not turn an outside write into
+        an inside one."""
         try:
-            root = self.workspace()
-            return os.path.commonpath([root, self.abspath(path)]) == root
+            root = os.path.normcase(os.path.realpath(self.workspace()))
+            target = os.path.normcase(os.path.realpath(self.abspath(path)))
+            return os.path.commonpath([root, target]) == root
         except (ValueError, OSError):
             return False   # different drive / bad path → treat as outside
 
