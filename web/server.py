@@ -146,6 +146,8 @@ class WebSession:
             self.session.blocked_tools |= EXEC_TOOLS
         if permission_mode == "ask":
             self.session.always_ask_tools |= CONFIRM_TOOLS | EXEC_TOOLS
+            # an MCP server can expose shells or writes: confirm its tools too
+            self.session.confirm_mcp_tools = True
 
     def attach(
         self,
@@ -208,6 +210,8 @@ class WebSession:
             "event": threading.Event(),
             "decision": "deny",
             "allowed": set(request.allowed_decisions),
+            # kept so a client that takes over the session can be re-asked
+            "request": request,
         }
         with self._perm_lock:
             self._pending_perms[request.perm_id] = waiter
@@ -225,6 +229,12 @@ class WebSession:
             waiter["decision"] = decision if decision in waiter["allowed"] else "deny"
             waiter["event"].set()
             return True
+
+    def pending_permission_requests(self) -> list[protocol.PermissionRequired]:
+        """Permission prompts the turn is still blocked on, oldest first."""
+        with self._perm_lock:
+            return [w["request"] for w in self._pending_perms.values()
+                    if not w["event"].is_set()]
 
     def deny_pending_permissions(self) -> None:
         with self._perm_lock:
@@ -842,13 +852,21 @@ async def _run_compaction(web_session: WebSession):
         web_session.busy = False
 
 
+async def _reject(socket: WebSocket, code: int, reason: str) -> None:
+    """Close with an application code the client can actually read. Closing
+    before accept() makes the server refuse the handshake with a bare HTTP 403,
+    so browsers only ever saw 1006 and could not tell these cases apart."""
+    await socket.accept()
+    await socket.close(code=code, reason=reason)
+
+
 async def ws_endpoint(socket: WebSocket):
     if not _authorized(socket):
-        await socket.close(code=4401, reason="unauthorized")
+        await _reject(socket, 4401, "unauthorized")
         return
     web_session = _state().sessions.get(socket.path_params["session_id"])
     if web_session is None:
-        await socket.close(code=4404, reason="unknown session")
+        await _reject(socket, 4404, "unknown session")
         return
 
     takeover = socket.query_params.get("takeover") == "1"
@@ -859,7 +877,7 @@ async def ws_endpoint(socket: WebSocket):
         takeover=takeover,
     )
     if connection_id is None:
-        await socket.close(code=4409, reason="session already has a client")
+        await _reject(socket, 4409, "session already has a client")
         return
 
     await socket.accept()
@@ -885,6 +903,10 @@ async def ws_endpoint(socket: WebSocket):
         )
     )
     await socket.send_text(event_to_json(web_session.snapshot()))
+    # A turn paused on a prompt sent to a previous (now replaced) socket would
+    # otherwise wait out PERMISSION_TIMEOUT with no one able to answer it.
+    for pending in web_session.pending_permission_requests():
+        await socket.send_text(event_to_json(pending))
     assert web_session.queue is not None
     connection_queue = web_session.queue
     pumps = [
