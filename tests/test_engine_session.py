@@ -654,3 +654,27 @@ def test_a_symlink_inside_the_workspace_does_not_confine_writes(cfg, tmp_path):
     assert out.startswith("DENIED") and asked and asked[0].scope == "workspace"
     assert not (outside / "x.txt").exists()
     assert s._in_workspace(str(ws / "real.txt"))
+
+
+def test_reasoning_is_kept_for_display_but_never_sent_back(cfg):
+    thought = Chunk(delta=NS(content=None, tool_calls=None, model_extra=None,
+                             reasoning_content="pienso"))
+    sent = []
+    script = [[thought, text_delta("hola"), usage_chunk(10, 5)],
+              [text_delta("otra"), usage_chunk(10, 5)]]
+    s, _ = make_session(cfg, script)
+    create = s.client.chat.completions.create
+    s.client.chat.completions.create = lambda **p: (sent.append(p["messages"]), create(**p))[1]
+    s.run_turn("uno")
+    assert s.messages[-1] == {"role": "assistant", "content": "hola", "reasoning": "pienso"}
+    s.run_turn("dos")
+    assert all("reasoning" not in m for m in sent[1])
+
+
+def test_multi_gpu_telemetry_reports_the_first_gpu(monkeypatch):
+    from engine import telemetry
+    out = ("NVIDIA RTX 4090, 37, 1024, 24564, 51, 120.5\n"
+           "NVIDIA RTX 3090, 0, 10, 24576, 30, [N/A]\n")
+    monkeypatch.setattr(telemetry.subprocess, "run", lambda *a, **k: NS(stdout=out))
+    sample = telemetry.sample()
+    assert sample.gpu_name == "NVIDIA RTX 4090" and sample.gpu_util == 37.0

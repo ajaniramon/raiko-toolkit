@@ -69,6 +69,10 @@ DEFAULT_WEB_MAX_ITERATIONS = 60
 MAX_ITERATIONS_LIMIT = 500
 PERMISSION_TIMEOUT = 300
 TELEMETRY_INTERVAL = 2.0
+# Events a slow client may lose without harm: deltas are reconciled by the
+# segment_end that closes their segment, telemetry by the next sample. Anything
+# else (permission_required, turn_done…) is never dropped.
+DROPPABLE_EVENTS = (protocol.TextDelta, protocol.ThinkingDelta, protocol.Telemetry)
 MAX_COMMAND_CHARS = 262_144
 MAX_PROMPT_CHARS = 100_000
 MAX_MODEL_CHARS = 191
@@ -159,7 +163,8 @@ class WebSession:
         if self.loop is not None and not takeover:
             return None
         self.loop = loop
-        self.queue = asyncio.Queue(maxsize=self.queue_size)
+        # unbounded: _push enforces queue_size on droppable events only
+        self.queue = asyncio.Queue()
         self.socket = socket
         self.connection_id = uuid.uuid4().hex[:12]
         self.last_seen = time.monotonic()
@@ -177,9 +182,13 @@ class WebSession:
         self.last_seen = time.monotonic()
 
     def _emit(self, event) -> None:
-        self._push(event_to_json(event))
+        self._push(event_to_json(event), droppable=isinstance(event, DROPPABLE_EVENTS))
 
-    def _push(self, payload: str) -> None:
+    def _push(self, payload: str, droppable: bool = False) -> None:
+        """Queue an event for the socket. Past `queue_size` pending events only
+        droppable ones are shed; control events always go through (they are
+        few, and losing one used to hang the client: a dropped turn_done or
+        permission_required left it waiting forever)."""
         loop = self.loop
         if loop is None:
             return
@@ -188,11 +197,8 @@ class WebSession:
             queue = self.queue
             if queue is None:
                 return
-            if queue.full():
-                try:
-                    queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
+            if droppable and queue.qsize() >= self.queue_size:
+                return
             queue.put_nowait(payload)
 
         loop.call_soon_threadsafe(enqueue)
@@ -301,6 +307,18 @@ class AppState:
         }
         self.sessions: dict[str, WebSession] = {}
         self.started_at = time.monotonic()
+        # one host sampler for every connected socket (nvidia-smi is a process
+        # spawn; psutil.cpu_percent is meaningless when called from N threads)
+        self._telemetry: tuple[float, str] | None = None
+        self._telemetry_lock = asyncio.Lock()
+
+    async def telemetry_payload(self) -> str:
+        async with self._telemetry_lock:
+            now = time.monotonic()
+            if self._telemetry is None or now - self._telemetry[0] >= TELEMETRY_INTERVAL * 0.9:
+                sample = await asyncio.to_thread(telemetry.sample)
+                self._telemetry = (time.monotonic(), event_to_json(sample))
+            return self._telemetry[1]
 
     def cleanup_idle(self) -> None:
         now = time.monotonic()
@@ -854,9 +872,9 @@ async def _pump_events(socket: WebSocket, queue: asyncio.Queue[str]):
 
 
 async def _pump_telemetry(web_session: WebSession):
+    state = _state()
     while True:
-        sample = await asyncio.to_thread(telemetry.sample)
-        web_session._push(event_to_json(sample))
+        web_session._push(await state.telemetry_payload(), droppable=True)
         await asyncio.sleep(TELEMETRY_INTERVAL)
 
 

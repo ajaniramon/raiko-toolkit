@@ -214,7 +214,7 @@ deniega inmediatamente.
 | type | payload |
 |---|---|
 | `session_started` | `{session_id, provider, model, ctx_window, protocol_version, connection_id}` |
-| `session_snapshot` | `{session_id, engine_session_id, busy, provider, model, ctx_window, messages, input_tokens, output_tokens, session_usd}` — estado canónico al conectar/reconectar y después de mutaciones de historial |
+| `session_snapshot` | `{session_id, engine_session_id, busy, provider, model, ctx_window, messages, input_tokens, output_tokens, session_usd}` — estado canónico al conectar/reconectar y después de mutaciones de historial. Los mensajes `assistant` pueden traer `reasoning` (el razonamiento de ese segmento, solo para mostrar: nunca se reenvía al modelo) |
 | `turn_started` | `{text}` — eco del mensaje del usuario, tras el posible auto-compact |
 | `thinking_delta` / `text_delta` | `{text}` — streaming del razonamiento / la respuesta |
 | `segment_end` | `{content, thinking}` — textos FINALES del segmento (pueden diferir de la concatenación de deltas si se recuperó un tool-call emitido como texto); cierra el bloque vivo |
@@ -228,6 +228,15 @@ deniega inmediatamente.
 | `telemetry` | `{gpu_name, gpu_util, vram_used_mb, vram_total_mb, ram_used_gb, ram_total_gb, cpu, temp_c, power_w, tok_s?}` — cada ~2 s; campos `null` si el sensor no existe |
 | `notice` | `{text, kind}` — informativo (`info` \| `warning` \| `rewind`) |
 | `error` | `{message}` |
+
+### Entrega de eventos
+
+Si el cliente lee más despacio de lo que el engine emite y la cola del socket
+pasa de `web.queue_size`, el servidor descarta **solo** `text_delta`,
+`thinking_delta` y `telemetry` (el `segment_end` siguiente trae el texto final
+del segmento, así que basta con reemplazar lo acumulado por él). El resto de
+eventos (`permission_required`, `tool_call_result`, `turn_done`…) no se pierde
+nunca. La telemetría la muestrea un único proceso para todas las sesiones.
 
 ### Flujo de un turno
 

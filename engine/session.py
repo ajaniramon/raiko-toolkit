@@ -707,6 +707,13 @@ class Session:
         known = {t["function"]["name"] for t in self._offered_tools()}
         return [c for c in calls if c.get("name") in known]
 
+    def _request_messages(self):
+        """The history as providers must see it: without the display-only
+        `reasoning` key (strict APIs reject unknown message fields, and feeding
+        old reasoning back would only cost tokens)."""
+        return [{k: v for k, v in m.items() if k != "reasoning"} if "reasoning" in m else m
+                for m in self.messages]
+
     def _repair_history(self):
         """Keep the message list valid for strict providers (e.g. Anthropic) after an
         interrupt or when resuming a session saved mid-turn: drop assistant messages
@@ -831,13 +838,14 @@ class Session:
                 # Values are available to the local model only for this turn. Never
                 # write them to Raiko's persisted conversation JSON.
                 for message in self.messages:
-                    content = message.get("content")
-                    if not isinstance(content, str):
-                        continue
-                    for value in sensitive_values:
-                        if value:
-                            content = content.replace(value, "[REDACTED_SECRET]")
-                    message["content"] = content
+                    for key in ("content", "reasoning"):
+                        text = message.get(key)
+                        if not isinstance(text, str):
+                            continue
+                        for value in sensitive_values:
+                            if value:
+                                text = text.replace(value, "[REDACTED_SECRET]")
+                        message[key] = text
             self.save()   # persist the conversation after every turn
         return reason
 
@@ -846,7 +854,7 @@ class Session:
         accumulates tool-call deltas; accounts usage/cost. Returns the assistant
         message as a dict."""
         self._repair_history()
-        params = dict(model=self.model, messages=self.messages,
+        params = dict(model=self.model, messages=self._request_messages(),
                       tools=self._offered_tools(),
                       tool_choice="auto", stream=True)
         params["stream_options"] = {"include_usage": True}
@@ -963,6 +971,10 @@ class Session:
         self.emit(ev.SegmentEnd(content=self.cur_content, thinking=self.cur_think))
 
         msg = {"role": "assistant", "content": "".join(content_parts) or None}
+        if self.cur_think:
+            # Display-only: lets a reloaded conversation show its reasoning.
+            # _request_messages() strips it before anything goes to a provider.
+            msg["reasoning"] = self.cur_think
         if tool_calls:
             msg["tool_calls"] = [{"id": tc["id"] or new_call_id(), "type": "function",
                                   "function": {"name": tc["name"], "arguments": tc["arguments"]}}

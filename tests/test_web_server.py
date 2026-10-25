@@ -958,3 +958,26 @@ def test_create_session_requires_a_json_content_type(client):
         content=json.dumps({"provider": "openai", "model": "gpt-test"}),
     )
     assert response.status_code == 415
+
+
+def test_a_full_queue_sheds_deltas_but_never_control_events(client):
+    import asyncio
+
+    sid, _ = make_ws_session(client, [[]])
+    live = srv.STATE.sessions[sid]
+
+    async def scenario():
+        live.loop = asyncio.get_running_loop()
+        live.queue = asyncio.Queue()
+        live.queue_size = 64
+        for _ in range(200):
+            live._emit(srv.protocol.TextDelta(text="x"))
+        live._emit(srv.protocol.TurnDone(reason="completed"))
+        await asyncio.sleep(0)
+        types = []
+        while not live.queue.empty():
+            types.append(json.loads(live.queue.get_nowait())["type"])
+        return types
+
+    types = asyncio.run(scenario())
+    assert types.count("text_delta") == 64 and types[-1] == "turn_done"

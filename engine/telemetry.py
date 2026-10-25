@@ -15,7 +15,10 @@ def sample():
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw",
              "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=3).stdout.strip()
-        name, util, mused, mtot, temp, power = [x.strip() for x in out.split(",")]
+        # one line per GPU: report the first (several made the unpack fail and
+        # every GPU field came back null)
+        first = out.splitlines()[0] if out else ""
+        name, util, mused, mtot, temp, power = [x.strip() for x in first.split(",")]
         t.gpu_name = name
         t.gpu_util = float(util)
         t.vram_used_mb = float(mused)
