@@ -916,3 +916,45 @@ def test_ws_rejections_reach_a_real_client_as_close_codes(cfg):
             await task
 
     assert asyncio.run(scenario()) == (4401, 4404)
+
+
+def test_tokenless_server_refuses_a_rebound_hostname(cfg):
+    """DNS rebinding: evil.example re-resolves to 127.0.0.1, so the browser
+    treats it as same-origin — but the Host header still says evil.example."""
+    cfg["web"]["token"] = ""
+    rebound = TestClient(srv.build_app(cfg), base_url="http://evil.example:8484")
+    assert rebound.get("/api/sessions").status_code == 401
+    local = TestClient(srv.build_app(cfg), base_url="http://127.0.0.1:8484")
+    assert local.get("/api/sessions").status_code == 200
+    assert local.get("/api/health", headers={"host": "[::1]:8484"}).status_code == 200
+    assert local.get("/api/health", headers={"host": "localhost"}).status_code == 200
+
+
+def test_ws_refuses_browser_origins_outside_the_whitelist(client):
+    sid, _ = make_ws_session(client, [[]])
+    with pytest.raises(WebSocketDisconnect) as caught:
+        with client.websocket_connect(
+            f"/ws/{sid}", headers={**AUTH, "origin": "https://evil.example"},
+        ) as ws:
+            ws.receive_json()
+    assert caught.value.code == 4403
+
+
+def test_ws_accepts_whitelisted_and_originless_clients(cfg):
+    cfg["web"]["token"] = "secreto"
+    cfg["web"]["allowed_origins"] = ["http://homelab.local:5173"]
+    client = TestClient(srv.build_app(cfg))
+    sid, _ = make_ws_session(client, [[]])
+    with client.websocket_connect(
+        f"/ws/{sid}", headers={**AUTH, "origin": "http://homelab.local:5173"},
+    ) as ws:
+        assert ws.receive_json()["type"] == "session_started"
+
+
+def test_create_session_requires_a_json_content_type(client):
+    response = client.post(
+        "/api/sessions",
+        headers={**AUTH, "content-type": "text/plain"},
+        content=json.dumps({"provider": "openai", "model": "gpt-test"}),
+    )
+    assert response.status_code == 415

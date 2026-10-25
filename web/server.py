@@ -294,6 +294,11 @@ class AppState:
                 or MODEL_CATALOG_TTL_SECONDS
             ),
         )
+        self.allowed_origins = {
+            origin
+            for origin in (self.web_cfg.get("allowed_origins") or [])
+            if isinstance(origin, str) and origin and origin != "*"
+        }
         self.sessions: dict[str, WebSession] = {}
         self.started_at = time.monotonic()
 
@@ -319,10 +324,24 @@ def _state() -> AppState:
     return STATE
 
 
+def _loopback_host(request_or_ws) -> bool:
+    """True if the Host header names this machine's loopback interface. Without
+    a token this is what stops DNS rebinding: a hostile page whose domain
+    re-resolves to 127.0.0.1 is same-origin to the browser, but its requests
+    still carry the attacker's hostname."""
+    host = (request_or_ws.headers.get("host") or "").strip().lower()
+    if host.startswith("["):                 # [::1]:8484
+        host = host[1:].split("]", 1)[0]
+    elif host.count(":") == 1:               # 127.0.0.1:8484 / localhost:8484
+        host = host.split(":", 1)[0]
+    return host in _LOOPBACK
+
+
 def _authorized(request_or_ws) -> bool:
     state = _state()
     if not state.token:
-        return True
+        # tokenless is only acceptable on loopback (main() refuses otherwise)
+        return _loopback_host(request_or_ws)
     auth = request_or_ws.headers.get("authorization", "")
     return (
         auth.startswith("Bearer ")
@@ -674,6 +693,10 @@ async def session_detail(request):
 async def create_session(request):
     if not _authorized(request):
         return _unauthorized()
+    # A cross-site page can POST text/plain without a CORS preflight; insisting
+    # on JSON forces one, which the CORS whitelist then refuses.
+    if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
+        return JSONResponse({"error": "Content-Type must be application/json"}, status_code=415)
     try:
         body = await request.json()
     except Exception:
@@ -860,9 +883,20 @@ async def _reject(socket: WebSocket, code: int, reason: str) -> None:
     await socket.close(code=code, reason=reason)
 
 
+def _origin_allowed(socket: WebSocket) -> bool:
+    """WebSockets are not covered by CORS: any page may open one to us. Server
+    clients (the Homelab proxy, ws_smoke) send no Origin; a browser always
+    does, and then it must be one of web.allowed_origins."""
+    origin = socket.headers.get("origin")
+    return origin is None or origin in _state().allowed_origins
+
+
 async def ws_endpoint(socket: WebSocket):
     if not _authorized(socket):
         await _reject(socket, 4401, "unauthorized")
+        return
+    if not _origin_allowed(socket):
+        await _reject(socket, 4403, "origin not allowed")
         return
     web_session = _state().sessions.get(socket.path_params["session_id"])
     if web_session is None:
@@ -1075,11 +1109,7 @@ async def ws_endpoint(socket: WebSocket):
 def build_app(cfg) -> Starlette:
     global STATE
     STATE = AppState(cfg)
-    origins = [
-        origin
-        for origin in (STATE.web_cfg.get("allowed_origins") or [])
-        if origin and origin != "*"
-    ]
+    origins = sorted(STATE.allowed_origins)
     middleware = []
     if origins:
         middleware.append(

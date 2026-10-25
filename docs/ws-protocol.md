@@ -182,8 +182,8 @@ Elimina una sesión viva o una sesión guardada.
 
 JSON en ambos sentidos; cada mensaje lleva `"type"` más los campos del payload.
 Al conectar, el servidor envía `session_started` y después `session_snapshot`.
-Cierres: `4401` sin auth, `4404` sesión desconocida y `4409` si ya existe otro
-cliente propietario. El servidor acepta el handshake antes de cerrar con estos
+Cierres: `4401` sin auth, `4403` origen no permitido, `4404` sesión desconocida
+y `4409` si ya existe otro cliente propietario. El servidor acepta el handshake antes de cerrar con estos
 códigos, así que el cliente los recibe en el evento `close` (antes llegaban como un
 HTTP 403 del handshake y el navegador solo veía `1006`). Un cliente autenticado puede conectar con `?takeover=1`
 para reemplazar de forma atómica una conexión anterior que haya quedado
@@ -259,6 +259,13 @@ Los exec tools sobre red son **RCE en la máquina**. Por eso:
    En modo `"yolo"` esas confirmaciones se aprueban automáticamente. La denylist
    y `web.allow_exec=false` no se pueden anular seleccionando YOLO.
 4. Token comparado con `secrets.compare_digest`; CORS solo por lista blanca.
+   Sin token (solo en loopback) se exige además una cabecera `Host` de loopback
+   (`127.0.0.1`, `localhost`, `::1`): una página con DNS rebinding hacia 127.0.0.1
+   es same-origin para el navegador, pero sigue mandando su propio hostname → 401.
+   El WS rechaza con `4403` cualquier `Origin` fuera de `web.allowed_origins`
+   (los clientes de servidor, como el proxy de Homelab, no envían `Origin`), y
+   `POST /api/sessions` exige `Content-Type: application/json` (415 si no), para
+   que un formulario cross-site no pueda crear sesiones sin pasar por CORS.
 5. **Carpeta de trabajo acotada**: el `cwd` que manda el cliente se resuelve con
    `realpath` y debe caer dentro de `web.project_roots` — `..` y symlinks no
    escapan, y sin roots configurados no se acepta ninguno. El `cwd` guardado de
